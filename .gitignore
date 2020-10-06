@@ -1,0 +1,8 @@
+bin/
+obj/
+player/
+*.user
+s3_vm_api.db
+.vs/
+appsettings.Development.json
+.vscode/
