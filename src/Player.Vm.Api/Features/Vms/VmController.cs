@@ -287,6 +287,19 @@ namespace Player.Vm.Api.Features.Vms
         }
 
         /// <summary>
+        /// Get all maps for a view
+        /// </summary>
+        /// <param name="viewId"></param>
+        /// <param name="ct"></param>
+        [HttpGet("views/maps/viewMaps/{viewId}")]
+        [ProducesResponseType(typeof(IEnumerable<VmMap>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getViewMaps")]
+        public async Task<IActionResult> GetViewMaps([FromRoute] Guid viewId, CancellationToken ct)
+        {
+            return Ok(await _vmService.GetViewMapsAsync(viewId, ct));
+        }
+
+        /// <summary>
         /// Get a specific map by id
         /// </summary>
         /// <param name="mapId"> The guid of the map to retrieve </param>
