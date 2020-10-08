@@ -356,7 +356,7 @@ namespace Player.Vm.Api.Features.Vms
             // If team id is not set, default to the admin team
             if (form.TeamIds == null)
             {
-                var viewTeams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
+                var viewTeams = await _playerService.GetTeamsByViewIdAsync(viewId, ct); 
                 foreach (var team in viewTeams)
                 {
                     if (team.Name == "Admin")
