@@ -352,6 +352,21 @@ namespace Player.Vm.Api.Features.Vms
                 throw new ForbiddenException(ex.Message);
             }
 
+            // If team id is not set, default to the admin team
+            if (form.TeamIds == null)
+            {
+                var viewTeams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
+                foreach (var team in viewTeams)
+                {
+                    if (team.Name == "Admin")
+                    {
+                        form.TeamIds = new List<Guid>();
+                        form.TeamIds.Add((Guid) team.Id);
+                        break;
+                    }
+                }
+            }
+
             var mapIntermediate = _mapper.Map<VmMap>(form);
             mapIntermediate.ViewId = viewId;
 
