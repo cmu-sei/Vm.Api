@@ -45,6 +45,7 @@ namespace Player.Vm.Api.Features.Vms
         Task<VmMap> GetTeamMapAsync(Guid teamId, CancellationToken ct);
         Task<bool> DeleteMapAsync(Guid mapId, CancellationToken ct);
         Task<VmMap> UpdateMapAsync(VmMapCreateForm form, Guid mapId, CancellationToken ct);
+        Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct);
     }
 
     public class VmService : IVmService
@@ -390,6 +391,19 @@ namespace Player.Vm.Api.Features.Vms
             return _mapper.Map<VmMap[]>(maps);
         }
 
+        public async Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct)
+        {
+            // TODO: only return the maps this user is allowed to access
+            // or do this in the UI?
+
+            var maps = await _context.Maps
+                .Include(m => m.Coordinates)
+                .Where(m => m.ViewId == viewId)
+                .ToArrayAsync();
+            
+            return _mapper.Map<VmMap[]>(maps);
+        }
+
         public async Task<VmMap> GetMapAsync(Guid mapId, CancellationToken ct)
         {
             var vmMap = await _context.Maps
@@ -486,7 +500,7 @@ namespace Player.Vm.Api.Features.Vms
             {
                 await _playerService.GetViewByIdAsync(viewId, ct);
             }
-            catch (Exception e)
+            catch (Exception)
             {
                 throw new ForbiddenException("View does not exist");
             }
