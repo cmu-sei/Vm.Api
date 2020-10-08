@@ -368,6 +368,16 @@ namespace Player.Vm.Api.Features.Vms
                 }
             }
 
+            // Check if the team already has a map. Still assumming each team has at most 1 map
+            var existing = await _context.Maps
+                .ToListAsync(ct);
+            
+            foreach (var m in existing)
+            {
+                if (m.TeamIds[0] == form.TeamIds[0])
+                    throw new ForbiddenException("Cannot assign multiple maps to a single team.");
+            }
+
             var mapIntermediate = _mapper.Map<VmMap>(form);
             mapIntermediate.ViewId = viewId;
 
@@ -386,7 +396,7 @@ namespace Player.Vm.Api.Features.Vms
             
             var maps = await _context.Maps
                 .Include(x => x.Coordinates)
-                .ToArrayAsync(ct);
+                .ToListAsync(ct);
 
             return _mapper.Map<VmMap[]>(maps);
         }
@@ -399,7 +409,7 @@ namespace Player.Vm.Api.Features.Vms
             var maps = await _context.Maps
                 .Include(m => m.Coordinates)
                 .Where(m => m.ViewId == viewId)
-                .ToArrayAsync();
+                .ToArrayAsync(ct);
             
             return _mapper.Map<VmMap[]>(maps);
         }
