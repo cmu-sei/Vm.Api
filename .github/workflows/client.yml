@@ -1,4 +1,4 @@
-name: Build Client
+name: Build Client Package
 
 on: 
   workflow_dispatch:
