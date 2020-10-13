@@ -1,0 +1,18 @@
+name: List Package
+
+on: 
+  workflow_dispatch:
+    inputs:
+      clientVersion:
+        description: 'Version of the Client package'     
+        required: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: List Package
+        run: |
+          PACKAGENAME=Player.Vm.Api.Client
+          curl -H "Content-Length: 0" -H "X-NuGet-ApiKey: ${{ secrets.NUGET_APIKEY_UNLIST }}" -X POST https://www.nuget.org/api/v2/package/$PACKAGENAME/${{ github.event.inputs.clientVersion }}
