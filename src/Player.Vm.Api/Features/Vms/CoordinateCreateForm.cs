@@ -8,11 +8,13 @@ Carnegie Mellon(R) and CERT(R) are registered in the U.S. Patent and Trademark O
 DM20-0181
 */
 
+using System;
 
 namespace Player.Vm.Api.Features.Vms
 {
     public class CoordinateCreateForm
     {        
+        public Guid Id { get; set; }
         public double XPosition { get; set; }
 
         public double YPosition { get; set; }
@@ -20,5 +22,7 @@ namespace Player.Vm.Api.Features.Vms
         public double Radius { get; set; }
 
         public string Url { get; set; }
+
+        public string Label { get; set; }
     }
 }

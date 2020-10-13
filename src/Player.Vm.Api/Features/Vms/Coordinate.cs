@@ -23,5 +23,7 @@ namespace Player.Vm.Api.Features.Vms
         public double Radius { get; set; }
 
         public string Url { get; set; }
+        
+        public string Label { get; set; }
     }
 }
