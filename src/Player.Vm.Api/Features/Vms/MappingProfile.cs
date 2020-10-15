@@ -33,6 +33,11 @@ namespace Player.Vm.Api.Features.Vms
 
             CreateMap<Domain.Models.VmMap, VmMap>();
 
+            CreateMap<VmMapCreateForm, Domain.Models.VmMap>()
+                .ForMember(dest => dest.Coordinates, opt => opt.Ignore());
+
+            CreateMap<CoordinateCreateForm, Domain.Models.Coordinate>();
+
             CreateMap<Coordinate, Domain.Models.Coordinate>();
 
             CreateMap<Domain.Models.Coordinate, Coordinate>();

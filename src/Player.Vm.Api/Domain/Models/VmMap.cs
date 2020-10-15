@@ -23,7 +23,7 @@ namespace Player.Vm.Api.Domain.Models
         [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public Guid Id { get; set; }
         public Guid ViewId { get; set; }
-        public virtual ICollection<Coordinate> Coordinates { get; set; } = new List<Coordinate>();
+        public virtual List<Coordinate> Coordinates { get; set; } = new List<Coordinate>();
         public string Name { get; set; }
         public string ImageUrl { get; set; }
         public List<Guid> TeamIds { get; set; }

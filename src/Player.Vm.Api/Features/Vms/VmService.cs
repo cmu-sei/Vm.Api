@@ -30,6 +30,7 @@ namespace Player.Vm.Api.Features.Vms
 {
     public interface IVmService
     {
+
         Task<Vm[]> GetAllAsync(CancellationToken ct);
         Task<Vm> GetAsync(Guid id, CancellationToken ct);
         Task<IEnumerable<Vm>> GetByTeamIdAsync(Guid teamId, string name, bool includePersonal, bool onlyMine, CancellationToken ct);
@@ -347,6 +348,7 @@ namespace Player.Vm.Api.Features.Vms
             try
             {
                 await validateViewAndTeams(form, viewId, ct);
+
             }
             catch (Exception ex)
             {
@@ -374,6 +376,7 @@ namespace Player.Vm.Api.Features.Vms
             
             foreach (var m in existing)
             {
+                // TODO more robust check here
                 if (m.TeamIds[0] == form.TeamIds[0])
                     throw new ForbiddenException("Cannot assign multiple maps to a single team.");
             }
@@ -455,18 +458,21 @@ namespace Player.Vm.Api.Features.Vms
             {
                 await validateViewAndTeams(form, vmMapEntity.ViewId, ct);
             }
-            catch(Exception ex)
+            catch (Exception ex)
             {
                 throw new ForbiddenException(ex.Message);
             }
 
-            var vmMapIntermediate = _mapper.Map<VmMap>(form);
+            vmMapEntity.Coordinates.Clear();
+            foreach (var coord in form.Coordinates)
+            {
+                var tempCoord = _mapper.Map<Domain.Models.Coordinate>(coord);
+                tempCoord.Id = Guid.Empty;
 
-            // These fields cannot change
-            vmMapIntermediate.Id = vmMapEntity.Id;
-            vmMapIntermediate.ViewId = vmMapEntity.ViewId;
+                vmMapEntity.Coordinates.Add(tempCoord);
+            }
 
-            vmMapEntity = _mapper.Map(vmMapIntermediate, vmMapEntity);
+            vmMapEntity = _mapper.Map(form, vmMapEntity);
             
             await _context.SaveChangesAsync(ct);
 
