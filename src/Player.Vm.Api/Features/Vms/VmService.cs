@@ -47,6 +47,7 @@ namespace Player.Vm.Api.Features.Vms
         Task<bool> DeleteMapAsync(Guid mapId, CancellationToken ct);
         Task<VmMap> UpdateMapAsync(VmMapCreateForm form, Guid mapId, CancellationToken ct);
         Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct);
+        Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct);
     }
 
     public class VmService : IVmService
@@ -432,6 +433,10 @@ namespace Player.Vm.Api.Features.Vms
 
         public async Task<VmMap> GetTeamMapAsync(Guid teamId, CancellationToken ct)
         {
+            // Check user can access this team
+            if (!(await _playerService.CanAccessTeamAsync(teamId, ct)))
+                throw new ForbiddenException();
+
             var maps = await _context.Maps
                 .Include(m => m.Coordinates)
                 .ToListAsync();
@@ -493,6 +498,19 @@ namespace Player.Vm.Api.Features.Vms
             await _context.SaveChangesAsync(ct);
 
             return true;
+        }
+
+        public async Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct)
+        {
+            var teams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
+
+            var retTeams = new List<SimpleTeam>();
+            foreach (var team in teams)
+            {
+                retTeams.Add(new SimpleTeam((Guid) team.Id, team.Name));
+            }
+
+            return retTeams.ToArray();
         }
 
         #region Private

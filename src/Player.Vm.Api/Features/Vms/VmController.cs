@@ -363,5 +363,22 @@ namespace Player.Vm.Api.Features.Vms
             await _vmService.DeleteMapAsync(mapId, ct);
             return NoContent();
         }
+
+        /// <summary>
+        /// Get all the teams in a view
+        /// </summary>
+        /// <remarks>
+        /// Implemented to avoid calling Player API in VM UI app
+        /// </remarks>
+        /// <param name="viewId"> The guid of the view to consider </param>
+        /// <param name="ct"></param>
+        [HttpGet("views/{viewId}/teams")]
+        [ProducesResponseType(typeof(IEnumerable<SimpleTeam>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getTeams")]
+        public async Task<IActionResult> GetTeams([FromRoute] Guid viewId, CancellationToken ct)
+        {
+            var teams = await _vmService.GetTeamsAsync(viewId, ct);
+            return Ok(teams);
+        }
     }
 }
