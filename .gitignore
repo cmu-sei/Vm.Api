@@ -2,7 +2,7 @@ bin/
 obj/
 player/
 *.user
-s3_vm_api.db
+player_vm.db
 .vs/
 appsettings.Development.json
 .vscode/
