@@ -23,7 +23,7 @@ using Player.Vm.Api.Domain.Vsphere.Options;
 using System.Security.Claims;
 using System.Security.Principal;
 using Player.Vm.Api.Infrastructure.Extensions;
-using S3.Player.Api;
+using Player.Api;
 using System.Linq;
 using Player.Vm.Api.Domain.Services;
 
@@ -46,7 +46,7 @@ namespace Player.Vm.Api.Features.Vsphere
             private readonly ILogger<Get> _logger;
             private readonly VsphereOptions _vsphereOptions;
             private readonly ClaimsPrincipal _user;
-            private readonly IS3PlayerApiClient _playerClient;
+            private readonly IPlayerApiClient _playerClient;
             private readonly IPlayerService _playerService;
 
             public Handler(
@@ -56,7 +56,7 @@ namespace Player.Vm.Api.Features.Vsphere
                 ILogger<Get> logger,
                 VsphereOptions vsphereOptions,
                 IPrincipal user,
-                IS3PlayerApiClient playerClient,
+                IPlayerApiClient playerClient,
                 IPlayerService playerService) :
                 base(mapper, vsphereService, playerService, user)
             {

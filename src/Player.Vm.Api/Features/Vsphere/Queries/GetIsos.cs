@@ -20,7 +20,7 @@ using Player.Vm.Api.Features.Vms;
 using System.Collections.Generic;
 using Player.Vm.Api.Domain.Services;
 using System.Linq;
-using S3.Player.Api.Models;
+using Player.Api.Models;
 using Player.Vm.Api.Domain.Vsphere.Models;
 
 namespace Player.Vm.Api.Features.Vsphere

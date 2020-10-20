@@ -1,10 +1,10 @@
 name: Build Client Package
 
-on: 
+on:
   workflow_dispatch:
     inputs:
       clientVersion:
-        description: 'Version of the Client package'     
+        description: 'Version of the Client package'
         required: true
 
 jobs:
@@ -32,17 +32,17 @@ jobs:
           dotnet tool install --version 5.6.3 Swashbuckle.AspNetCore.Cli
           cd ${{ steps.package_name.outputs.directory }}
           dotnet build -c Release /p:version=${{ github.event.inputs.clientVersion }}
-          
+
       - name: Run Swagger
         run: |
           cd ${{ steps.package_name.outputs.directory }}
           dotnet swagger tofile --output ../${{ steps.package_name.outputs.name }}/swagger.json bin/Release/*/${{ steps.package_name.outputs.dll_name }}.dll v1
-                    
+
       - name: Run AutoRest
         run: |
           cd src/${{ steps.package_name.outputs.name }}
           npm install autorest@3.0.6247
-          ./node_modules/.bin/autorest .
+          ./node_modules/.bin/autorest . --version=3.0.6274
 
       - name: Create NuGet Package
         run: |
@@ -51,7 +51,7 @@ jobs:
           /p:authors="Carnegie Mellon University/Software Engineering Institute"      \
           /p:description="AutoRest generated client for Crucible's ${{ steps.package_name.outputs.dll_name }}"   \
           --include-source
-           
+
           cd bin/Release
           mv ${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg ${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg.bak
           unzip ${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg.bak -d tmp
@@ -62,12 +62,12 @@ jobs:
           sed -i '/<\/version>/a \    <projectUrl>https:\/\/github.com\/cmu-sei\/crucible<\/projectUrl>' ${{ steps.package_name.outputs.name }}.nuspec
           sed -i '/<\/version>/a \    <repository type="git" url="https:\/\/github.com\/cmu-sei\/crucible.git" \/>' ${{ steps.package_name.outputs.name }}.nuspec
           zip -r ../${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg *
-     
+
       - name: Publish to Nuget.org as Unlisted
         run: |
           dotnet nuget push src/${{ steps.package_name.outputs.name }}/bin/Release/${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg -k ${{ secrets.NUGET_APIKEY }} -s https://api.nuget.org/v3/index.json
           dotnet nuget delete ${{ steps.package_name.outputs.name }} ${{ github.event.inputs.clientVersion }} --non-interactive -k ${{ secrets.NUGET_APIKEY_UNLIST }} -s https://api.nuget.org/v3/index.json
-     
+
       - name: Create Release
         id: create_release
         uses: actions/create-release@v1
@@ -80,7 +80,7 @@ jobs:
           prerelease: false
 
       - name: Upload Release Asset
-        id: upload-release-asset 
+        id: upload-release-asset
         uses: actions/upload-release-asset@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
