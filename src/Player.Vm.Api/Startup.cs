@@ -22,7 +22,7 @@ using Player.Vm.Api.Infrastructure.Options;
 using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Principal;
-using S3.Player.Api;
+using Player.Api;
 using System.Net.Http;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc.Authorization;

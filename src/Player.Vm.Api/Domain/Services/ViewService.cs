@@ -11,7 +11,7 @@ DM20-0181
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Player.Vm.Api.Infrastructure.Options;
-using S3.Player.Api;
+using Player.Api;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -29,7 +29,7 @@ namespace Player.Vm.Api.Domain.Services
 
     public class ViewService : IViewService, IDisposable
     {
-        private readonly IS3PlayerApiClient _playerApiClient;
+        private readonly IPlayerApiClient _playerApiClient;
         private readonly IMemoryCache _cache;
         private readonly ILogger<ViewService> _logger;
 
@@ -45,7 +45,7 @@ namespace Player.Vm.Api.Domain.Services
             var playerUri = new Uri(clientOptions.urls.playerApi);
             var httpClient = httpClientFactory.CreateClient("player-admin");
             httpClient.BaseAddress = playerUri;
-            var playerApiClient = new S3PlayerApiClient(httpClient, true);
+            var playerApiClient = new PlayerApiClient(httpClient, true);
             playerApiClient.BaseUri = playerUri;
             _playerApiClient = playerApiClient;
         }

@@ -15,7 +15,7 @@ using Microsoft.OpenApi.Models;
 using Player.Vm.Api.Infrastructure.HttpHandlers;
 using Player.Vm.Api.Infrastructure.OperationFilters;
 using Player.Vm.Api.Infrastructure.Options;
-using S3.Player.Api;
+using Player.Api;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -118,7 +118,7 @@ namespace Player.Vm.Api.Infrastructure.Extensions
             services.AddHttpClient("player-admin")
                 .AddHttpMessageHandler<AuthenticatingHandler>();
 
-            services.AddScoped<IS3PlayerApiClient, S3PlayerApiClient>(p =>
+            services.AddScoped<IPlayerApiClient, PlayerApiClient>(p =>
             {
                 var httpContextAccessor = p.GetRequiredService<IHttpContextAccessor>();
                 var httpClientFactory = p.GetRequiredService<IHttpClientFactory>();
@@ -138,10 +138,12 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                 httpClient.BaseAddress = playerUri;
                 httpClient.DefaultRequestHeaders.Add("Authorization", authHeader);
 
-                var s3PlayerApiClient = new S3PlayerApiClient(httpClient, true);
-                s3PlayerApiClient.BaseUri = playerUri;
+                var playerApiClient = new PlayerApiClient(httpClient, true)
+                {
+                    BaseUri = playerUri
+                };
 
-                return s3PlayerApiClient;
+                return playerApiClient;
             });
         }
 
