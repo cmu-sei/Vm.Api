@@ -242,6 +242,7 @@ namespace Player.Vm.Api
             // Enable middleware to serve swagger-ui (HTML, JS, CSS, etc.), specifying the Swagger JSON endpoint.
             app.UseSwaggerUI(c =>
             {
+                c.RoutePrefix = "api";
                 c.SwaggerEndpoint("/swagger/v1/swagger.json", "Player VM API V1");
                 c.OAuthClientId(_authOptions.ClientId);
                 c.OAuthClientSecret(_authOptions.ClientSecret);
