@@ -1,3 +1,3 @@
-# S3.Vm.Api
+# Player.Vm.Api
 
-This solution provides a web api for interacting with the Scenario Player's VM application data.
+This solution provides a web api for interacting with the Player's VM application data.

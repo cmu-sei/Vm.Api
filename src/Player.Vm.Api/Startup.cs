@@ -22,7 +22,7 @@ using Player.Vm.Api.Infrastructure.Options;
 using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Principal;
-using S3.Player.Api;
+using Player.Api;
 using System.Net.Http;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc.Authorization;
@@ -242,6 +242,7 @@ namespace Player.Vm.Api
             // Enable middleware to serve swagger-ui (HTML, JS, CSS, etc.), specifying the Swagger JSON endpoint.
             app.UseSwaggerUI(c =>
             {
+                c.RoutePrefix = "api";
                 c.SwaggerEndpoint("/swagger/v1/swagger.json", "Player VM API V1");
                 c.OAuthClientId(_authOptions.ClientId);
                 c.OAuthClientSecret(_authOptions.ClientSecret);
