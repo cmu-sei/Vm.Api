@@ -407,15 +407,24 @@ namespace Player.Vm.Api.Features.Vms
 
         public async Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct)
         {
-            // TODO: only return the maps this user is allowed to access
-            // or do this in the UI?
-
             var maps = await _context.Maps
                 .Include(m => m.Coordinates)
                 .Where(m => m.ViewId == viewId)
                 .ToArrayAsync(ct);
+
+            if (maps == null)
+                return null;
+
+            // Only return the maps user has access to
+            var accessableMaps = new List<Domain.Models.VmMap>();
+            foreach (var m in maps)
+            {
+                if ((await _playerService.CanAccessTeamsAsync(m.TeamIds, ct)))
+                    accessableMaps.Add(m);
+
+            }
             
-            return _mapper.Map<VmMap[]>(maps);
+            return _mapper.Map<VmMap[]>(accessableMaps);
         }
 
         public async Task<VmMap> GetMapAsync(Guid mapId, CancellationToken ct)
