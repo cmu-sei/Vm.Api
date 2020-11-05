@@ -228,9 +228,6 @@ namespace Player.Vm.Api.Features.Vms
             var vmEntity = _mapper.Map<Domain.Models.Vm>(form);
             var formTeams = vmEntity.VmTeams.Select(v => v.TeamId).Distinct();
 
-            if (!formTeams.Any())
-                throw new ForbiddenException("Must include at least 1 team");
-
             if (!(await _playerService.CanManageTeamsAsync(formTeams, true, ct)))
                 throw new ForbiddenException();
 
@@ -356,30 +353,18 @@ namespace Player.Vm.Api.Features.Vms
                 throw new ForbiddenException(ex.Message);
             }
 
-            // If team id is not set, default to the admin team
-            if (form.TeamIds == null)
-            {
-                var viewTeams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
-                foreach (var team in viewTeams)
-                {
-                    if (team.Name == "Admin")
-                    {
-                        form.TeamIds = new List<Guid>();
-                        form.TeamIds.Add((Guid) team.Id);
-                        break;
-                    }
-                }
-            }
-
-            // Check if the team already has a map. Still assumming each team has at most 1 map
+            // Check if the team already has a map.
             var existing = await _context.Maps
                 .ToListAsync(ct);
             
-            foreach (var m in existing)
+            if (form.TeamIds != null)
             {
-                // TODO more robust check here
-                if (m.TeamIds[0] == form.TeamIds[0])
-                    throw new ForbiddenException("Cannot assign multiple maps to a single team.");
+                foreach (var m in existing)
+                {
+                    foreach (var id in form.TeamIds)
+                        if (m.TeamIds.Contains(id))
+                            throw new ForbiddenException("Cannot assign multiple maps to a single team");
+                }
             }
 
             var mapIntermediate = _mapper.Map<VmMap>(form);
@@ -419,7 +404,7 @@ namespace Player.Vm.Api.Features.Vms
             var accessableMaps = new List<Domain.Models.VmMap>();
             foreach (var m in maps)
             {
-                if ((await _playerService.CanAccessTeamsAsync(m.TeamIds, ct)))
+                if ((await _playerService.CanAccessTeamsAsync(m.TeamIds, ct) || m.TeamIds.Count == 0))
                     accessableMaps.Add(m);
 
             }
