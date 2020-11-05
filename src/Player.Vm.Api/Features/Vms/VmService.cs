@@ -437,6 +437,9 @@ namespace Player.Vm.Api.Features.Vms
             if (vmMap == null)
                 return null;
 
+            if (vmMap.TeamIds.Count > 0  && !(await _playerService.CanAccessTeamsAsync(vmMap.TeamIds, ct)))
+                throw new ForbiddenException("You do not have access to this map");
+
             return _mapper.Map<VmMap>(vmMap);
         }
 
@@ -502,6 +505,9 @@ namespace Player.Vm.Api.Features.Vms
 
             if (vmMapEntity == null)
                 throw new EntityNotFoundException<VmMap>();
+
+            if (vmMapEntity.TeamIds.Count > 0 && !(await _playerService.CanManageTeamsAsync(vmMapEntity.TeamIds, false, ct)))
+                throw new ForbiddenException();
 
             _context.Maps.Remove(vmMapEntity);
             await _context.SaveChangesAsync(ct);
