@@ -8,38 +8,29 @@ Carnegie Mellon(R) and CERT(R) are registered in the U.S. Patent and Trademark O
 DM20-0181
 */
 
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 using Microsoft.EntityFrameworkCore;
-using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure.Internal;
-using Player.Vm.Api.Domain.Models;
-using Player.Vm.Api.Infrastructure.Extensions;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-namespace Player.Vm.Api.Data
+namespace Player.Vm.Api.Domain.Models
 {
-    public class VmContext : DbContext
+    public class Coordinate
     {
-        private DbContextOptions _options;
+        [Key]
+        [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+        public Guid Id { get; set; }
 
-        public VmContext(DbContextOptions options)
-            : base(options)
-        {
-            _options = options;
-        }
+        public double XPosition { get; set; }
 
-        public DbSet<Domain.Models.Vm> Vms { get; set; }
-        public DbSet<Team> Teams { get; set; }
-        public DbSet<VmTeam> VmTeams { get; set; }
-        public DbSet<VmMap> Maps { get; set; }
+        public double YPosition { get; set; }
 
-        protected override void OnModelCreating(ModelBuilder modelBuilder)
-        {
-            modelBuilder.ApplyConfigurations();
+        public double Radius { get; set; }
+        
+        public string Url { get; set; }
 
-            // Apply PostgreSQL specific options
-            if (_options.FindExtension<NpgsqlOptionsExtension>() != null)
-            {
-                modelBuilder.AddPostgresUUIDGeneration();
-                modelBuilder.UsePostgresCasing();
-            }
-        }
+        public string Label { get; set; }
     }
 }

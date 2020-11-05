@@ -255,5 +255,130 @@ namespace Player.Vm.Api.Features.Vms
             var result = await _mediator.Send(command);
             return Accepted(result);
         }
+
+        /// <summary>
+        /// Add a new map to a view
+        /// </summary>
+        /// <param name="viewId">The guid of the view to add the map to</param>
+        /// <param name="form">The data of the map to create</param>
+        /// <param name="ct"></param>
+        [HttpPost("views/{viewId}/map")]
+        [ProducesResponseType(typeof(VmMap), (int)HttpStatusCode.Created)]
+        [SwaggerOperation(OperationId = "createMap")]
+        public async Task<IActionResult> CreateMap([FromBody] VmMapCreateForm form, [FromRoute] Guid viewId, CancellationToken ct)
+        {            
+            var createdMap = await _vmService.CreateMapAsync(form, viewId, ct);
+            
+            return CreatedAtAction(nameof(this.GetMap), new { mapId = createdMap.Id }, createdMap);
+        }
+
+        /// <summary>
+        /// Get all maps in the system
+        /// </summary>
+        /// <param name="ct"></param>
+        [HttpGet("views/maps")]
+        [ProducesResponseType(typeof(IEnumerable<VmMap>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getAllMaps")]
+        public async Task<IActionResult> GetAllMaps(CancellationToken ct)
+        {
+            var maps = await _vmService.GetAllMapsAsync(ct);
+
+            return Ok(maps);
+        }
+
+        /// <summary>
+        /// Get all maps for a view
+        /// </summary>
+        /// <param name="viewId"></param>
+        /// <param name="ct"></param>
+        [HttpGet("views/maps/viewMaps/{viewId}")]
+        [ProducesResponseType(typeof(IEnumerable<VmMap>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getViewMaps")]
+        public async Task<IActionResult> GetViewMaps([FromRoute] Guid viewId, CancellationToken ct)
+        {
+            return Ok(await _vmService.GetViewMapsAsync(viewId, ct));
+        }
+
+        /// <summary>
+        /// Get a specific map by id
+        /// </summary>
+        /// <param name="mapId"> The guid of the map to retrieve </param>
+        /// <param name="ct"></param>
+        [HttpGet("views/maps/{mapId}")]
+        [ProducesResponseType(typeof(VmMap), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getMap")]
+        public async Task<IActionResult> GetMap([FromRoute] Guid mapId, CancellationToken ct)
+        {
+            var map = await _vmService.GetMapAsync(mapId, ct);
+
+            if (map == null)
+                return NotFound(map);
+
+            return Ok(map);
+        }
+
+        /// <summary>
+        /// Get a map for a specific team
+        /// </summary>
+        /// <param name="teamId"> The guid of the team to consider </param>
+        /// <param name="ct"></param>
+        [HttpGet("teams/{teamId}/map")]
+        [ProducesResponseType(typeof(VmMap), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getTeamMap")]
+        public async Task<IActionResult> GetTeamMap([FromRoute] Guid teamId, CancellationToken ct)
+        {
+            var map = await _vmService.GetTeamMapAsync(teamId, ct);
+
+            if (map == null)
+                return NotFound(map);
+            
+            return Ok(map);
+        }
+
+        /// <summary>
+        /// Update a map
+        /// </summary>
+        /// <param name="mapId"> The guid of the map to update </param>
+        /// <param name="form">The data of the map to update</param>
+        /// <param name="ct"></param>
+        [HttpPut("views/maps/{mapId}")]
+        [ProducesResponseType(typeof(VmMap), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "updateMap")]
+        public async Task<IActionResult> UpdateMap([FromBody] VmMapCreateForm form, [FromRoute] Guid mapId, CancellationToken ct)
+        {
+            var updated = await _vmService.UpdateMapAsync(form, mapId, ct);
+            return Ok(updated);
+        }
+
+        /// <summary>
+        /// Delete a map with the specified id
+        /// </summary>
+        /// <param name="mapId"> The guid of the map to delete </param>
+        /// <param name="ct"></param>
+        [HttpDelete("views/maps/{mapId}")]
+        [ProducesResponseType((int)HttpStatusCode.NoContent)]
+        [SwaggerOperation(OperationId = "deleteMap")]
+        public async Task<IActionResult> DeleteMap([FromRoute] Guid mapId, CancellationToken ct)
+        {
+            await _vmService.DeleteMapAsync(mapId, ct);
+            return NoContent();
+        }
+
+        /// <summary>
+        /// Get all the teams in a view
+        /// </summary>
+        /// <remarks>
+        /// Implemented to avoid calling Player API in VM UI app
+        /// </remarks>
+        /// <param name="viewId"> The guid of the view to consider </param>
+        /// <param name="ct"></param>
+        [HttpGet("views/{viewId}/teams")]
+        [ProducesResponseType(typeof(IEnumerable<SimpleTeam>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getTeams")]
+        public async Task<IActionResult> GetTeams([FromRoute] Guid viewId, CancellationToken ct)
+        {
+            var teams = await _vmService.GetTeamsAsync(viewId, ct);
+            return Ok(teams);
+        }
     }
 }

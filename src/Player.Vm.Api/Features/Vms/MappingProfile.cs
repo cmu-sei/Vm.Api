@@ -28,6 +28,27 @@ namespace Player.Vm.Api.Features.Vms
 
             CreateMap<VmCreateForm, Domain.Models.Vm>()
                 .ForMember(dest => dest.VmTeams, opt => opt.MapFrom(src => src.TeamIds.Select(x => new Domain.Models.VmTeam(x, src.Id.Value))));
+
+            CreateMap<VmMap, Domain.Models.VmMap>();
+
+            CreateMap<Domain.Models.VmMap, VmMap>();
+
+            CreateMap<VmMapCreateForm, Domain.Models.VmMap>()
+                .ForMember(dest => dest.Coordinates, opt => opt.Ignore());
+
+            CreateMap<CoordinateCreateForm, Domain.Models.Coordinate>();
+
+            CreateMap<Coordinate, Domain.Models.Coordinate>();
+
+            CreateMap<Domain.Models.Coordinate, Coordinate>();
+
+            CreateMap<VmMapCreateForm, VmMap>();
+
+            CreateMap<VmMap, VmMapCreateForm>();
+
+            CreateMap<CoordinateCreateForm, Coordinate>();
+
+            CreateMap<Coordinate, CoordinateCreateForm>();
         }
     }
 

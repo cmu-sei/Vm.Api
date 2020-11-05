@@ -30,6 +30,7 @@ namespace Player.Vm.Api.Features.Vms
 {
     public interface IVmService
     {
+
         Task<Vm[]> GetAllAsync(CancellationToken ct);
         Task<Vm> GetAsync(Guid id, CancellationToken ct);
         Task<IEnumerable<Vm>> GetByTeamIdAsync(Guid teamId, string name, bool includePersonal, bool onlyMine, CancellationToken ct);
@@ -39,6 +40,14 @@ namespace Player.Vm.Api.Features.Vms
         Task<bool> DeleteAsync(Guid id, CancellationToken ct);
         Task<bool> AddToTeamAsync(Guid vmId, Guid teamId, CancellationToken ct);
         Task<bool> RemoveFromTeamAsync(Guid vmId, Guid teamId, CancellationToken ct);
+        Task<VmMap> CreateMapAsync(VmMapCreateForm form, Guid viewId, CancellationToken ct);
+        Task<VmMap[]> GetAllMapsAsync(CancellationToken ct);
+        Task<VmMap> GetMapAsync(Guid mapId, CancellationToken ct);
+        Task<VmMap> GetTeamMapAsync(Guid teamId, CancellationToken ct);
+        Task<bool> DeleteMapAsync(Guid mapId, CancellationToken ct);
+        Task<VmMap> UpdateMapAsync(VmMapCreateForm form, Guid mapId, CancellationToken ct);
+        Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct);
+        Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct);
     }
 
     public class VmService : IVmService
@@ -335,6 +344,190 @@ namespace Player.Vm.Api.Features.Vms
             return true;
         }
 
+        public async Task<VmMap> CreateMapAsync(VmMapCreateForm form, Guid viewId, CancellationToken ct)
+        {   
+            try
+            {
+                await validateViewAndTeams(form, viewId, ct);
+
+            }
+            catch (Exception ex)
+            {
+                throw new ForbiddenException(ex.Message);
+            }
+
+            // If team id is not set, default to the admin team
+            if (form.TeamIds == null)
+            {
+                var viewTeams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
+                foreach (var team in viewTeams)
+                {
+                    if (team.Name == "Admin")
+                    {
+                        form.TeamIds = new List<Guid>();
+                        form.TeamIds.Add((Guid) team.Id);
+                        break;
+                    }
+                }
+            }
+
+            // Check if the team already has a map. Still assumming each team has at most 1 map
+            var existing = await _context.Maps
+                .ToListAsync(ct);
+            
+            foreach (var m in existing)
+            {
+                // TODO more robust check here
+                if (m.TeamIds[0] == form.TeamIds[0])
+                    throw new ForbiddenException("Cannot assign multiple maps to a single team.");
+            }
+
+            var mapIntermediate = _mapper.Map<VmMap>(form);
+            mapIntermediate.ViewId = viewId;
+
+            var mapEntity = _mapper.Map<Domain.Models.VmMap>(mapIntermediate);
+
+            _context.Maps.Add(mapEntity);
+            await _context.SaveChangesAsync(ct);
+
+            return _mapper.Map<VmMap>(mapEntity);
+        }
+
+        public async Task<VmMap[]> GetAllMapsAsync(CancellationToken ct)
+        {
+            if (!(await _playerService.IsSystemAdmin(ct)))
+                throw new ForbiddenException();
+            
+            var maps = await _context.Maps
+                .Include(x => x.Coordinates)
+                .ToListAsync(ct);
+
+            return _mapper.Map<VmMap[]>(maps);
+        }
+
+        public async Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct)
+        {
+            var maps = await _context.Maps
+                .Include(m => m.Coordinates)
+                .Where(m => m.ViewId == viewId)
+                .ToArrayAsync(ct);
+
+            if (maps == null)
+                return null;
+
+            // Only return the maps user has access to
+            var accessableMaps = new List<Domain.Models.VmMap>();
+            foreach (var m in maps)
+            {
+                if ((await _playerService.CanAccessTeamsAsync(m.TeamIds, ct)))
+                    accessableMaps.Add(m);
+
+            }
+            
+            return _mapper.Map<VmMap[]>(accessableMaps);
+        }
+
+        public async Task<VmMap> GetMapAsync(Guid mapId, CancellationToken ct)
+        {
+            var vmMap = await _context.Maps
+                .Include(m => m.Coordinates)
+                .Where(m => m.Id == mapId)
+                .SingleOrDefaultAsync(ct);
+
+            if (vmMap == null)
+                return null;
+
+            if (vmMap.TeamIds.Count > 0  && !(await _playerService.CanAccessTeamsAsync(vmMap.TeamIds, ct)))
+                throw new ForbiddenException("You do not have access to this map");
+
+            return _mapper.Map<VmMap>(vmMap);
+        }
+
+        public async Task<VmMap> GetTeamMapAsync(Guid teamId, CancellationToken ct)
+        {
+            // Check user can access this team
+            if (!(await _playerService.CanAccessTeamAsync(teamId, ct)))
+                throw new ForbiddenException();
+
+            var maps = await _context.Maps
+                .Include(m => m.Coordinates)
+                .ToListAsync();
+
+            foreach (Domain.Models.VmMap m in maps)
+            {
+                if (m.TeamIds.Contains(teamId))
+                    return _mapper.Map<VmMap>(m);
+            }
+            return null;
+        }
+
+        public async Task<VmMap> UpdateMapAsync(VmMapCreateForm form, Guid mapId, CancellationToken ct)
+        {
+            var vmMapEntity = await _context.Maps
+                .Where(m => m.Id == mapId)
+                .Include(m => m.Coordinates)
+                .SingleOrDefaultAsync(ct);
+
+            if (vmMapEntity == null)
+                throw new EntityNotFoundException<VmMap>();
+
+            try
+            {
+                await validateViewAndTeams(form, vmMapEntity.ViewId, ct);
+            }
+            catch (Exception ex)
+            {
+                throw new ForbiddenException(ex.Message);
+            }
+
+            vmMapEntity.Coordinates.Clear();
+            foreach (var coord in form.Coordinates)
+            {
+                var tempCoord = _mapper.Map<Domain.Models.Coordinate>(coord);
+                tempCoord.Id = Guid.Empty;
+
+                vmMapEntity.Coordinates.Add(tempCoord);
+            }
+
+            vmMapEntity = _mapper.Map(form, vmMapEntity);
+            
+            await _context.SaveChangesAsync(ct);
+
+            return _mapper.Map<VmMap>(vmMapEntity);
+        }
+
+        public async Task<bool> DeleteMapAsync(Guid mapId, CancellationToken ct)
+        {
+            var vmMapEntity = await _context.Maps
+                .Include(m => m.Coordinates)
+                .Where(m => m.Id == mapId)
+                .SingleOrDefaultAsync(ct);
+
+            if (vmMapEntity == null)
+                throw new EntityNotFoundException<VmMap>();
+
+            if (vmMapEntity.TeamIds.Count > 0 && !(await _playerService.CanManageTeamsAsync(vmMapEntity.TeamIds, false, ct)))
+                throw new ForbiddenException();
+
+            _context.Maps.Remove(vmMapEntity);
+            await _context.SaveChangesAsync(ct);
+
+            return true;
+        }
+
+        public async Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct)
+        {
+            var teams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
+
+            var retTeams = new List<SimpleTeam>();
+            foreach (var team in teams)
+            {
+                retTeams.Add(new SimpleTeam((Guid) team.Id, team.Name));
+            }
+
+            return retTeams.ToArray();
+        }
+
         #region Private
 
         // order the vms by name honoring trailing number as a number (i.e. abc1, abc2, abc10, abc11)
@@ -347,6 +540,41 @@ namespace Player.Vm.Api.Features.Vms
                 .ThenBy(v => v.Name.TrimEnd(numchars).Length < v.Name.Length ?
                             int.Parse(v.Name.Substring(v.Name.TrimEnd(numchars).Length)) : 0)
                 .ToList();
+        }
+
+        private async Task validateViewAndTeams(VmMapCreateForm form, Guid viewId, CancellationToken ct)
+        {
+            // Ensure view exists
+            try
+            {
+                await _playerService.GetViewByIdAsync(viewId, ct);
+            }
+            catch (Exception)
+            {
+                throw new ForbiddenException("View does not exist");
+            }
+
+            // If this map is being assigned to team(s), ensure that the user is allowed to do so
+            if (form.TeamIds != null && form.TeamIds.Count > 0)
+            {
+                var teams = form.TeamIds;
+
+                // Make sure all teams exist and are part of this view
+                var viewTeamsModels = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
+                var viewTeams = viewTeamsModels.Select(t => t.Id).ToList();
+                foreach(Guid teamId in teams)
+                {
+                    if (await _playerService.GetTeamById(teamId) == null)
+                        throw new ForbiddenException("Team with id " + teamId + " does not exist");
+
+                    if (!(viewTeams.Contains(teamId)))
+                        throw new ForbiddenException("Team with id " + teamId + " is not a member of the specified view");
+                }
+
+                // Check user can manage the teams
+                if (!(await _playerService.CanManageTeamsAsync(teams, true, ct)))
+                    throw new ForbiddenException();
+            } 
         }
 
         #endregion

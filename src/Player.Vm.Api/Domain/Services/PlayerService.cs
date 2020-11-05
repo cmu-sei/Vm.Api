@@ -31,6 +31,7 @@ namespace Player.Vm.Api.Domain.Services
         Task<Guid> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct);
         Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct);
+        Task<Team> GetTeamById(Guid id);
     }
 
     public class PlayerService : IPlayerService

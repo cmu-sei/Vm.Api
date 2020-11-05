@@ -8,38 +8,19 @@ Carnegie Mellon(R) and CERT(R) are registered in the U.S. Patent and Trademark O
 DM20-0181
 */
 
-using Microsoft.EntityFrameworkCore;
-using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure.Internal;
-using Player.Vm.Api.Domain.Models;
-using Player.Vm.Api.Infrastructure.Extensions;
+using System;
 
-namespace Player.Vm.Api.Data
+namespace Player.Vm.Api.Features.Vms
 {
-    public class VmContext : DbContext
+    public class SimpleTeam
     {
-        private DbContextOptions _options;
+        public Guid Id { get; set; }
+        public string Name { get; set; }
 
-        public VmContext(DbContextOptions options)
-            : base(options)
+        public SimpleTeam(Guid id, string name)
         {
-            _options = options;
-        }
-
-        public DbSet<Domain.Models.Vm> Vms { get; set; }
-        public DbSet<Team> Teams { get; set; }
-        public DbSet<VmTeam> VmTeams { get; set; }
-        public DbSet<VmMap> Maps { get; set; }
-
-        protected override void OnModelCreating(ModelBuilder modelBuilder)
-        {
-            modelBuilder.ApplyConfigurations();
-
-            // Apply PostgreSQL specific options
-            if (_options.FindExtension<NpgsqlOptionsExtension>() != null)
-            {
-                modelBuilder.AddPostgresUUIDGeneration();
-                modelBuilder.UsePostgresCasing();
-            }
+            this.Id = id;
+            this.Name = name;
         }
     }
 }

@@ -8,38 +8,24 @@ Carnegie Mellon(R) and CERT(R) are registered in the U.S. Patent and Trademark O
 DM20-0181
 */
 
+using System;
+using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 using Microsoft.EntityFrameworkCore;
-using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure.Internal;
-using Player.Vm.Api.Domain.Models;
-using Player.Vm.Api.Infrastructure.Extensions;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-namespace Player.Vm.Api.Data
+namespace Player.Vm.Api.Domain.Models
 {
-    public class VmContext : DbContext
+    public class VmMap 
     {
-        private DbContextOptions _options;
-
-        public VmContext(DbContextOptions options)
-            : base(options)
-        {
-            _options = options;
-        }
-
-        public DbSet<Domain.Models.Vm> Vms { get; set; }
-        public DbSet<Team> Teams { get; set; }
-        public DbSet<VmTeam> VmTeams { get; set; }
-        public DbSet<VmMap> Maps { get; set; }
-
-        protected override void OnModelCreating(ModelBuilder modelBuilder)
-        {
-            modelBuilder.ApplyConfigurations();
-
-            // Apply PostgreSQL specific options
-            if (_options.FindExtension<NpgsqlOptionsExtension>() != null)
-            {
-                modelBuilder.AddPostgresUUIDGeneration();
-                modelBuilder.UsePostgresCasing();
-            }
-        }
+        [Key]
+        [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
+        public Guid Id { get; set; }
+        public Guid ViewId { get; set; }
+        public virtual List<Coordinate> Coordinates { get; set; } = new List<Coordinate>();
+        public string Name { get; set; }
+        public string ImageUrl { get; set; }
+        public List<Guid> TeamIds { get; set; }
     }
 }
