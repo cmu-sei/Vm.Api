@@ -48,6 +48,7 @@ namespace Player.Vm.Api.Features.Vms
         Task<VmMap> UpdateMapAsync(VmMapCreateForm form, Guid mapId, CancellationToken ct);
         Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct);
         Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct);
+        Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct);
     }
 
     public class VmService : IVmService
@@ -56,17 +57,20 @@ namespace Player.Vm.Api.Features.Vms
         private readonly IPlayerService _playerService;
         private readonly ClaimsPrincipal _user;
         private readonly IMapper _mapper;
+        private readonly IPermissionsService _permissionsService;
 
         public VmService(
             VmContext context,
             IPlayerService playerService,
             IPrincipal user,
-            IMapper mapper)
+            IMapper mapper,
+            IPermissionsService permissionsService)
         {
             _context = context;
             _playerService = playerService;
             _user = user as ClaimsPrincipal;
             _mapper = mapper;
+            _permissionsService = permissionsService;
         }
 
         public async Task<Vm[]> GetAllAsync(CancellationToken ct)
@@ -88,19 +92,25 @@ namespace Player.Vm.Api.Features.Vms
                 .Where(v => v.Id == id)
                 .SingleOrDefaultAsync(ct);
 
-            if (vmEntity == null)
-                return null;
-
-            var teamIds = vmEntity.VmTeams.Select(x => x.TeamId);
-
-            if (!(await _playerService.CanAccessTeamsAsync(teamIds, ct)))
-                throw new ForbiddenException();
-
-            if (vmEntity.UserId.HasValue && vmEntity.UserId != _user.GetId() && !(await _playerService.CanManageTeamsAsync(teamIds, false, ct)))
-                throw new ForbiddenException("This machine belongs to another user");
-
+            await CanAccessVm(vmEntity, ct);
             var model = _mapper.Map<Vm>(vmEntity);
             return model;
+        }
+
+        public async Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct)
+        {
+            if (vm == null)
+                throw new EntityNotFoundException<Vm>();
+
+            var teamIds = vm.VmTeams.Select(x => x.TeamId);
+
+            if (!await _playerService.CanAccessTeamsAsync(teamIds, ct))
+                throw new ForbiddenException();
+
+            if (vm.UserId.HasValue && vm.UserId != _user.GetId() && !await _playerService.CanManageTeamsAsync(teamIds, false, ct))
+                throw new ForbiddenException("This machine belongs to another user");
+
+            return true;
         }
 
         public async Task<IEnumerable<Vm>> GetByTeamIdAsync(Guid teamId, string name, bool includePersonal, bool onlyMine, CancellationToken ct)
@@ -234,6 +244,9 @@ namespace Player.Vm.Api.Features.Vms
             if (!(await _playerService.CanManageTeamsAsync(formTeams, true, ct)))
                 throw new ForbiddenException();
 
+            if (!(await _permissionsService.CanWrite(formTeams, ct)))
+                throw new ForbiddenException();
+
             var teamList = await _context.Teams
                 .Where(t => formTeams.Contains(t.Id))
                 .Select(t => t.Id)
@@ -265,6 +278,9 @@ namespace Player.Vm.Api.Features.Vms
             if (!(await _playerService.CanManageTeamsAsync(teams, false, ct)))
                 throw new ForbiddenException();
 
+            if (!(await _permissionsService.CanWrite(teams, ct)))
+                throw new ForbiddenException();
+
             vmEntity = _mapper.Map(form, vmEntity);
 
             _context.Vms.Update(vmEntity);
@@ -288,6 +304,9 @@ namespace Player.Vm.Api.Features.Vms
             if (!(await _playerService.CanManageTeamsAsync(teamIds, false, ct)))
                 throw new ForbiddenException();
 
+            if (!(await _permissionsService.CanWrite(teamIds, ct)))
+                throw new ForbiddenException();
+
             _context.Vms.Remove(vmEntity);
             await _context.SaveChangesAsync(ct);
 
@@ -302,6 +321,9 @@ namespace Player.Vm.Api.Features.Vms
                 throw new EntityNotFoundException<Vm>();
 
             if (!(await _playerService.CanManageTeamAsync(teamId, ct)))
+                throw new ForbiddenException();
+
+            if (!(await _permissionsService.CanWrite(new[] { teamId }, ct)))
                 throw new ForbiddenException();
 
             var team = await _context.Teams.SingleOrDefaultAsync(t => t.Id == teamId, ct);
@@ -329,6 +351,9 @@ namespace Player.Vm.Api.Features.Vms
             if (!(await _playerService.CanManageTeamAsync(teamId, ct)))
                 throw new ForbiddenException();
 
+            if (!(await _permissionsService.CanWrite(new[] { teamId }, ct)))
+                throw new ForbiddenException();
+
             var vmteam = await _context.VmTeams.SingleOrDefaultAsync(vt => vt.VmId == vmId && vt.TeamId == teamId);
             var numTeams = await _context.VmTeams.Where(vt => vt.VmId == vmId).CountAsync();
 
@@ -345,7 +370,7 @@ namespace Player.Vm.Api.Features.Vms
         }
 
         public async Task<VmMap> CreateMapAsync(VmMapCreateForm form, Guid viewId, CancellationToken ct)
-        {   
+        {
             try
             {
                 await validateViewAndTeams(form, viewId, ct);
@@ -365,7 +390,7 @@ namespace Player.Vm.Api.Features.Vms
                     if (team.Name == "Admin")
                     {
                         form.TeamIds = new List<Guid>();
-                        form.TeamIds.Add((Guid) team.Id);
+                        form.TeamIds.Add((Guid)team.Id);
                         break;
                     }
                 }
@@ -374,7 +399,7 @@ namespace Player.Vm.Api.Features.Vms
             // Check if the team already has a map. Still assumming each team has at most 1 map
             var existing = await _context.Maps
                 .ToListAsync(ct);
-            
+
             foreach (var m in existing)
             {
                 // TODO more robust check here
@@ -397,7 +422,7 @@ namespace Player.Vm.Api.Features.Vms
         {
             if (!(await _playerService.IsSystemAdmin(ct)))
                 throw new ForbiddenException();
-            
+
             var maps = await _context.Maps
                 .Include(x => x.Coordinates)
                 .ToListAsync(ct);
@@ -423,7 +448,7 @@ namespace Player.Vm.Api.Features.Vms
                     accessableMaps.Add(m);
 
             }
-            
+
             return _mapper.Map<VmMap[]>(accessableMaps);
         }
 
@@ -437,7 +462,7 @@ namespace Player.Vm.Api.Features.Vms
             if (vmMap == null)
                 return null;
 
-            if (vmMap.TeamIds.Count > 0  && !(await _playerService.CanAccessTeamsAsync(vmMap.TeamIds, ct)))
+            if (vmMap.TeamIds.Count > 0 && !(await _playerService.CanAccessTeamsAsync(vmMap.TeamIds, ct)))
                 throw new ForbiddenException("You do not have access to this map");
 
             return _mapper.Map<VmMap>(vmMap);
@@ -490,7 +515,7 @@ namespace Player.Vm.Api.Features.Vms
             }
 
             vmMapEntity = _mapper.Map(form, vmMapEntity);
-            
+
             await _context.SaveChangesAsync(ct);
 
             return _mapper.Map<VmMap>(vmMapEntity);
@@ -522,7 +547,7 @@ namespace Player.Vm.Api.Features.Vms
             var retTeams = new List<SimpleTeam>();
             foreach (var team in teams)
             {
-                retTeams.Add(new SimpleTeam((Guid) team.Id, team.Name));
+                retTeams.Add(new SimpleTeam((Guid)team.Id, team.Name));
             }
 
             return retTeams.ToArray();
@@ -562,7 +587,7 @@ namespace Player.Vm.Api.Features.Vms
                 // Make sure all teams exist and are part of this view
                 var viewTeamsModels = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
                 var viewTeams = viewTeamsModels.Select(t => t.Id).ToList();
-                foreach(Guid teamId in teams)
+                foreach (Guid teamId in teams)
                 {
                     if (await _playerService.GetTeamById(teamId) == null)
                         throw new ForbiddenException("Team with id " + teamId + " does not exist");
@@ -574,7 +599,7 @@ namespace Player.Vm.Api.Features.Vms
                 // Check user can manage the teams
                 if (!(await _playerService.CanManageTeamsAsync(teams, true, ct)))
                     throw new ForbiddenException();
-            } 
+            }
         }
 
         #endregion

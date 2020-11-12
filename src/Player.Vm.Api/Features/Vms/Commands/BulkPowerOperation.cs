@@ -53,15 +53,18 @@ namespace Player.Vm.Api.Features.Vms
             private readonly IVsphereService _vsphereService;
             private readonly IPlayerService _playerService;
             private readonly VmContext _dbContext;
+            private readonly IPermissionsService _permissionsService;
 
             public Handler(
                 IVsphereService vsphereService,
                 IPlayerService playerService,
-                VmContext dbContext)
+                VmContext dbContext,
+                IPermissionsService permissionsService)
             {
                 _vsphereService = vsphereService;
                 _playerService = playerService;
                 _dbContext = dbContext;
+                _permissionsService = permissionsService;
             }
 
             public async Task<Response> Handle(Command request, CancellationToken cancellationToken)
@@ -86,9 +89,13 @@ namespace Player.Vm.Api.Features.Vms
                     {
                         errorsDict.Add(id, "Unsupported Operation");
                     }
-                    else if (!(await _playerService.CanAccessTeamsAsync(vm.VmTeams.Select(x => x.TeamId), cancellationToken)))
+                    else if (!await _playerService.CanAccessTeamsAsync(vm.VmTeams.Select(x => x.TeamId), cancellationToken))
                     {
                         errorsDict.Add(id, "Unauthorized");
+                    }
+                    else if (!await _permissionsService.CanWrite(vm.VmTeams.Select(x => x.TeamId), cancellationToken))
+                    {
+                        errorsDict.Add(id, "Insufficient Permissions");
                     }
                     else
                     {
@@ -105,7 +112,7 @@ namespace Player.Vm.Api.Features.Vms
 
                 if (request.Operation == PowerOperation.Shutdown)
                 {
-                    var results = await _vsphereService.BulkShutdown(request.Ids);
+                    var results = await _vsphereService.BulkShutdown(acceptedList.ToArray());
 
                     errorsDict = errorsDict
                         .Concat(results)
@@ -114,7 +121,7 @@ namespace Player.Vm.Api.Features.Vms
                 }
                 else
                 {
-                    await _vsphereService.BulkPowerOperation(request.Ids, request.Operation);
+                    await _vsphereService.BulkPowerOperation(acceptedList.ToArray(), request.Operation);
                 }
 
                 return new Response

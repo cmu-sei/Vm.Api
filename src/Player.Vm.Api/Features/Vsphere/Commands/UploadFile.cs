@@ -19,6 +19,10 @@ using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vms;
 using System.IO;
 using Microsoft.AspNetCore.Http;
+using AutoMapper;
+using Player.Vm.Api.Domain.Services;
+using System.Security.Principal;
+using Player.Vm.Api.Domain.Models;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -35,25 +39,25 @@ namespace Player.Vm.Api.Features.Vsphere
             public IFormFileCollection Files { get; set; }
         }
 
-        public class Handler : IRequestHandler<Command, string>
+        public class Handler : BaseHandler, IRequestHandler<Command, string>
         {
             private readonly IVsphereService _vsphereService;
-            private readonly IVmService _vmService;
 
             public Handler(
                 IVsphereService vsphereService,
-                IVmService vmService)
+                IVmService vmService,
+                IMapper mapper,
+                IPlayerService playerService,
+                IPrincipal principal,
+                IPermissionsService permissionsService) :
+                base(mapper, vsphereService, playerService, principal, permissionsService, vmService)
             {
                 _vsphereService = vsphereService;
-                _vmService = vmService;
             }
 
             public async Task<string> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await _vmService.GetAsync(request.Id, cancellationToken);
-
-                if (vm == null)
-                    throw new EntityNotFoundException<VsphereVirtualMachine>();
+                await base.GetVm(request.Id, Permissions.ReadOnly, cancellationToken);
 
                 foreach (var formFile in request.Files)
                 {

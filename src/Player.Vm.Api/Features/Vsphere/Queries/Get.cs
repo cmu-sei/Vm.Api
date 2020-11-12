@@ -57,8 +57,9 @@ namespace Player.Vm.Api.Features.Vsphere
                 VsphereOptions vsphereOptions,
                 IPrincipal user,
                 IPlayerApiClient playerClient,
-                IPlayerService playerService) :
-                base(mapper, vsphereService, playerService, user)
+                IPlayerService playerService,
+                IPermissionsService permissionsService) :
+                base(mapper, vsphereService, playerService, user, permissionsService, vmService)
             {
                 _vmService = vmService;
                 _mapper = mapper;

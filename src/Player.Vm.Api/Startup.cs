@@ -191,6 +191,7 @@ namespace Player.Vm.Api
             services.AddScoped<IVmService, VmService>();
             services.AddScoped<IPlayerService, PlayerService>();
             services.AddScoped<IViewService, ViewService>();
+            services.AddScoped<IPermissionsService, PermissionsService>();
             services.AddSingleton<IAuthenticationService, AuthenticationService>();
 
             // Vsphere Services
