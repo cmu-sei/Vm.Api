@@ -228,6 +228,9 @@ namespace Player.Vm.Api.Features.Vms
             var vmEntity = _mapper.Map<Domain.Models.Vm>(form);
             var formTeams = vmEntity.VmTeams.Select(v => v.TeamId).Distinct();
 
+            if (!formTeams.Any())
+                throw new ForbiddenException("Must include at least 1 team");
+
             if (!(await _playerService.CanManageTeamsAsync(formTeams, true, ct)))
                 throw new ForbiddenException();
 
