@@ -403,11 +403,13 @@ namespace Player.Vm.Api.Features.Vms
             if (maps == null)
                 return null;
 
+            var primTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, ct);
             // Only return the maps user has access to
             var accessableMaps = new List<Domain.Models.VmMap>();
             foreach (var m in maps)
             {
-                if ((await _playerService.CanAccessTeamsAsync(m.TeamIds, ct) || m.TeamIds.Count == 0))
+                if ((await _playerService.CanAccessTeamsAsync(m.TeamIds, ct) || 
+                    (m.TeamIds.Count == 0 && await _playerService.CanManageTeamAsync(primTeam, ct))))
                     accessableMaps.Add(m);
 
             }
