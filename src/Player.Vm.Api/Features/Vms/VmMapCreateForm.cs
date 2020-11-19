@@ -19,5 +19,6 @@ namespace Player.Vm.Api.Features.Vms
         public string Name { get; set; }
         public string ImageUrl { get; set; }
         public List<Guid> TeamIds { get; set; }
+        public Guid? Id { get; set; }
     }
 }
