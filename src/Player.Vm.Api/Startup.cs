@@ -32,7 +32,7 @@ using Microsoft.Extensions.Hosting;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using MediatR;
 using System.Reflection;
-using Player.Vm.Api.Hubs;
+using Player.Vm.Api.Features.Vms.Hubs;
 using System.Threading.Tasks;
 using Player.Vm.Api.Features.Shared.Behaviors;
 using Microsoft.IdentityModel.Logging;
@@ -186,6 +186,7 @@ namespace Player.Vm.Api
             services.AddScoped<IViewService, ViewService>();
             services.AddScoped<IPermissionsService, PermissionsService>();
             services.AddSingleton<IAuthenticationService, AuthenticationService>();
+            services.AddSingleton<IActiveVirtualMachineService, ActiveVirtualMachineService>();
 
             // Vsphere Services
             services.AddSingleton<ConnectionService>();

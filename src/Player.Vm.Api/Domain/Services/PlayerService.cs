@@ -26,6 +26,8 @@ namespace Player.Vm.Api.Domain.Services
         Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct);
         Task<Team> GetTeamById(Guid id);
         Task<IEnumerable<Permission>> GetPermissionsByViewIdAsync(Guid viewId, CancellationToken ct);
+        Task<User> GetUserById(Guid id, CancellationToken ct);
+        Task<IEnumerable<User>> GetUsersByTeamId(Guid teamId, CancellationToken ct);
     }
 
     public class PlayerService : IPlayerService
@@ -203,6 +205,16 @@ namespace Player.Vm.Api.Domain.Services
         {
             var permissions = await _playerApiClient.GetUserViewPermissionsAsync(viewId, _userId, ct);
             return permissions;
+        }
+
+        public async Task<User> GetUserById(Guid id, CancellationToken ct)
+        {
+            return await _playerApiClient.GetUserAsync(id, ct);
+        }
+
+        public async Task<IEnumerable<User>> GetUsersByTeamId(Guid teamId, CancellationToken ct)
+        {
+            return await _playerApiClient.GetTeamUsersAsync(teamId, ct);
         }
     }
 }
