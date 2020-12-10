@@ -45,7 +45,7 @@ namespace Player.Vm.Api.Features.Vms
         Task<VmMap> GetMapAsync(Guid mapId, CancellationToken ct);
         Task<VmMap> GetTeamMapAsync(Guid teamId, CancellationToken ct);
         Task<bool> DeleteMapAsync(Guid mapId, CancellationToken ct);
-        Task<VmMap> UpdateMapAsync(VmMapCreateForm form, Guid mapId, CancellationToken ct);
+        Task<VmMap> UpdateMapAsync(VmMapUpdateForm form, Guid mapId, CancellationToken ct);
         Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct);
         Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct);
     }
@@ -348,7 +348,7 @@ namespace Player.Vm.Api.Features.Vms
         {   
             try
             {
-                await validateViewAndTeams(form, viewId, ct);
+                await validateViewAndTeams(form.TeamIds, viewId, ct);
 
             }
             catch (Exception ex)
@@ -356,30 +356,18 @@ namespace Player.Vm.Api.Features.Vms
                 throw new ForbiddenException(ex.Message);
             }
 
-            // If team id is not set, default to the admin team
-            if (form.TeamIds == null)
-            {
-                var viewTeams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
-                foreach (var team in viewTeams)
-                {
-                    if (team.Name == "Admin")
-                    {
-                        form.TeamIds = new List<Guid>();
-                        form.TeamIds.Add((Guid) team.Id);
-                        break;
-                    }
-                }
-            }
-
-            // Check if the team already has a map. Still assumming each team has at most 1 map
+            // Check if the team already has a map.
             var existing = await _context.Maps
                 .ToListAsync(ct);
             
-            foreach (var m in existing)
+            if (form.TeamIds != null)
             {
-                // TODO more robust check here
-                if (m.TeamIds[0] == form.TeamIds[0])
-                    throw new ForbiddenException("Cannot assign multiple maps to a single team.");
+                foreach (var m in existing)
+                {
+                    foreach (var id in form.TeamIds)
+                        if (m.TeamIds.Contains(id))
+                            throw new ForbiddenException("Cannot assign multiple maps to a single team");
+                }
             }
 
             var mapIntermediate = _mapper.Map<VmMap>(form);
@@ -415,11 +403,13 @@ namespace Player.Vm.Api.Features.Vms
             if (maps == null)
                 return null;
 
+            var primTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, ct);
             // Only return the maps user has access to
             var accessableMaps = new List<Domain.Models.VmMap>();
             foreach (var m in maps)
             {
-                if ((await _playerService.CanAccessTeamsAsync(m.TeamIds, ct)))
+                if ((await _playerService.CanAccessTeamsAsync(m.TeamIds, ct) || 
+                    (m.TeamIds.Count == 0 && await _playerService.CanManageTeamAsync(primTeam, ct))))
                     accessableMaps.Add(m);
 
             }
@@ -461,7 +451,7 @@ namespace Player.Vm.Api.Features.Vms
             return null;
         }
 
-        public async Task<VmMap> UpdateMapAsync(VmMapCreateForm form, Guid mapId, CancellationToken ct)
+        public async Task<VmMap> UpdateMapAsync(VmMapUpdateForm form, Guid mapId, CancellationToken ct)
         {
             var vmMapEntity = await _context.Maps
                 .Where(m => m.Id == mapId)
@@ -473,7 +463,7 @@ namespace Player.Vm.Api.Features.Vms
 
             try
             {
-                await validateViewAndTeams(form, vmMapEntity.ViewId, ct);
+                await validateViewAndTeams(form.TeamIds, vmMapEntity.ViewId, ct);
             }
             catch (Exception ex)
             {
@@ -542,7 +532,7 @@ namespace Player.Vm.Api.Features.Vms
                 .ToList();
         }
 
-        private async Task validateViewAndTeams(VmMapCreateForm form, Guid viewId, CancellationToken ct)
+        private async Task validateViewAndTeams(List<Guid> teamIDs, Guid viewId, CancellationToken ct)
         {
             // Ensure view exists
             try
@@ -555,14 +545,12 @@ namespace Player.Vm.Api.Features.Vms
             }
 
             // If this map is being assigned to team(s), ensure that the user is allowed to do so
-            if (form.TeamIds != null && form.TeamIds.Count > 0)
+            if (teamIDs != null && teamIDs.Count > 0)
             {
-                var teams = form.TeamIds;
-
                 // Make sure all teams exist and are part of this view
                 var viewTeamsModels = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
                 var viewTeams = viewTeamsModels.Select(t => t.Id).ToList();
-                foreach(Guid teamId in teams)
+                foreach(Guid teamId in teamIDs)
                 {
                     if (await _playerService.GetTeamById(teamId) == null)
                         throw new ForbiddenException("Team with id " + teamId + " does not exist");
@@ -572,7 +560,7 @@ namespace Player.Vm.Api.Features.Vms
                 }
 
                 // Check user can manage the teams
-                if (!(await _playerService.CanManageTeamsAsync(teams, true, ct)))
+                if (!(await _playerService.CanManageTeamsAsync(teamIDs, true, ct)))
                     throw new ForbiddenException();
             } 
         }

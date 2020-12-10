@@ -13,12 +13,11 @@ using System.Collections.Generic;
 
 namespace Player.Vm.Api.Features.Vms
 {
-    public class VmMapCreateForm
+    public class VmMapUpdateForm
     {
         public IEnumerable<CoordinateCreateForm> Coordinates { get; set; }
         public string Name { get; set; }
         public string ImageUrl { get; set; }
         public List<Guid> TeamIds { get; set; }
-        public Guid? Id { get; set; }
     }
 }
