@@ -375,7 +375,7 @@ namespace Player.Vm.Api.Features.Vms
         [HttpPut("views/maps/{mapId}")]
         [ProducesResponseType(typeof(VmMap), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "updateMap")]
-        public async Task<IActionResult> UpdateMap([FromBody] VmMapCreateForm form, [FromRoute] Guid mapId, CancellationToken ct)
+        public async Task<IActionResult> UpdateMap([FromBody] VmMapUpdateForm form, [FromRoute] Guid mapId, CancellationToken ct)
         {
             var updated = await _vmService.UpdateMapAsync(form, mapId, ct);
             return Ok(updated);

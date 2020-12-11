@@ -49,6 +49,9 @@ namespace Player.Vm.Api.Features.Vms
             CreateMap<CoordinateCreateForm, Coordinate>();
 
             CreateMap<Coordinate, CoordinateCreateForm>();
+
+            CreateMap<VmMapUpdateForm, Domain.Models.VmMap>()
+                .ForMember(dest => dest.Coordinates, opt => opt.Ignore());
         }
     }
 
