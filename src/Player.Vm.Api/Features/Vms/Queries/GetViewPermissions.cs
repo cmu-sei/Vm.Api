@@ -13,48 +13,37 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using System.Runtime.Serialization;
-using System.Text.Json.Serialization;
-using Player.Vm.Api.Infrastructure.Exceptions;
-using AutoMapper;
-using Player.Vm.Api.Domain.Vsphere.Services;
-using Player.Vm.Api.Features.Vms;
-using Player.Vm.Api.Features.Shared.Interfaces;
+using Player.Vm.Api.Data;
+using System.Linq;
+using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Domain.Services;
-using System.Security.Principal;
+using System.Collections.Generic;
+using Player.Api.Models;
 using Player.Vm.Api.Domain.Models;
 
-namespace Player.Vm.Api.Features.Vsphere
+namespace Player.Vm.Api.Features.Vms
 {
-    public class Reboot
+    public class GetViewPermissions
     {
-        [DataContract(Name = "RebootVsphereVirtualMachine")]
-        public class Command : IRequest<string>, ICheckTasksRequest
+        [DataContract(Name = "GetViewPermissions")]
+        public class Query : IRequest<IEnumerable<Permissions>>
         {
-            [JsonIgnore]
             public Guid Id { get; set; }
         }
 
-        public class Handler : BaseHandler, IRequestHandler<Command, string>
+        public class Handler : IRequestHandler<Query, IEnumerable<Permissions>>
         {
-            private readonly IVsphereService _vsphereService;
+            private readonly IPermissionsService _permissionsService;
 
             public Handler(
-                IVsphereService vsphereService,
-                IVmService vmService,
-                IMapper mapper,
-                IPlayerService playerService,
-                IPrincipal principal,
-                IPermissionsService permissionsService) :
-                base(mapper, vsphereService, playerService, principal, permissionsService, vmService)
+                IPermissionsService permissionsService)
             {
-                _vsphereService = vsphereService;
+                _permissionsService = permissionsService;
             }
 
-            public async Task<string> Handle(Command request, CancellationToken cancellationToken)
+            public async Task<IEnumerable<Permissions>> Handle(Query request, CancellationToken cancellationToken)
             {
-                var vm = await base.GetVm(request.Id, Permissions.ReadOnly, cancellationToken);
-
-                return await _vsphereService.RebootVm(vm.Id);
+                return await _permissionsService.GetViewPermissions(request.Id, cancellationToken);
             }
         }
     }

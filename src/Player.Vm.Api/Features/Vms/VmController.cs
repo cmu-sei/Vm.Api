@@ -18,6 +18,7 @@ using System.Threading.Tasks;
 using Swashbuckle.AspNetCore.Annotations;
 using Player.Vm.Api.Domain.Vsphere.Models;
 using MediatR;
+using Player.Vm.Api.Domain.Models;
 
 namespace Player.Vm.Api.Features.Vms
 {
@@ -67,6 +68,36 @@ namespace Player.Vm.Api.Features.Vms
                 return NotFound(vm);
 
             return Ok(vm);
+        }
+
+        /// <summary>
+        /// Retrieve vm permissions by view
+        /// </summary>
+        /// <param name="id">The Id of the View</param>
+        /// <param name="ct"></param>
+        /// <returns></returns>
+        [HttpGet("views/{id}/permissions")]
+        [ProducesResponseType(typeof(IEnumerable<Permissions>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getViewPermissions")]
+        public async Task<IActionResult> GetViewPermissions(Guid id, CancellationToken ct)
+        {
+            var result = await _mediator.Send(new GetViewPermissions.Query { Id = id }, ct);
+            return Ok(result);
+        }
+
+        /// <summary>
+        /// Retrieve permissions of a single Vm by Id
+        /// </summary>
+        /// <param name="id">The Id of the Vm</param>
+        /// <param name="ct"></param>
+        /// <returns></returns>
+        [HttpGet("vms/{id}/permissions")]
+        [ProducesResponseType(typeof(IEnumerable<Permissions>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getVmPermissions")]
+        public async Task<IActionResult> GetVmPermissions(Guid id, CancellationToken ct)
+        {
+            var result = await _mediator.Send(new GetVmPermissions.Query { Id = id }, ct);
+            return Ok(result);
         }
 
         /// <summary>
@@ -266,9 +297,9 @@ namespace Player.Vm.Api.Features.Vms
         [ProducesResponseType(typeof(VmMap), (int)HttpStatusCode.Created)]
         [SwaggerOperation(OperationId = "createMap")]
         public async Task<IActionResult> CreateMap([FromBody] VmMapCreateForm form, [FromRoute] Guid viewId, CancellationToken ct)
-        {            
+        {
             var createdMap = await _vmService.CreateMapAsync(form, viewId, ct);
-            
+
             return CreatedAtAction(nameof(this.GetMap), new { mapId = createdMap.Id }, createdMap);
         }
 
@@ -331,7 +362,7 @@ namespace Player.Vm.Api.Features.Vms
 
             if (map == null)
                 return NotFound(map);
-            
+
             return Ok(map);
         }
 

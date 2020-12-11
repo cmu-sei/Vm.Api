@@ -21,6 +21,7 @@ using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Domain.Services;
 using System.Security.Principal;
+using Player.Vm.Api.Domain.Models;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -45,8 +46,9 @@ namespace Player.Vm.Api.Features.Vsphere
                 IVmService vmService,
                 IMapper mapper,
                 IPlayerService playerService,
-                IPrincipal principal) :
-                base(mapper, vsphereService, playerService, principal)
+                IPrincipal principal,
+                IPermissionsService permissionsService) :
+                base(mapper, vsphereService, playerService, principal, permissionsService, vmService)
             {
                 _vsphereService = vsphereService;
                 _vmService = vmService;
@@ -55,11 +57,7 @@ namespace Player.Vm.Api.Features.Vsphere
 
             public async Task<VsphereVirtualMachine> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await _vmService.GetAsync(request.Id, cancellationToken);
-
-                if (vm == null)
-                    throw new EntityNotFoundException<VsphereVirtualMachine>();
-
+                var vm = await base.GetVm(request.Id, Permissions.ReadOnly, cancellationToken);
                 await _vsphereService.ReconfigureVm(request.Id, Feature.iso, "", request.Iso);
 
                 return await base.GetVsphereVirtualMachine(vm, cancellationToken);
