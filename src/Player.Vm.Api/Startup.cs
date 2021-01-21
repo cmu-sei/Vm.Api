@@ -44,6 +44,7 @@ namespace Player.Vm.Api
         private readonly AuthorizationOptions _authOptions = new AuthorizationOptions();
         private readonly ClientOptions _clientOptions = new ClientOptions();
         private readonly IdentityClientOptions _identityClientOptions = new IdentityClientOptions();
+        private string _pathbase;
 
         public IConfiguration Configuration { get; }
 
@@ -53,6 +54,7 @@ namespace Player.Vm.Api
             Configuration.GetSection("Authorization").Bind(_authOptions);
             Configuration.GetSection("ClientSettings").Bind(_clientOptions);
             Configuration.GetSection("IdentityClient").Bind(_identityClientOptions);
+            _pathbase = Configuration["PathBase"];
         }
 
         // This method gets called by the runtime. Use this method to add services to the container.
@@ -218,7 +220,7 @@ namespace Player.Vm.Api
             {
                 IdentityModelEventSource.ShowPII = true;
             }
-
+            app.UsePathBase(_pathbase);
             app.UseCustomExceptionHandler();
             app.UseRouting();
             app.UseCors();
