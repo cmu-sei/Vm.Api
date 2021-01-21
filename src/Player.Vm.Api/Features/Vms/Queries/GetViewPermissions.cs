@@ -6,12 +6,8 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using System.Runtime.Serialization;
-using Player.Vm.Api.Data;
-using System.Linq;
-using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Domain.Services;
 using System.Collections.Generic;
-using Player.Api.Models;
 using Player.Vm.Api.Domain.Models;
 
 namespace Player.Vm.Api.Features.Vms

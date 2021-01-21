@@ -14,7 +14,7 @@ using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Events;
 using Player.Vm.Api.Domain.Services;
-using Player.Vm.Api.Hubs;
+using Player.Vm.Api.Features.Vms.Hubs;
 
 namespace Player.Vm.Api.Features.Vms.EventHandlers
 {

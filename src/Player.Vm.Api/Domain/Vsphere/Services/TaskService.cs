@@ -14,7 +14,7 @@ using NetVimClient;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Domain.Vsphere.Models;
-using Player.Vm.Api.Hubs;
+using Player.Vm.Api.Features.Vms.Hubs;
 using Microsoft.Extensions.DependencyInjection;
 using Player.Vm.Api.Data;
 using Microsoft.EntityFrameworkCore;
