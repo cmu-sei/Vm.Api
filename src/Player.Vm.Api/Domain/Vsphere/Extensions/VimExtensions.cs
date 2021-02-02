@@ -139,8 +139,13 @@ namespace Player.Vm.Api.Domain.Vsphere.Extensions
 
         public static object GetProperty(this ObjectContent content, string name)
         {
-            return content
-                .propSet.Where(p => p.name == name)
+            if (content.propSet == null)
+            {
+                return null;
+            }
+
+            return content.propSet
+                .Where(p => p.name == name)
                 .Select(p => p.val)
                 .SingleOrDefault();
         }
