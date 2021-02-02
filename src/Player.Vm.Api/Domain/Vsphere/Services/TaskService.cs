@@ -114,7 +114,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
                 catch (Exception ex)
                 {
-                    this._logger.LogError(ex.Message);
+                    this._logger.LogError(ex, "Exception in processTasks");
                 }
             }
         }
@@ -139,8 +139,14 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 {
                     try
                     {
-                        var vmRef = ((ManagedObjectReference)task.GetProperty("info.entity")).Value;
-                        var vmId = _connectionService.GetVmIdByRef(vmRef);
+                        Guid? vmId = null;
+                        var vmRef = task.GetProperty("info.entity") != null ? ((ManagedObjectReference)task.GetProperty("info.entity")).Value : null;
+
+                        if (vmRef != null)
+                        {
+                            vmId = _connectionService.GetVmIdByRef(vmRef);
+                        }
+
                         var broadcastTime = DateTime.UtcNow.ToString();
                         var taskId = task.GetProperty("info.key") != null ? task.GetProperty("info.key").ToString() : "";
                         var taskType = task.GetProperty("info.descriptionId") != null ? task.GetProperty("info.descriptionId").ToString() : "";
@@ -186,7 +192,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     }
                     catch (Exception ex)
                     {
-                        this._logger.LogError(ex.Message);
+                        this._logger.LogError(ex, "Exception processing task");
                     }
                 }
 
