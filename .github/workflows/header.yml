@@ -1,0 +1,46 @@
+name: Header_Check
+
+on:
+  pull_request:
+    branches:
+      - development
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          ref: ${{ github.head_ref }}
+        
+      - uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+          architecture: 'x64'
+          
+      - name: Check for and Add Headers
+        run: |
+          python ./.github/workflows/script.py
+          
+      - name: Git Diff
+        id: git_diff
+        run: |
+          FILESCHANGED=$(git diff --quiet || echo "TRUE")
+          echo "FILESCHANGED=$FILESCHANGED" >> $GITHUB_ENV     
+          
+      - name: Commit and push files
+        if: env.FILESCHANGED == 'TRUE'
+        run: |
+          echo "fils have been changed"
+          git config user.name github-actions
+          git config user.email github-actions@github.com
+          git commit -m "Add changes" -a
+
+      - name: Push changes
+        if: env.FILESCHANGED == 'TRUE'
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: ${{ github.head_ref }}
+      
