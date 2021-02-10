@@ -55,6 +55,7 @@ jobs:
         context: .
         file: ./Dockerfile
         push: true
+        pull: true
         tags: ${{ steps.prep.outputs.tags }}
         labels: |
           org.opencontainers.image.source=${{ github.event.repository.clone_url }}
