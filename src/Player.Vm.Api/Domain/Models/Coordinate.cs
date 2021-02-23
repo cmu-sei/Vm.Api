@@ -22,7 +22,7 @@ namespace Player.Vm.Api.Domain.Models
 
         public double Radius { get; set; }
         
-        public string Url { get; set; }
+        public string[] Urls { get; set; }
 
         public string Label { get; set; }
     }
