@@ -15,8 +15,6 @@ using Player.Vm.Api.Infrastructure.Options;
 using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Security.Principal;
-using Player.Api;
-using System.Net.Http;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc.Authorization;
 using System.Text.Json.Serialization;
@@ -36,6 +34,9 @@ using Player.Vm.Api.Features.Vms.Hubs;
 using System.Threading.Tasks;
 using Player.Vm.Api.Features.Shared.Behaviors;
 using Microsoft.IdentityModel.Logging;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Player.Vm.Api.Domain.Services.HealthChecks;
 
 namespace Player.Vm.Api
 {
@@ -44,6 +45,7 @@ namespace Player.Vm.Api
         private readonly AuthorizationOptions _authOptions = new AuthorizationOptions();
         private readonly ClientOptions _clientOptions = new ClientOptions();
         private readonly IdentityClientOptions _identityClientOptions = new IdentityClientOptions();
+        private const string _routePrefix = "api";
         private string _pathbase;
 
         public IConfiguration Configuration { get; }
@@ -60,6 +62,18 @@ namespace Player.Vm.Api
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
         {
+            services.AddSingleton<TaskServiceHealthCheck>();
+            services.AddSingleton<ConnectionServiceHealthCheck>();
+            services.AddHealthChecks()
+                .AddCheck<TaskServiceHealthCheck>(
+                    "task_service_responsive",
+                    failureStatus: HealthStatus.Unhealthy,
+                    tags: new[] { "live" })
+                .AddCheck<ConnectionServiceHealthCheck>(
+                    "connection_service_responsive",
+                    failureStatus: HealthStatus.Unhealthy,
+                    tags: new[] { "live" });
+
             var provider = Configuration["Database:Provider"];
             switch (provider)
             {
@@ -74,6 +88,20 @@ namespace Player.Vm.Api
                     services.AddDbContextPool<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
                         .AddInterceptors(serviceProvider.GetRequiredService<EventTransactionInterceptor>())
                         .UseConfiguredDatabase(Configuration));
+                    break;
+            }
+
+            var connectionString = Configuration.GetConnectionString(Configuration.GetValue<string>("Database:Provider", "Sqlite").Trim());
+            switch (provider)
+            {
+                case "Sqlite":
+                    services.AddHealthChecks().AddSqlite(connectionString, tags: new[] { "ready", "live" });
+                    break;
+                case "SqlServer":
+                    services.AddHealthChecks().AddSqlServer(connectionString, tags: new[] { "ready", "live" });
+                    break;
+                case "PostgreSQL":
+                    services.AddHealthChecks().AddNpgSql(connectionString, tags: new[] { "ready", "live" });
                     break;
             }
 
@@ -230,6 +258,15 @@ namespace Player.Vm.Api
             app.UseEndpoints(endpoints =>
             {
                 endpoints.MapControllers();
+                endpoints.MapHealthChecks($"/{_routePrefix}/health/ready", new HealthCheckOptions()
+                {
+                    Predicate = (check) => check.Tags.Contains("ready"),
+                });
+
+                endpoints.MapHealthChecks($"/{_routePrefix}/health/live", new HealthCheckOptions()
+                {
+                    Predicate = (check) => check.Tags.Contains("live"),
+                });
                 endpoints.MapHub<ProgressHub>("/hubs/progress");
                 endpoints.MapHub<VmHub>("/hubs/vm");
             });
@@ -239,7 +276,7 @@ namespace Player.Vm.Api
             // Enable middleware to serve swagger-ui (HTML, JS, CSS, etc.), specifying the Swagger JSON endpoint.
             app.UseSwaggerUI(c =>
             {
-                c.RoutePrefix = "api";
+                c.RoutePrefix = _routePrefix;
                 c.SwaggerEndpoint("/swagger/v1/swagger.json", "Player VM API V1");
                 c.OAuthClientId(_authOptions.ClientId);
                 c.OAuthClientSecret(_authOptions.ClientSecret);

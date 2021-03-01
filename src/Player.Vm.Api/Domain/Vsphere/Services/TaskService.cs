@@ -21,6 +21,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Linq;
 using Nito.AsyncEx;
 using Player.Vm.Api.Infrastructure.Extensions;
+using Player.Vm.Api.Domain.Services.HealthChecks;
 
 namespace Player.Vm.Api.Domain.Vsphere.Services
 {
@@ -46,6 +47,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private ConcurrentDictionary<string, List<Notification>> _runningTasks = new ConcurrentDictionary<string, List<Notification>>();
         private AsyncAutoResetEvent _resetEvent = new AsyncAutoResetEvent(false);
         private bool _tasksPending = false;
+        private readonly TaskServiceHealthCheck _taskServiceHealthCheck;
 
 
         public TaskService(
@@ -54,7 +56,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 IHubContext<ProgressHub> progressHub,
                 IConnectionService connectionService,
                 IMachineStateService machineStateService,
-                IServiceProvider serviceProvider
+                IServiceProvider serviceProvider,
+                TaskServiceHealthCheck taskServiceHealthCheck
             )
         {
             _optionsMonitor = optionsMonitor;
@@ -63,6 +66,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _connectionService = connectionService;
             _serviceProvider = serviceProvider;
             _machineStateService = machineStateService;
+            _taskServiceHealthCheck = taskServiceHealthCheck;
+            _taskServiceHealthCheck.HealthAllowance = _optionsMonitor.CurrentValue.HealthAllowanceSeconds;
         }
 
         protected override async Task ExecuteAsync(CancellationToken cancellationToken)
@@ -94,9 +99,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     _options.ReCheckTaskProgressIntervalMilliseconds :
                     _options.CheckTaskProgressIntervalMilliseconds;
 
+                _taskServiceHealthCheck.CompletedRun();
                 await _resetEvent.WaitAsync(new TimeSpan(0, 0, 0, 0, intervalMilliseconds));
-            }
-        }
+            }        }
 
         public void CheckTasks()
         {
