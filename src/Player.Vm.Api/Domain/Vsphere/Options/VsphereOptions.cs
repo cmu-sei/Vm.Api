@@ -21,5 +21,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
         public int Timeout { get; set; }
         public int CheckTaskProgressIntervalMilliseconds { get; set; }
         public int ReCheckTaskProgressIntervalMilliseconds { get; set; }
+        public int HealthAllowanceSeconds { get; set; }
     }
 }

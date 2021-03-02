@@ -21,6 +21,7 @@ using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Domain.Models;
 using Nito.AsyncEx;
 using Player.Vm.Api.Infrastructure.Extensions;
+using Player.Vm.Api.Domain.Services.HealthChecks;
 
 namespace Player.Vm.Api.Domain.Vsphere.Services
 {
@@ -59,17 +60,21 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private object _lock = new object();
         private AsyncAutoResetEvent _resetEvent = new AsyncAutoResetEvent(false);
         private bool _forceReload = false;
+        private readonly ConnectionServiceHealthCheck _connectionServiceHealthCheck;
 
         public ConnectionService(
                 IOptionsMonitor<VsphereOptions> vsphereOptionsMonitor,
                 ILogger<ConnectionService> logger,
-                IServiceProvider serviceProvider
+                IServiceProvider serviceProvider,
+                ConnectionServiceHealthCheck connectionServiceHealthCheck
             )
         {
             _options = vsphereOptionsMonitor.CurrentValue;
             _optionsMonitor = vsphereOptionsMonitor;
             _logger = logger;
             _serviceProvider = serviceProvider;
+            _connectionServiceHealthCheck = connectionServiceHealthCheck;
+            _connectionServiceHealthCheck.HealthAllowance = _options.HealthAllowanceSeconds;
         }
 
         public VimPortTypeClient GetClient()
@@ -179,7 +184,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     _logger.LogError(ex, "Exception encountered in ConnectionService loop");
                     count = 0;
                 }
-
+                _connectionServiceHealthCheck.CompletedRun();
                 await _resetEvent.WaitAsync(new TimeSpan(0, 0, _options.ConnectionRetryIntervalSeconds));
                 count++;
             }
