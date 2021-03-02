@@ -182,10 +182,11 @@ namespace Player.Vm.Api.Features.Vms
             }
             else
             {
-                var vmQuery = _context.VmTeams
-                .Where(v => teamIds.Contains(v.TeamId))
-                .Select(v => v.Vm)
-                .Distinct();
+                // We need to include team ids because sorting by team ids in front end requires having the team ids
+                var vmQuery = _context.Vms
+                    .Include(v => v.VmTeams)
+                    .Where(v => v.VmTeams.Any(vt => teamIds.Contains(vt.TeamId)))
+                    .Distinct();
 
                 if (!includePersonal)
                 {
