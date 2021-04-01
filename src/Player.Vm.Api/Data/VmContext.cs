@@ -2,6 +2,7 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Infrastructure.Internal;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Infrastructure.Extensions;
@@ -22,6 +23,7 @@ namespace Player.Vm.Api.Data
         public DbSet<Team> Teams { get; set; }
         public DbSet<VmTeam> VmTeams { get; set; }
         public DbSet<VmMap> Maps { get; set; }
+        public DbSet<Player.Api.Client.WebhookEvent> WebhookEvents { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

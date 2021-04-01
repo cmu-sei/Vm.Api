@@ -10,7 +10,7 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace Player.Vm.Api.Domain.Models
 {
-    public class VmMap 
+    public class VmMap
     {
         [Key]
         [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
@@ -20,5 +20,17 @@ namespace Player.Vm.Api.Domain.Models
         public string Name { get; set; }
         public string ImageUrl { get; set; }
         public List<Guid> TeamIds { get; set; }
+
+        public VmMap Clone()
+        {
+            var clone = this.MemberwiseClone() as VmMap;
+            clone.Id = Guid.Empty;
+            clone.Coordinates = new List<Coordinate>();
+            foreach (var coord in this.Coordinates)
+            {
+                clone.Coordinates.Add(coord.Clone());
+            }
+            return clone;
+        }
     }
 }
