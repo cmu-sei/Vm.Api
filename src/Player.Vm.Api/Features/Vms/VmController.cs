@@ -420,7 +420,6 @@ namespace Player.Vm.Api.Features.Vms
         public async Task<IActionResult> CloneMaps([FromRoute] Guid parentId, [FromRoute] Guid childId, CancellationToken ct)
         {
             var maps = await _vmService.CloneMaps(parentId, childId, ct);
-            // return Ok();
             return CreatedAtAction(nameof(this.GetViewMaps), new {viewId = childId}, maps);
         }
     }

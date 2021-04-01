@@ -557,7 +557,8 @@ namespace Player.Vm.Api.Features.Vms
             foreach (var map in maps)
             {
                 var clone = map;
-                clone.Id = Guid.Empty;
+                // Set id manually so we can return the IDs of the new maps
+                clone.Id = Guid.NewGuid();
                 clone.ViewId = childId;
 
                 var teamNames = parentTeams
