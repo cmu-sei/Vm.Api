@@ -404,5 +404,24 @@ namespace Player.Vm.Api.Features.Vms
             var teams = await _vmService.GetTeamsAsync(viewId, ct);
             return Ok(teams);
         }
+
+        /// <summary>
+        /// Clones the maps associated with a view after that view is cloned
+        /// </summary>
+        /// <remarks>
+        /// Called by Player API after cloning a view
+        /// </remarks>
+        /// <param name="parentId"> The id of the view that was cloned</param>
+        /// <param name="childId"> The id of newly created view</param>
+        /// <param name="ct"></param>
+        [HttpPost("views/{parentId}/clone/{childId}")]
+        [ProducesResponseType(typeof(IEnumerable<VmMap>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "cloneMaps")]
+        public async Task<IActionResult> CloneMaps([FromRoute] Guid parentId, [FromRoute] Guid childId, CancellationToken ct)
+        {
+            var maps = await _vmService.CloneMaps(parentId, childId, ct);
+            return Ok();
+            // return CreatedAtAction(nameof(this.GetMap), maps);
+        }
     }
 }

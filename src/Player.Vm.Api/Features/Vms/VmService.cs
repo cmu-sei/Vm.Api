@@ -42,6 +42,7 @@ namespace Player.Vm.Api.Features.Vms
         Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct);
         Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct);
         Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct);
+        Task<VmMap[]> CloneMaps(Guid parentId, Guid childId, CancellationToken ct);
     }
 
     public class VmService : IVmService
@@ -535,6 +536,47 @@ namespace Player.Vm.Api.Features.Vms
             }
 
             return retTeams.ToArray();
+        }
+
+        public async Task<VmMap[]> CloneMaps(Guid parentId, Guid childId, CancellationToken ct)
+        {
+            // TODO: Authentication. Optimize if possible
+
+            // Get maps assigned to parent view
+            var maps = await _context.Maps
+                .Where(m => m.ViewId == parentId)
+                .Include(m => m.Coordinates)
+                .ToListAsync();
+
+            // Views can't have duplicate teams, so use HashSet for constant time lookups
+            var parentTeams = (await _playerService.GetTeamsByViewIdAsync(parentId, ct)).ToHashSet();
+            var childTeams = (await _playerService.GetTeamsByViewIdAsync(childId, ct)).ToHashSet();
+            var clonedMaps = new List<VmMap>();
+
+            // Create clones of maps assigned to the child view
+            foreach (var map in maps)
+            {
+                var clone = map;
+                clone.Id = Guid.Empty;
+                clone.ViewId = childId;
+
+                var teamNames = parentTeams
+                    .Where(t => map.TeamIds.Contains((Guid) t.Id))
+                    .Select(t => t.Name);
+                
+                var cloneTeamIds = childTeams
+                    .Where(t => teamNames.Contains(t.Name))
+                    .Select(t => (Guid) t.Id);
+
+                clone.TeamIds = cloneTeamIds.ToList();
+
+                _context.Maps.Add(clone);
+                clonedMaps.Add(_mapper.Map<Domain.Models.VmMap, VmMap>(clone));
+            }
+
+            await _context.SaveChangesAsync();
+
+            return clonedMaps.ToArray();
         }
 
         #region Private
