@@ -415,13 +415,13 @@ namespace Player.Vm.Api.Features.Vms
         /// <param name="childId"> The id of newly created view</param>
         /// <param name="ct"></param>
         [HttpPost("views/{parentId}/clone/{childId}")]
-        [ProducesResponseType(typeof(IEnumerable<VmMap>), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(IEnumerable<VmMap>), (int)HttpStatusCode.Created)]
         [SwaggerOperation(OperationId = "cloneMaps")]
         public async Task<IActionResult> CloneMaps([FromRoute] Guid parentId, [FromRoute] Guid childId, CancellationToken ct)
         {
             var maps = await _vmService.CloneMaps(parentId, childId, ct);
-            return Ok();
-            // return CreatedAtAction(nameof(this.GetMap), maps);
+            // return Ok();
+            return CreatedAtAction(nameof(this.GetViewMaps), new {viewId = childId}, maps);
         }
     }
 }
