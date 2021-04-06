@@ -4,13 +4,13 @@
 using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging;
 using Player.Vm.Api.Infrastructure.Options;
-using Player.Api;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Player.Api.Client;
 
 namespace Player.Vm.Api.Domain.Services
 {
@@ -20,7 +20,7 @@ namespace Player.Vm.Api.Domain.Services
         Task<Guid[]> GetViewIdsForTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
     }
 
-    public class ViewService : IViewService, IDisposable
+    public class ViewService : IViewService
     {
         private readonly IPlayerApiClient _playerApiClient;
         private readonly IMemoryCache _cache;
@@ -38,8 +38,7 @@ namespace Player.Vm.Api.Domain.Services
             var playerUri = new Uri(clientOptions.urls.playerApi);
             var httpClient = httpClientFactory.CreateClient("player-admin");
             httpClient.BaseAddress = playerUri;
-            var playerApiClient = new PlayerApiClient(httpClient, true);
-            playerApiClient.BaseUri = playerUri;
+            var playerApiClient = new PlayerApiClient(httpClient);
             _playerApiClient = playerApiClient;
         }
 
@@ -82,11 +81,6 @@ namespace Player.Vm.Api.Domain.Services
             }
 
             return viewIds.ToArray();
-        }
-
-        public void Dispose()
-        {
-            _playerApiClient.Dispose();
         }
     }
 }

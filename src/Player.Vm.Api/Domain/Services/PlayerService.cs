@@ -2,9 +2,8 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using Microsoft.AspNetCore.Http;
+using Player.Api.Client;
 using Player.Vm.Api.Infrastructure.Extensions;
-using Player.Api;
-using Player.Api.Models;
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -47,7 +46,7 @@ namespace Player.Vm.Api.Domain.Services
         {
             var user = await _playerApiClient.GetUserAsync(_userId);
 
-            return user.IsSystemAdmin.Value;
+            return user.IsSystemAdmin;
         }
 
         public async Task<bool> CanManageTeamsAsync(IEnumerable<Guid> teamIds, bool all, CancellationToken ct)
@@ -72,7 +71,7 @@ namespace Player.Vm.Api.Domain.Services
                         _teamCache.Add(teamId, team);
                     }
 
-                    if (team.CanManage.Value)
+                    if (team.CanManage)
                     {
                         teamDict[teamId] = true;
 
@@ -112,7 +111,7 @@ namespace Player.Vm.Api.Domain.Services
                         _teamCache.Add(teamId, team);
                     }
 
-                    if (team.CanManage.Value || team.IsPrimary.Value)
+                    if (team.CanManage || team.IsPrimary)
                         return true;
                 }
                 catch (Exception ex)
@@ -134,13 +133,13 @@ namespace Player.Vm.Api.Domain.Services
 
             foreach (Team team in teams)
             {
-                if (!_teamCache.ContainsKey(team.Id.Value))
+                if (!_teamCache.ContainsKey(team.Id))
                 {
-                    _teamCache.Add(team.Id.Value, team);
+                    _teamCache.Add(team.Id, team);
                 }
             }
 
-            return teams.Where(t => (t.IsPrimary.HasValue && t.IsPrimary.Value) || t.CanManage.Value);
+            return teams.Where(t => t.IsPrimary || t.CanManage);
         }
 
         public async Task<Guid> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct)
@@ -149,15 +148,15 @@ namespace Player.Vm.Api.Domain.Services
 
             foreach (Team team in teams)
             {
-                if (!_teamCache.ContainsKey(team.Id.Value))
+                if (!_teamCache.ContainsKey(team.Id))
                 {
-                    _teamCache.Add(team.Id.Value, team);
+                    _teamCache.Add(team.Id, team);
                 }
             }
 
             return teams
-                .Where(t => t.IsPrimary.Value)
-                .Select(t => t.Id.Value)
+                .Where(t => t.IsPrimary)
+                .Select(t => t.Id)
                 .FirstOrDefault();
         }
 

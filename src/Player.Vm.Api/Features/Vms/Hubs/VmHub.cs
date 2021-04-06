@@ -10,6 +10,7 @@ using Player.Vm.Api.Infrastructure.Extensions;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
+using Player.Api.Client;
 
 namespace Player.Vm.Api.Features.Vms.Hubs
 {
@@ -67,12 +68,12 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
             var teams = await _playerService.GetTeamsByViewIdAsync(viewId, Context.ConnectionAborted);
 
-            var teamTaskDict = new Dictionary<Guid, Task<IEnumerable<Player.Api.Models.User>>>();
+            var teamTaskDict = new Dictionary<Guid, Task<IEnumerable<User>>>();
 
             foreach (var team in teams)
             {
-                var task = _playerService.GetUsersByTeamId(team.Id.Value, Context.ConnectionAborted);
-                teamTaskDict.Add(team.Id.Value, task);
+                var task = _playerService.GetUsersByTeamId(team.Id, Context.ConnectionAborted);
+                teamTaskDict.Add(team.Id, task);
             }
 
             await Task.WhenAll(teamTaskDict.Values);
@@ -87,14 +88,14 @@ namespace Player.Vm.Api.Features.Vms.Hubs
                 foreach (var user in users)
                 {
                     Guid? activeVmId = null;
-                    var activeVm = _activeVirtualMachineService.GetActiveVirtualMachineForUser(user.Id.Value);
+                    var activeVm = _activeVirtualMachineService.GetActiveVirtualMachineForUser(user.Id);
 
                     if (activeVm != null && activeVm.TeamIds.Contains(teamId))
                     {
                         activeVmId = activeVm.VmId;
                     }
 
-                    vmUsers.Add(new VmUser(user.Id.Value, user.Name, activeVmId));
+                    vmUsers.Add(new VmUser(user.Id, user.Name, activeVmId));
                 }
 
                 vmUserTeams.Add(new VmUserTeam(teamId, team.Name, vmUsers.ToArray()));
