@@ -16,9 +16,8 @@ using Player.Vm.Api.Domain.Vsphere.Options;
 using System.Security.Claims;
 using System.Security.Principal;
 using Player.Vm.Api.Infrastructure.Extensions;
-using Player.Api;
-using System.Linq;
 using Player.Vm.Api.Domain.Services;
+using Player.Api.Client;
 
 namespace Player.Vm.Api.Features.Vsphere
 {

@@ -157,7 +157,7 @@ namespace Player.Vm.Api.Features.Vms
         {
             List<Domain.Models.Vm> vmList = new List<Domain.Models.Vm>();
             var teams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
-            var teamIds = teams.Select(t => t.Id.Value);
+            var teamIds = teams.Select(t => t.Id);
 
             if (onlyMine)
             {
@@ -172,11 +172,11 @@ namespace Player.Vm.Api.Features.Vms
                 if (vmList.Count > 1)
                 {
                     // Order by vm on user's primary team, since workstation app only looks at first result currently
-                    var primaryTeam = teams.FirstOrDefault(t => t.IsPrimary.Value);
+                    var primaryTeam = teams.FirstOrDefault(t => t.IsPrimary);
 
                     if (primaryTeam != null)
                     {
-                        vmList = vmList.OrderByDescending(v => v.VmTeams.Select(x => x.TeamId).Contains(primaryTeam.Id.Value)).ToList();
+                        vmList = vmList.OrderByDescending(v => v.VmTeams.Select(x => x.TeamId).Contains(primaryTeam.Id)).ToList();
                     }
                 }
             }
@@ -378,7 +378,7 @@ namespace Player.Vm.Api.Features.Vms
             // Check if the team already has a map.
             var existing = await _context.Maps
                 .ToListAsync(ct);
-            
+
             if (form.TeamIds != null)
             {
                 foreach (var m in existing)
@@ -427,7 +427,7 @@ namespace Player.Vm.Api.Features.Vms
             var accessableMaps = new List<Domain.Models.VmMap>();
             foreach (var m in maps)
             {
-                if ((await _playerService.CanAccessTeamsAsync(m.TeamIds, ct) || 
+                if ((await _playerService.CanAccessTeamsAsync(m.TeamIds, ct) ||
                     (m.TeamIds.Count == 0 && await _playerService.CanManageTeamAsync(primTeam, ct))))
                     accessableMaps.Add(m);
 

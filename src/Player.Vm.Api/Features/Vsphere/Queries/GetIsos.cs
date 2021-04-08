@@ -13,8 +13,8 @@ using Player.Vm.Api.Features.Vms;
 using System.Collections.Generic;
 using Player.Vm.Api.Domain.Services;
 using System.Linq;
-using Player.Api.Models;
 using Player.Vm.Api.Domain.Vsphere.Models;
+using Player.Api.Client;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -115,7 +115,7 @@ namespace Player.Vm.Api.Features.Vsphere
 
                 foreach (var team in teams)
                 {
-                    isoTaskDict.Add(team.Id.Value, _vsphereService.GetIsos(viewId.ToString(), team.Id.Value.ToString()));
+                    isoTaskDict.Add(team.Id, _vsphereService.GetIsos(viewId.ToString(), team.Id.ToString()));
                 }
 
                 var tasks = new List<Task>();
@@ -128,7 +128,7 @@ namespace Player.Vm.Api.Features.Vsphere
 
                 var isoResult = new IsoResult
                 {
-                    ViewId = view.Id.Value,
+                    ViewId = view.Id,
                     ViewName = view.Name
                 };
 

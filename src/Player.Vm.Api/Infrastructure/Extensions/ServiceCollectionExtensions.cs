@@ -5,10 +5,10 @@
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.OpenApi.Models;
+using Player.Api.Client;
 using Player.Vm.Api.Infrastructure.HttpHandlers;
 using Player.Vm.Api.Infrastructure.OperationFilters;
 using Player.Vm.Api.Infrastructure.Options;
-using Player.Api;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -132,10 +132,7 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                 httpClient.BaseAddress = playerUri;
                 httpClient.DefaultRequestHeaders.Add("Authorization", authHeader);
 
-                var playerApiClient = new PlayerApiClient(httpClient, true)
-                {
-                    BaseUri = playerUri
-                };
+                var playerApiClient = new PlayerApiClient(httpClient);
 
                 return playerApiClient;
             });
