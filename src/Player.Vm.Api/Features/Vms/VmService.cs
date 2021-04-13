@@ -42,7 +42,7 @@ namespace Player.Vm.Api.Features.Vms
         Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct);
         Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct);
         Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct);
-        Task<VmMap[]> CloneMaps(Guid parentId, Guid childId, CancellationToken ct);
+        Task<VmMap[]> CloneMaps(Features.Vms.ViewCloned form, CancellationToken ct);
     }
 
     public class VmService : IVmService
@@ -538,19 +538,22 @@ namespace Player.Vm.Api.Features.Vms
             return retTeams.ToArray();
         }
 
-        public async Task<VmMap[]> CloneMaps(Guid parentId, Guid childId, CancellationToken ct)
+        public async Task<VmMap[]> CloneMaps(Features.Vms.ViewCloned form, CancellationToken ct)
         {
             // TODO: Authentication. Optimize if possible
 
+            if (form.ParentId == Guid.Empty)
+                return null;
+
             // Get maps assigned to parent view
             var maps = await _context.Maps
-                .Where(m => m.ViewId == parentId)
+                .Where(m => m.ViewId == form.ParentId)
                 .Include(m => m.Coordinates)
                 .ToListAsync();
 
             // Views can't have duplicate teams, so use HashSet for constant time lookups
-            var parentTeams = (await _playerService.GetTeamsByViewIdAsync(parentId, ct)).ToHashSet();
-            var childTeams = (await _playerService.GetTeamsByViewIdAsync(childId, ct)).ToHashSet();
+            var parentTeams = (await _playerService.GetTeamsByViewIdAsync(form.ParentId, ct)).ToHashSet();
+            var childTeams = (await _playerService.GetTeamsByViewIdAsync(form.ViewId, ct)).ToHashSet();
             var clonedMaps = new List<VmMap>();
 
             // Create clones of maps assigned to the child view
@@ -559,7 +562,7 @@ namespace Player.Vm.Api.Features.Vms
                 var clone = map;
                 // Set id manually so we can return the IDs of the new maps
                 clone.Id = Guid.NewGuid();
-                clone.ViewId = childId;
+                clone.ViewId = form.ViewId;
 
                 var teamNames = parentTeams
                     .Where(t => map.TeamIds.Contains((Guid) t.Id))
