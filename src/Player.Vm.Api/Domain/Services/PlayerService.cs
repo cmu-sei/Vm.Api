@@ -38,7 +38,15 @@ namespace Player.Vm.Api.Domain.Services
         public PlayerService(IHttpContextAccessor httpContextAccessor, IPlayerApiClient playerApiClient)
         {
             _teamCache = new Dictionary<Guid, Team>();
-            _userId = httpContextAccessor.HttpContext.User.GetId();
+            // This probably isn't the best way to prevent crashes when using client_credentials flow but it works for now
+            try
+            {
+                _userId = httpContextAccessor.HttpContext.User.GetId();
+            }
+            catch (Exception e)
+            {
+                _userId = Guid.Empty;
+            }
             _playerApiClient = playerApiClient;
         }
 
