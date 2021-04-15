@@ -40,7 +40,6 @@ namespace Player.Vm.Api.Features.Vms
         Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct);
         Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct);
         Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct);
-        Task<VmMap[]> CloneMaps(ViewCreated form, CancellationToken ct);
     }
 
     public class VmService : IVmService
@@ -534,51 +533,6 @@ namespace Player.Vm.Api.Features.Vms
             }
 
             return retTeams.ToArray();
-        }
-
-        public async Task<VmMap[]> CloneMaps(ViewCreated form, CancellationToken ct)
-        {
-            // TODO: Authentication. Optimize if possible
-
-            if (form.ParentId == Guid.Empty)
-                return null;
-
-            // Get maps assigned to parent view
-            var maps = await _context.Maps
-                .Where(m => m.ViewId == form.ParentId)
-                .Include(m => m.Coordinates)
-                .ToListAsync();
-
-            // Views can't have duplicate teams, so use HashSet for constant time lookups
-            var parentTeams = (await _playerService.GetTeamsByViewIdAsync(form.ParentId, ct)).ToHashSet();
-            var childTeams = (await _playerService.GetTeamsByViewIdAsync(form.ViewId, ct)).ToHashSet();
-            var clonedMaps = new List<VmMap>();
-
-            // Create clones of maps assigned to the child view
-            foreach (var map in maps)
-            {
-                var clone = map;
-                // Set id manually so we can return the IDs of the new maps
-                clone.Id = Guid.NewGuid();
-                clone.ViewId = form.ViewId;
-
-                var teamNames = parentTeams
-                    .Where(t => map.TeamIds.Contains((Guid) t.Id))
-                    .Select(t => t.Name);
-                
-                var cloneTeamIds = childTeams
-                    .Where(t => teamNames.Contains(t.Name))
-                    .Select(t => (Guid) t.Id);
-
-                clone.TeamIds = cloneTeamIds.ToList();
-
-                _context.Maps.Add(clone);
-                clonedMaps.Add(_mapper.Map<Domain.Models.VmMap, VmMap>(clone));
-            }
-
-            await _context.SaveChangesAsync();
-
-            return clonedMaps.ToArray();
         }
 
         #region Private

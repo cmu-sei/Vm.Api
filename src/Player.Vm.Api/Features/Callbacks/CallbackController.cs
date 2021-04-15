@@ -39,19 +39,7 @@ namespace Player.Vm.Api.Features.Callbacks
         [SwaggerOperation(OperationId = "respond")]
         public async Task<IActionResult> Respond([FromBody] WebhookEvent evt, CancellationToken ct)
         {
-            Task task;
-            switch (evt.Name)
-            {
-                case "View Created":
-                    // Since payload field is of type object, the json serialization in player makes it into string containing json
-                    var payload = JsonConvert.DeserializeObject<ViewCreated>(evt.Payload.ToString());
-                    task = new Task(async payload => await _vmService.CloneMaps((ViewCreated) payload, ct), payload, new CancellationToken());
-                    _backgroundService.AddEvent(task);
-                    break;
-                case "View Deleted":
-                    throw new NotImplementedException();
-            }
-
+            _backgroundService.AddEvent(evt);
             return Accepted();
         }
     }
