@@ -4,18 +4,16 @@
 using AutoMapper;
 using AutoMapper.QueryableExtensions;
 using Microsoft.EntityFrameworkCore;
+using Player.Api.Client;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Services;
-using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Infrastructure.Extensions;
-using Player.Vm.Api.Infrastructure.Options;
 using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Claims;
 using System.Security.Principal;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -42,7 +40,7 @@ namespace Player.Vm.Api.Features.Vms
         Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct);
         Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct);
         Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct);
-        Task<VmMap[]> CloneMaps(Features.Vms.ViewCloned form, CancellationToken ct);
+        Task<VmMap[]> CloneMaps(ViewCreated form, CancellationToken ct);
     }
 
     public class VmService : IVmService
@@ -538,7 +536,7 @@ namespace Player.Vm.Api.Features.Vms
             return retTeams.ToArray();
         }
 
-        public async Task<VmMap[]> CloneMaps(Features.Vms.ViewCloned form, CancellationToken ct)
+        public async Task<VmMap[]> CloneMaps(ViewCreated form, CancellationToken ct)
         {
             // TODO: Authentication. Optimize if possible
 

@@ -37,6 +37,7 @@ using Microsoft.IdentityModel.Logging;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Player.Vm.Api.Domain.Services.HealthChecks;
+using Player.Vm.Api.Infrastructure.BackgroundServices;
 
 namespace Player.Vm.Api
 {
@@ -215,6 +216,7 @@ namespace Player.Vm.Api
             services.AddScoped<IPlayerService, PlayerService>();
             services.AddScoped<IViewService, ViewService>();
             services.AddScoped<IPermissionsService, PermissionsService>();
+            services.AddScoped<ICallbackBackgroundService, CallbackBackgroundService>();
             services.AddSingleton<IAuthenticationService, AuthenticationService>();
             services.AddSingleton<IActiveVirtualMachineService, ActiveVirtualMachineService>();
 

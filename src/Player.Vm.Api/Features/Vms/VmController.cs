@@ -404,30 +404,5 @@ namespace Player.Vm.Api.Features.Vms
             var teams = await _vmService.GetTeamsAsync(viewId, ct);
             return Ok(teams);
         }
-
-        /// <summary>
-        /// Clones the maps associated with a view after that view is cloned
-        /// </summary>
-        /// <remarks>
-        /// Called by Player API after cloning a view
-        /// </remarks>
-        /// <param name="form">A form containing the parant and child viewIds</param>
-        /// <param name="ct"></param>
-        [HttpPost("callbacks/player/viewCloned")]
-        [ProducesResponseType(typeof(IEnumerable<VmMap>), (int)HttpStatusCode.Created)]
-        [SwaggerOperation(OperationId = "cloneMaps")]
-        [AllowAnonymous]
-        public async Task<IActionResult> CloneMaps([FromBody] ViewCloned form, CancellationToken ct)
-        {
-            var maps = await _vmService.CloneMaps(form, ct);
-            return CreatedAtAction(nameof(this.GetViewMaps), new {viewId = form.ViewId}, maps);
-        }
-    }
-
-    // PLACEHOLDER - use shared code once that works
-    public class ViewCloned
-    {
-        public Guid ViewId { get; set; }
-        public Guid ParentId {get; set; }
     }
 }
