@@ -40,9 +40,10 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                     Type = SecuritySchemeType.OAuth2,
                     Flows = new OpenApiOAuthFlows
                     {
-                        Implicit = new OpenApiOAuthFlow
+                        AuthorizationCode = new OpenApiOAuthFlow
                         {
                             AuthorizationUrl = new Uri(authOptions.AuthorizationUrl),
+                            TokenUrl = new Uri(authOptions.TokenUrl),
                             Scopes = new Dictionary<string, string>()
                             {
                                 {authOptions.AuthorizationScope, "public api access"}
