@@ -7,6 +7,7 @@ namespace Player.Vm.Api.Infrastructure.Options
     {
         public string Authority { get; set; }
         public string AuthorizationUrl { get; set; }
+        public string TokenUrl { get; set; }
         public string AuthorizationScope { get; set; }
         public string ClientId { get; set; }
         public string ClientName { get; set; }
