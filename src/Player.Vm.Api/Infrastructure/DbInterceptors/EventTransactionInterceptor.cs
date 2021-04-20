@@ -11,6 +11,7 @@ using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 using Microsoft.EntityFrameworkCore.Diagnostics;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Player.Vm.Api.Domain.Events;
@@ -87,6 +88,16 @@ namespace Player.Vm.Api.Infrastructure.DbInterceptors
                     {
                         case EntityState.Added:
                             eventType = typeof(EntityCreated<>).MakeGenericType(entityType);
+
+                            // Make sure db generated properties are set on the Entity
+                            var generatedProperties = entry.Properties
+                                .Where(x => x.Metadata.ValueGenerated == ValueGenerated.OnAdd)
+                                .ToList();
+
+                            foreach (var generatedProperty in generatedProperties)
+                            {
+                                entityType.GetProperty(generatedProperty.Metadata.Name).SetValue(entry.Entity, generatedProperty.CurrentValue);
+                            }
                             break;
                         case EntityState.Modified:
                             eventType = typeof(EntityUpdated<>).MakeGenericType(entityType);
