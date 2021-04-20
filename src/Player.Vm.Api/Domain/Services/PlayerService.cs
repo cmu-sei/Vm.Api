@@ -45,7 +45,7 @@ namespace Player.Vm.Api.Domain.Services
             }
             catch (Exception e)
             {
-                _userId = Guid.Empty;
+                _userId = new Guid("9fd3c38e-58b0-4af1-80d1-1895af91f1f9");
             }
             _playerApiClient = playerApiClient;
         }
