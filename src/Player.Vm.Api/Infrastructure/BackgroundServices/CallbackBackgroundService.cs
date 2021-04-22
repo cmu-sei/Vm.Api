@@ -77,12 +77,9 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
                     .Where(m => m.ViewId == form.ParentId)
                     .Include(m => m.Coordinates)
                     .ToListAsync();
-                
-                _logger.LogWarning("Maps queried");
 
                 if (maps.Count == 0)
                 {
-                    _logger.LogWarning("Parent had no maps");
                     return null;
                 }
                     
@@ -90,8 +87,6 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
                 var parentTeams = (await playerClient.GetViewTeamsAsync(form.ParentId)).ToHashSet();
                 var childTeams = (await playerClient.GetViewTeamsAsync(form.ViewId)).ToHashSet();
                 var clonedMaps = new List<VmMap>();
-
-                _logger.LogWarning("Parent and child teams retrieved");
 
                 // Create clones of maps assigned to the child view
                 foreach (var map in maps)
@@ -114,15 +109,11 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
                     context.Maps.Add(clone);
                     clonedMaps.Add(_mapper.Map<Domain.Models.VmMap, VmMap>(clone));
                 }
-
-                _logger.LogWarning("For loop complete");
                 
                 var added = context.ChangeTracker.Entries().Where(e => e.State == EntityState.Added);
                 var updated = context.ChangeTracker.Entries().Where(e => e.State == EntityState.Modified);
 
                 await context.SaveChangesAsync(ct);
-
-                _logger.LogWarning("Changes saved in db");
 
                 return clonedMaps.ToArray();
             }
