@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
@@ -16,6 +17,7 @@ using Player.Api.Client;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms;
+using Player.Vm.Api.Infrastructure.Options;
 
 namespace Player.Vm.Api.Infrastructure.BackgroundServices
 {
@@ -29,17 +31,17 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
     {
         private ActionBlock<WebhookEvent> _eventQueue;
         private readonly IServiceScopeFactory _scopeFactory;
-        private readonly IPlayerService _playerService;
         private readonly IMapper _mapper;
         private readonly ILogger<CallbackBackgroundService> _logger;
+        private readonly IHttpClientFactory _clientFactory;
 
-        public CallbackBackgroundService(IServiceScopeFactory scopeFactory, IPlayerService playerService, IMapper mapper, ILogger<CallbackBackgroundService> logger)
+        public CallbackBackgroundService(IServiceScopeFactory scopeFactory, IMapper mapper, ILogger<CallbackBackgroundService> logger, IHttpClientFactory clientFactory)
         {
             _scopeFactory = scopeFactory;
-            _playerService = playerService;
             _mapper = mapper;
             _logger = logger;
-            
+            _clientFactory = clientFactory;
+
             _eventQueue = new ActionBlock<WebhookEvent>(async e => {
                 switch (e.Name)
                 {
@@ -64,8 +66,11 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
             using (var scope = _scopeFactory.CreateScope())
             {
                 var context = scope.ServiceProvider.GetRequiredService<VmContext>();
-                // var playerService = scope.ServiceProvider.GetRequiredService<PlayerService>();
-                // var mapper = scope.ServiceProvider.GetRequiredService<Mapper>();
+                var clientOptions = scope.ServiceProvider.GetRequiredService<ClientOptions>();
+
+                var client = _clientFactory.CreateClient("player-admin");
+                client.BaseAddress = new Uri(clientOptions.urls.playerApi);
+                var playerClient = new PlayerApiClient(client);
                 
                 // Get maps assigned to parent view
                 var maps = await context.Maps
@@ -75,12 +80,15 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
                 
                 _logger.LogWarning("Maps queried");
 
-                // if (maps.Count == 0)
-                //     return null;
-
+                if (maps.Count == 0)
+                {
+                    _logger.LogWarning("Parent had no maps");
+                    return null;
+                }
+                    
                 // Views can't have duplicate teams, so use HashSet for constant time lookups
-                var parentTeams = (await _playerService.GetTeamsByViewIdAsync(form.ParentId, ct)).ToHashSet();
-                var childTeams = (await _playerService.GetTeamsByViewIdAsync(form.ViewId, ct)).ToHashSet();
+                var parentTeams = (await playerClient.GetViewTeamsAsync(form.ParentId)).ToHashSet();
+                var childTeams = (await playerClient.GetViewTeamsAsync(form.ViewId)).ToHashSet();
                 var clonedMaps = new List<VmMap>();
 
                 _logger.LogWarning("Parent and child teams retrieved");
@@ -111,7 +119,7 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
                 
                 var added = context.ChangeTracker.Entries().Where(e => e.State == EntityState.Added);
                 var updated = context.ChangeTracker.Entries().Where(e => e.State == EntityState.Modified);
-                
+
                 await context.SaveChangesAsync(ct);
 
                 _logger.LogWarning("Changes saved in db");

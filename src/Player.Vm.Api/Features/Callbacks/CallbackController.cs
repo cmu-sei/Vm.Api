@@ -33,11 +33,12 @@ namespace Player.Vm.Api.Features.Callbacks
         /// <summary>
         /// Receive a webhook event
         /// </summary>
+        /// <param name="evt"></param>
         /// <param name="ct"></param>
         [HttpPost("api/callback")]
         [ProducesResponseType((int) HttpStatusCode.Accepted)]
         [SwaggerOperation(OperationId = "respond")]
-        public async Task<IActionResult> Respond([FromBody] WebhookEvent evt, CancellationToken ct)
+        public IActionResult Respond([FromBody] WebhookEvent evt, CancellationToken ct)
         {
             _backgroundService.AddEvent(evt);
             return Accepted();
