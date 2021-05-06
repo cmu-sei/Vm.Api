@@ -46,11 +46,13 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
                 {
                     case "View Created":
                         // Since payload field is of type object, the json serialization in player makes it into string containing json
-                        var payload = JsonConvert.DeserializeObject<ViewCreated>(e.Payload.ToString());
-                        await CloneMaps(payload, new CancellationToken());
+                        var payloadCreate = JsonConvert.DeserializeObject<ViewCreated>(e.Payload.ToString());
+                        await CloneMaps(payloadCreate, new CancellationToken());
                         break;
                     case "View Deleted":
-                        throw new NotImplementedException();
+                        var payloadDelete = JsonConvert.DeserializeObject<ViewDeleted>(e.Payload.ToString());
+                        await DeleteClonedMaps(payloadDelete.ViewId, new CancellationToken());
+                        break;
                 }
             });
         }
@@ -111,6 +113,31 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
     
                 await context.SaveChangesAsync(ct);
                 return clonedMaps.ToArray();
+            }
+        }
+
+        // Delete all maps associated with the deleted view
+        private async Task DeleteClonedMaps(Guid viewId, CancellationToken ct)
+        {
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var context = scope.ServiceProvider.GetRequiredService<VmContext>();
+                
+                var toDelete = await context.Maps
+                    .Where(m => m.ViewId == viewId)
+                    .Include(m => m.Coordinates)
+                    .ToListAsync(ct);
+                
+                foreach (var map in toDelete)
+                {
+                    foreach (var coord in map.Coordinates)
+                    {
+                        context.Remove(coord);
+                    }
+                    context.Remove(map);
+                }
+
+                await context.SaveChangesAsync(ct);
             }
         }
     }
