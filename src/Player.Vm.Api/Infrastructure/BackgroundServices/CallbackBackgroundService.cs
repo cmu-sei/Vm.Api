@@ -109,12 +109,8 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
                     context.Maps.Add(clone);
                     clonedMaps.Add(_mapper.Map<Domain.Models.VmMap, VmMap>(clone));
                 }
-                
-                var added = context.ChangeTracker.Entries().Where(e => e.State == EntityState.Added);
-                var updated = context.ChangeTracker.Entries().Where(e => e.State == EntityState.Modified);
-
+    
                 await context.SaveChangesAsync(ct);
-
                 return clonedMaps.ToArray();
             }
         }
