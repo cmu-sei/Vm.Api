@@ -24,7 +24,6 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
     public interface ICallbackBackgroundService
     {
         Task AddEvent(WebhookEvent e);
-        Task<VmMap[]> CloneMaps(ViewCreated form, CancellationToken ct);
     }
 
     public class CallbackBackgroundService : ICallbackBackgroundService
@@ -58,10 +57,10 @@ namespace Player.Vm.Api.Infrastructure.BackgroundServices
 
         public async Task AddEvent(WebhookEvent e)
         {
-            _eventQueue.SendAsync(e);
+            await _eventQueue.SendAsync(e);
         }
         
-        public async Task<VmMap[]> CloneMaps(ViewCreated form, CancellationToken ct)
+        private async Task<VmMap[]> CloneMaps(ViewCreated form, CancellationToken ct)
         {
             using (var scope = _scopeFactory.CreateScope())
             {
