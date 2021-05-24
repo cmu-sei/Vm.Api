@@ -25,5 +25,12 @@ namespace Player.Vm.Api.Domain.Models
         public string[] Urls { get; set; }
 
         public string Label { get; set; }
+
+        public Coordinate Clone()
+        {
+            var clone = this.MemberwiseClone() as Coordinate;
+            clone.Id = Guid.Empty;
+            return clone;
+        }
     }
 }

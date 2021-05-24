@@ -38,7 +38,14 @@ namespace Player.Vm.Api.Domain.Services
         public PlayerService(IHttpContextAccessor httpContextAccessor, IPlayerApiClient playerApiClient)
         {
             _teamCache = new Dictionary<Guid, Team>();
-            _userId = httpContextAccessor.HttpContext.User.GetId();
+            try
+            {
+                _userId = httpContextAccessor.HttpContext.User.GetId();
+            }
+            catch (Exception)
+            {
+                _userId = Guid.Empty;
+            }
             _playerApiClient = playerApiClient;
         }
 

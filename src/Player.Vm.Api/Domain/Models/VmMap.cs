@@ -20,5 +20,16 @@ namespace Player.Vm.Api.Domain.Models
         public string Name { get; set; }
         public string ImageUrl { get; set; }
         public List<Guid> TeamIds { get; set; }
+
+        public VmMap Clone()
+        {
+            var clone = this.MemberwiseClone() as VmMap;
+            clone.Coordinates = new List<Coordinate>();
+            foreach (var coord in this.Coordinates)
+            {
+                clone.Coordinates.Add(coord.Clone());
+            }
+            return clone;
+        }
     }
 }
