@@ -1,42 +1,42 @@
 // Copyright 2021 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
+using System;
+using System.IdentityModel.Tokens.Jwt;
+using System.Reflection;
+using System.Security.Principal;
+using System.Text.Json.Serialization;
+using System.Threading.Tasks;
 using AutoMapper;
+using MediatR;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Mvc.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
-using Player.Vm.Api.Infrastructure.Options;
-using System;
-using System.IdentityModel.Tokens.Jwt;
-using System.Security.Principal;
-using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Mvc.Authorization;
-using System.Text.Json.Serialization;
-using AuthorizationOptions = Player.Vm.Api.Infrastructure.Options.AuthorizationOptions;
-using Player.Vm.Api.Infrastructure.Extensions;
-using Player.Vm.Api.Data;
-using Player.Vm.Api.Infrastructure.Exceptions.Middleware;
-using Player.Vm.Api.Features.Vms;
-using Player.Vm.Api.Domain.Services;
-using Player.Vm.Api.Infrastructure.DbInterceptors;
-using Player.Vm.Api.Domain.Vsphere.Options;
-using Microsoft.Extensions.Hosting;
-using Player.Vm.Api.Domain.Vsphere.Services;
-using MediatR;
-using System.Reflection;
-using Player.Vm.Api.Features.Vms.Hubs;
-using System.Threading.Tasks;
-using Player.Vm.Api.Features.Shared.Behaviors;
-using Microsoft.IdentityModel.Logging;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Logging;
+using Player.Vm.Api.Data;
+using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Domain.Services.HealthChecks;
+using Player.Vm.Api.Domain.Vsphere.Options;
+using Player.Vm.Api.Domain.Vsphere.Services;
+using Player.Vm.Api.Features.Shared.Behaviors;
+using Player.Vm.Api.Features.Vms;
+using Player.Vm.Api.Features.Vms.Hubs;
+using Player.Vm.Api.Infrastructure.DbInterceptors;
+using Player.Vm.Api.Infrastructure.Exceptions.Middleware;
+using Player.Vm.Api.Infrastructure.Extensions;
+using Player.Vm.Api.Infrastructure.Options;
+using AuthorizationOptions = Player.Vm.Api.Infrastructure.Options.AuthorizationOptions;
 
 namespace Player.Vm.Api
 {
@@ -277,7 +277,7 @@ namespace Player.Vm.Api
             app.UseSwaggerUI(c =>
             {
                 c.RoutePrefix = _routePrefix;
-                c.SwaggerEndpoint("/swagger/v1/swagger.json", "Player VM API V1");
+                c.SwaggerEndpoint($"{_pathbase}/swagger/v1/swagger.json", "Player VM API V1");
                 c.OAuthClientId(_authOptions.ClientId);
                 c.OAuthClientSecret(_authOptions.ClientSecret);
                 c.OAuthAppName(_authOptions.ClientName);
