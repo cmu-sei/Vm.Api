@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       clientVersion:
-        description: 'Version of the Client package'
+        description: "Version of the Client package"
         required: true
 
 jobs:
@@ -15,7 +15,7 @@ jobs:
       - name: Setup dotnet
         uses: actions/setup-dotnet@v1
         with:
-          dotnet-version: '3.1.x'
+          dotnet-version: "6.0.x"
 
       - name: Setup Package Name
         id: package_name
@@ -28,9 +28,8 @@ jobs:
 
       - name: Build Package
         run: |
-          dotnet new tool-manifest
-          dotnet tool install --version 5.6.3 Swashbuckle.AspNetCore.Cli
           cd ${{ steps.package_name.outputs.directory }}
+          dotnet tool restore
           dotnet build -c Release /p:version=${{ github.event.inputs.clientVersion }}
 
       - name: Run Swagger

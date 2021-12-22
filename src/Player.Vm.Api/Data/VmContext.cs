@@ -28,7 +28,7 @@ namespace Player.Vm.Api.Data
             modelBuilder.ApplyConfigurations();
 
             // Apply PostgreSQL specific options
-            if (_options.FindExtension<NpgsqlOptionsExtension>() != null)
+            if (Database.IsNpgsql())
             {
                 modelBuilder.AddPostgresUUIDGeneration();
                 modelBuilder.UsePostgresCasing();
