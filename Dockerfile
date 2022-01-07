@@ -1,7 +1,7 @@
 #
 #multi-stage target: dev
 #
-FROM mcr.microsoft.com/dotnet/core/sdk:3.1 AS dev
+FROM mcr.microsoft.com/dotnet/sdk:6.0 AS dev
 
 ENV ASPNETCORE_URLS=http://0.0.0.0:4302 \
     ASPNETCORE_ENVIRONMENT=DEVELOPMENT
@@ -16,7 +16,7 @@ CMD ["dotnet", "run"]
 #
 #multi-stage target: prod
 #
-FROM mcr.microsoft.com/dotnet/core/aspnet:3.1 AS prod
+FROM mcr.microsoft.com/dotnet/aspnet:6.0 AS prod
 ARG commit
 ENV COMMIT=$commit
 

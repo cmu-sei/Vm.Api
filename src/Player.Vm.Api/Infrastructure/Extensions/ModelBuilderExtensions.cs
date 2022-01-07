@@ -3,6 +3,7 @@
 
 
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using System;
 using System.Linq;
 using System.Reflection;
@@ -63,10 +64,14 @@ namespace Player.Vm.Api.Infrastructure.Extensions
 
             foreach (var entity in builder.Model.GetEntityTypes())
             {
+                var schema = entity.GetSchema();
+                var tableName = entity.GetTableName();
+                var storeObjectIdentifier = StoreObjectIdentifier.Table(tableName, schema);
+
                 // modify column names
                 foreach (var property in entity.GetProperties())
                 {
-                    property.SetColumnName(mapper.TranslateMemberName(property.GetColumnName()));
+                    property.SetColumnName(mapper.TranslateMemberName(property.GetColumnName(storeObjectIdentifier)));
                 }
 
                 // modify table name
