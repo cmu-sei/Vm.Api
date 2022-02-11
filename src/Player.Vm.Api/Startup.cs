@@ -75,6 +75,7 @@ namespace Player.Vm.Api
                     tags: new[] { "live" });
 
             var provider = Configuration["Database:Provider"];
+            var vmLoggingEnabled = bool.Parse((Configuration["VmLogging:Enabled"]));
             switch (provider)
             {
                 case "InMemory":
@@ -88,10 +89,22 @@ namespace Player.Vm.Api
                     services.AddDbContextPool<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
                         .AddInterceptors(serviceProvider.GetRequiredService<EventTransactionInterceptor>())
                         .UseConfiguredDatabase(Configuration));
+                    
+                    if (vmLoggingEnabled) 
+                    {
+
+                        /* Note:  When using multiple DB contexts, dotnet ef migrations must specify which context:  ie:
+                        dotnet ef migrations add "VmLoggingDb Initial" --context VmLoggingContext -o Data/Migrations/Postgres/VmLogging
+                        */
+                        services.AddDbContextPool<VmLoggingContext>((serviceProvider, optionsBuilder) => optionsBuilder
+                            .AddInterceptors(serviceProvider.GetRequiredService<EventTransactionInterceptor>())
+                            .UseConfiguredDatabase(Configuration));
+                    }
                     break;
             }
 
             var connectionString = Configuration.GetConnectionString(Configuration.GetValue<string>("Database:Provider", "Sqlite").Trim());
+            var vmLogggingConnectionString = Configuration.GetConnectionString(Configuration.GetValue<string>("Database:Provider", "PostgreSql").Trim());
             switch (provider)
             {
                 case "Sqlite":
@@ -136,6 +149,10 @@ namespace Player.Vm.Api
             services
                 .Configure<ConsoleUrlOptions>(Configuration.GetSection("ConsoleUrls"))
                 .AddScoped(config => config.GetService<IOptionsSnapshot<ConsoleUrlOptions>>().Value);
+            
+            services
+                .Configure<ConsoleUrlOptions>(Configuration.GetSection("VmLogging"))
+                .AddScoped(config => config.GetService<IOptionsSnapshot<VmLoggingOptions>>().Value);
 
             services.AddCors(options => options.UseConfiguredCors(Configuration.GetSection("CorsPolicy")));
             services.AddMvc(options =>
