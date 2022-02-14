@@ -7,7 +7,6 @@ using System.Threading.Tasks;
 
 namespace Player.Vm.Api.Features.Vms.Hubs
 {
-    [Authorize(AuthenticationSchemes = "Bearer")]
     public class ProgressHub : Hub
     {
         public ProgressHub()
