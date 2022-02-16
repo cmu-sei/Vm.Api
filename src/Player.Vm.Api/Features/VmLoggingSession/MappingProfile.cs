@@ -8,29 +8,20 @@ Carnegie Mellon(R) and CERT(R) are registered in the U.S. Patent and Trademark O
 DM20-0181
 */
 
-using System;
-using System.ComponentModel.DataAnnotations;
-using System.ComponentModel.DataAnnotations.Schema;
-using System.Runtime.Serialization;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
-
-namespace Player.Vm.Api.Domain.Models
+namespace Player.Vm.Api.Features.VmLoggingSessions
 {
-    public class VmLog
+    using System.Linq;
+    using AutoMapper;
+    using Player.Vm.Api.Domain.Models;
+
+    public class MappingProfile : Profile
     {
-        [Key]
-        [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
-        public Guid Id { get; set; }
-        public Guid SessionId { get; set; }
-        public Guid MachineId { get; set; }
-        public string MachineName { get; set; }
-        public Guid UserId { get; set; }
-        public string UserName { get; set; }
-        public DateTimeOffset MachineOpen { get; set; }
-        public DateTimeOffset MachineClose { get; set; }
-
+        public MappingProfile()
+        {
+            CreateMap<Domain.Models.VmLoggingSession, VmLoggingSession>();
+            CreateMap<Create.Command, Domain.Models.VmLoggingSession>();
+            CreateMap<Edit.Command, Domain.Models.VmLoggingSession>();
+            
+        }
     }
-
-
 }

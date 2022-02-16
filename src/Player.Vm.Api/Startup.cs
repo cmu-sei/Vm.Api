@@ -93,18 +93,20 @@ namespace Player.Vm.Api
                     if (vmLoggingEnabled) 
                     {
 
+                        Console.WriteLine("Vm Usage Logging Enabled");
+                        var vmLoggingConnectionString = Configuration["VmLogging:PostgreSql"].Trim();
+                        Console.WriteLine(vmLoggingConnectionString);
+
                         /* Note:  When using multiple DB contexts, dotnet ef migrations must specify which context:  ie:
                         dotnet ef migrations add "VmLoggingDb Initial" --context VmLoggingContext -o Data/Migrations/Postgres/VmLogging
                         */
-                        services.AddDbContextPool<VmLoggingContext>((serviceProvider, optionsBuilder) => optionsBuilder
-                            .AddInterceptors(serviceProvider.GetRequiredService<EventTransactionInterceptor>())
-                            .UseConfiguredDatabase(Configuration));
+                        services.AddDbContextPool<VmLoggingContext>(
+                            options => options.UseNpgsql(vmLoggingConnectionString));
                     }
                     break;
             }
 
             var connectionString = Configuration.GetConnectionString(Configuration.GetValue<string>("Database:Provider", "Sqlite").Trim());
-            var vmLogggingConnectionString = Configuration.GetConnectionString(Configuration.GetValue<string>("Database:Provider", "PostgreSql").Trim());
             switch (provider)
             {
                 case "Sqlite":
