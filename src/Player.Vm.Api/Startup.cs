@@ -1,13 +1,11 @@
 // Copyright 2021 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
-using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Reflection;
 using System.Security.Principal;
 using System.Text.Json.Serialization;
 using System.Threading.Tasks;
-using AutoMapper;
 using MediatR;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
@@ -16,7 +14,6 @@ using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
-using Microsoft.AspNetCore.Mvc.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
@@ -37,6 +34,7 @@ using Player.Vm.Api.Infrastructure.Exceptions.Middleware;
 using Player.Vm.Api.Infrastructure.Extensions;
 using Player.Vm.Api.Infrastructure.Options;
 using AuthorizationOptions = Player.Vm.Api.Infrastructure.Options.AuthorizationOptions;
+using Player.Vm.Api.Infrastructure.Constants;
 
 namespace Player.Vm.Api
 {
@@ -53,9 +51,9 @@ namespace Player.Vm.Api
         public Startup(IConfiguration configuration)
         {
             Configuration = configuration;
-            Configuration.GetSection("Authorization").Bind(_authOptions);
-            Configuration.GetSection("ClientSettings").Bind(_clientOptions);
-            Configuration.GetSection("IdentityClient").Bind(_identityClientOptions);
+            Configuration.Bind("ClientSettings", _clientOptions);
+            Configuration.Bind("IdentityClient", _identityClientOptions);
+            Configuration.Bind("Authorization", _authOptions);
             _pathbase = Configuration["PathBase"];
         }
 
@@ -157,20 +155,28 @@ namespace Player.Vm.Api
                 .AddScoped(config => config.GetService<IOptionsSnapshot<VmLoggingOptions>>().Value);
 
             services.AddCors(options => options.UseConfiguredCors(Configuration.GetSection("CorsPolicy")));
-            services.AddMvc(options =>
+            services.AddMvc()
+                .AddJsonOptions(options =>
+                {
+                    options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
+                    options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+                });
+
+            services.AddAuthorization(options =>
             {
-                // Require all scopes in authOptions
                 var policyBuilder = new AuthorizationPolicyBuilder().RequireAuthenticatedUser();
-                Array.ForEach(_authOptions.AuthorizationScope.Split(' '), x => policyBuilder.RequireScope(x));
 
-                var policy = policyBuilder.Build();
-                options.Filters.Add(new AuthorizeFilter(policy));
+                foreach (var scope in _authOptions.AuthorizationScope.Split(' '))
+                {
+                    policyBuilder.RequireScope(scope);
+                }
 
-            })
-            .AddJsonOptions(options =>
-            {
-                options.JsonSerializerOptions.PropertyNameCaseInsensitive = true;
-                options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+                options.DefaultPolicy = policyBuilder.Build();
+
+                options.AddPolicy(Constants.PrivilegedAuthorizationPolicy, builder => builder
+                    .RequireAuthenticatedUser()
+                    .RequireScope(_authOptions.PrivilegedScope)
+                );
             });
 
             services.AddSignalR()
@@ -199,8 +205,8 @@ namespace Player.Vm.Api
                 options.SaveToken = true;
                 options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
                 {
-                    ValidateIssuer = true,
-                    ValidAudiences = _authOptions.AuthorizationScope.Split(' ')
+                    ValidateAudience = false,
+                    ValidateIssuer = true
                 };
 
                 options.Events = new JwtBearerEvents
@@ -234,6 +240,9 @@ namespace Player.Vm.Api
             services.AddScoped<IPlayerService, PlayerService>();
             services.AddScoped<IViewService, ViewService>();
             services.AddScoped<IPermissionsService, PermissionsService>();
+            services.AddSingleton<CallbackBackgroundService>();
+            services.AddSingleton<IHostedService>(x => x.GetService<CallbackBackgroundService>());
+            services.AddSingleton<ICallbackBackgroundService>(x => x.GetService<CallbackBackgroundService>());
             services.AddSingleton<IAuthenticationService, AuthenticationService>();
             services.AddSingleton<IActiveVirtualMachineService, ActiveVirtualMachineService>();
 
@@ -267,6 +276,7 @@ namespace Player.Vm.Api
             {
                 IdentityModelEventSource.ShowPII = true;
             }
+
             app.UsePathBase(_pathbase);
             app.UseCustomExceptionHandler();
             app.UseRouting();
@@ -277,6 +287,9 @@ namespace Player.Vm.Api
             app.UseEndpoints(endpoints =>
             {
                 endpoints.MapControllers();
+                endpoints.MapHub<ProgressHub>("/hubs/progress").RequireAuthorization();
+                endpoints.MapHub<VmHub>("/hubs/vm").RequireAuthorization();
+
                 endpoints.MapHealthChecks($"/{_routePrefix}/health/ready", new HealthCheckOptions()
                 {
                     Predicate = (check) => check.Tags.Contains("ready"),
@@ -286,8 +299,6 @@ namespace Player.Vm.Api
                 {
                     Predicate = (check) => check.Tags.Contains("live"),
                 });
-                endpoints.MapHub<ProgressHub>("/hubs/progress");
-                endpoints.MapHub<VmHub>("/hubs/vm");
             });
 
             app.UseSwagger();

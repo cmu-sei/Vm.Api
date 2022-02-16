@@ -14,7 +14,6 @@ using Player.Api.Client;
 
 namespace Player.Vm.Api.Features.Vms.Hubs
 {
-    [Authorize(AuthenticationSchemes = "Bearer")]
     public class VmHub : Hub
     {
         private readonly IPlayerService _playerService;
