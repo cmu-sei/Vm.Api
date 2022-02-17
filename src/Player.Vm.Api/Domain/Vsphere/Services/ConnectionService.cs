@@ -11,7 +11,7 @@ using System.Linq;
 using System.ServiceModel;
 using System.Threading;
 using System.Threading.Tasks;
-using NetVimClient;
+using VimClient;
 using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Domain.Vsphere.Options;
@@ -318,7 +318,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _logger.LogInformation($"Finished LoadDatastoreCache at {DateTime.UtcNow}");
         }
 
-        private async Task LoadMachineCache(NetVimClient.ObjectContent[] virtualMachines)
+        private async Task LoadMachineCache(VimClient.ObjectContent[] virtualMachines)
         {
             IEnumerable<Guid> existingMachineIds = _machineCache.Keys;
             List<Guid> currentMachineIds = new List<Guid>();
@@ -405,7 +405,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
         }
 
-        private void LoadNetworkCache(NetVimClient.ObjectContent[] distributedSwitches, NetVimClient.ObjectContent[] networks)
+        private void LoadNetworkCache(VimClient.ObjectContent[] distributedSwitches, VimClient.ObjectContent[] networks)
         {
             Dictionary<string, List<Network>> networkCache = new Dictionary<string, List<Network>>();
             IEnumerable<string> existingHosts = _networkCache.Keys;
@@ -498,7 +498,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
         }
 
-        private void LoadDatastoreCache(NetVimClient.ObjectContent[] rawDatastores)
+        private void LoadDatastoreCache(VimClient.ObjectContent[] rawDatastores)
         {
             IEnumerable<string> cachedDatastoreNames = _datastoreCache.Keys;
             List<string> activeDatastoreNames = new List<string>();

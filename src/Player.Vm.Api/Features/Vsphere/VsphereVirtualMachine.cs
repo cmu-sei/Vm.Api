@@ -3,7 +3,7 @@
 
 using System;
 using System.Collections.Generic;
-using NetVimClient;
+using VimClient;
 using Player.Vm.Api.Domain.Vsphere.Models;
 
 namespace Player.Vm.Api.Features.Vsphere

@@ -8,7 +8,7 @@ using System.Threading.Tasks;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using NetVimClient;
+using VimClient;
 using Swashbuckle.AspNetCore.Annotations;
 
 namespace Player.Vm.Api.Features.Vsphere

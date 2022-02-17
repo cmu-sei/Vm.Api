@@ -13,7 +13,7 @@ using Player.Vm.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using System.Linq;
 using System.Collections.Concurrent;
-using NetVimClient;
+using VimClient;
 using System.Collections.Generic;
 using Player.Vm.Api.Domain.Vsphere.Models;
 using Microsoft.Extensions.Caching.Memory;
