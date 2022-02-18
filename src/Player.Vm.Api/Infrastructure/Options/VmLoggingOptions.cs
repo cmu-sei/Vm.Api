@@ -3,7 +3,7 @@
 
 namespace Player.Vm.Api.Infrastructure.Options
 {
-    public class VmLoggingOptions
+    public class VmUsageLoggingOptions
     {
         public bool Enabled { get; set; }
         public string PostgreSQL { get; set; }

@@ -74,7 +74,7 @@ namespace Player.Vm.Api
                     tags: new[] { "live" });
 
             var provider = Configuration["Database:Provider"];
-            var vmLoggingEnabled = bool.Parse((Configuration["VmLogging:Enabled"]));
+            var vmLoggingEnabled = bool.Parse((Configuration["VmUsageLogging:Enabled"]));
             switch (provider)
             {
                 case "InMemory":
@@ -91,10 +91,7 @@ namespace Player.Vm.Api
                     
                     if (vmLoggingEnabled) 
                     {
-
-                        Console.WriteLine("Vm Usage Logging Enabled");
-                        var vmLoggingConnectionString = Configuration["VmLogging:PostgreSql"].Trim();
-                        Console.WriteLine(vmLoggingConnectionString);
+                        var vmLoggingConnectionString = Configuration["VmUsageLogging:PostgreSql"].Trim();
 
                         /* Note:  When using multiple DB contexts, dotnet ef migrations must specify which context:  ie:
                         dotnet ef migrations add "VmLoggingDb Initial" --context VmLoggingContext -o Data/Migrations/Postgres/VmLogging
@@ -152,8 +149,8 @@ namespace Player.Vm.Api
                 .AddScoped(config => config.GetService<IOptionsSnapshot<ConsoleUrlOptions>>().Value);
             
             services
-                .Configure<ConsoleUrlOptions>(Configuration.GetSection("VmLogging"))
-                .AddScoped(config => config.GetService<IOptionsSnapshot<VmLoggingOptions>>().Value);
+                .Configure<ConsoleUrlOptions>(Configuration.GetSection("VmUsageLogging"))
+                .AddScoped(config => config.GetService<IOptionsSnapshot<VmUsageLoggingOptions>>().Value);
 
             services.AddCors(options => options.UseConfiguredCors(Configuration.GetSection("CorsPolicy")));
             services.AddMvc()
