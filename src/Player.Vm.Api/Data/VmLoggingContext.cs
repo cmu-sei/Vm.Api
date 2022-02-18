@@ -26,7 +26,7 @@ namespace Player.Vm.Api.Data
             _options = options;
         }
 
-        public DbSet<VmLoggingSession> VmLoggingSessions { get; set; }
+        public DbSet<VmUsageLoggingSession> VmUsageLoggingSessions { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

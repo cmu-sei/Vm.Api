@@ -17,16 +17,18 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
 namespace Player.Vm.Api.Domain.Models
 {
-    public class VmLoggingSession
+    public class VmUsageLogEntry
     {
         [Key]
         [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public Guid Id { get; set; }
-        public Guid TeamId { get; set; }
-        public string TeamName { get; set; }
-        public string SessionName { get; set; }
-        public DateTimeOffset SessionStart { get; set; }
-        public DateTimeOffset SessionEnd { get; set; }
+        public Guid SessionId { get; set; }
+        public Guid MachineId { get; set; }
+        public string MachineName { get; set; }
+        public Guid UserId { get; set; }
+        public string UserName { get; set; }
+        public DateTimeOffset MachineOpen { get; set; }
+        public DateTimeOffset MachineClose { get; set; }
 
     }
 

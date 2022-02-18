@@ -8,62 +8,69 @@ Carnegie Mellon(R) and CERT(R) are registered in the U.S. Patent and Trademark O
 DM20-0181
 */
 
-using System.Runtime.Serialization;
-using System.Security.Claims;
-using System.Security.Principal;
+using System;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
+using Player.Vm.Api.Data;
 using AutoMapper;
+using System.Runtime.Serialization;
+using Player.Vm.Api.Infrastructure.Exceptions;
+using System.Security.Claims;
+using System.Security.Principal;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using AutoMapper.QueryableExtensions;
-using Player.Vm.Api.Data;
-using Player.Vm.Api.Infrastructure.Exceptions;
-using Player.Vm.Api.Domain.Services;
+using System.Text.Json.Serialization;
 
-namespace Player.Vm.Api.Features.VmLoggingSessions
+namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
-    public class GetAll
+    public class EndSession
     {
-        [DataContract(Name="GetVmLoggingSessionsQuery")]
-        public class Query : IRequest<VmLoggingSession[]>
+        [DataContract(Name="EndVmUsageLoggingSessionCommand")]
+        public class Command : IRequest<VmUsageLoggingSession>
         {
+            /// <summary>
+            /// Data for a VmUsageLoggingSession.
+            /// </summary>
+            [JsonIgnore]
+            public Guid Id { get; set; }
         }
 
-        public class Handler : IRequestHandler<Query, VmLoggingSession[]>
+        public class Handler : IRequestHandler<Command, VmUsageLoggingSession>
         {
             private readonly VmLoggingContext _db;
             private readonly IMapper _mapper;
             private readonly IAuthorizationService _authorizationService;
             private readonly ClaimsPrincipal _user;
 
-            private readonly IPlayerService _playerService;
-
             public Handler(
                 VmLoggingContext db,
                 IMapper mapper,
-                IAuthorizationService authorizationService,
-                IPlayerService playerService)
+                IAuthorizationService authorizationService)
             {
                 _db = db;
                 _mapper = mapper;
                 _authorizationService = authorizationService;
-                _playerService = playerService;
             }
 
-            public async Task<VmLoggingSession[]> Handle(Query request, CancellationToken cancellationToken)
+            public async Task<VmUsageLoggingSession> Handle(Command request, CancellationToken cancellationToken)
             {
-                // TODO:  CHAD if (!(await _authorizationService.AuthorizeAsync(_user, null, new ContentDeveloperRequirement())).Succeeded)
+                //if (!(await _authorizationService.AuthorizeAsync(_user, null, new ContentDeveloperRequirement())).Succeeded)
                 //    throw new ForbiddenException();
 
-                //var x = await _playerService.GetViewsAsync(cancellationToken);
-            
-                System.Console.WriteLine("CHADDDD");
+                var VmUsageLoggingSession =  await _db.VmUsageLoggingSessions
+                    .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                    .SingleOrDefaultAsync(e => e.Id == request.Id);
 
-                return await _db.VmLoggingSessions
-                    .ProjectTo<VmLoggingSession>(_mapper.ConfigurationProvider)
-                    .ToArrayAsync();
+
+                if (VmUsageLoggingSession == null)
+                    throw new EntityNotFoundException<VmUsageLoggingSession>();                
+
+                VmUsageLoggingSession.SessionEnd = DateTimeOffset.Now;
+
+                await _db.SaveChangesAsync();
+                return _mapper.Map<VmUsageLoggingSession>(VmUsageLoggingSession);
             }
         }
     }

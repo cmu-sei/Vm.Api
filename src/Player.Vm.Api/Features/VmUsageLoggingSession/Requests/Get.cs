@@ -12,41 +12,31 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
-using Player.Vm.Api.Data;
 using AutoMapper;
+using Microsoft.EntityFrameworkCore;
+using AutoMapper.QueryableExtensions;
 using System.Runtime.Serialization;
+using Player.Vm.Api.Data;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using System.Security.Claims;
 using System.Security.Principal;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.EntityFrameworkCore;
-using AutoMapper.QueryableExtensions;
 
-namespace Player.Vm.Api.Features.VmLoggingSessions
+namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
-    public class Edit
+    public class Get
     {
-        [DataContract(Name="EditVmLoggingSessionCommand")]
-        public class Command : IRequest<VmLoggingSession>
+        [DataContract(Name="GetVmUsageLoggingSessionQuery")]
+        public class Query : IRequest<VmUsageLoggingSession>
         {
             /// <summary>
-            /// Data for a VmLoggingSession.
+            /// The Id of the VmUsageLoggingSession to retrieve
             /// </summary>
             [DataMember]
             public Guid Id { get; set; }
-            [DataMember]
-            public Guid TeamId { get; set; }
-            [DataMember]
-            public string TeamName { get; set; }
-            [DataMember]
-            public string SessionName { get; set; }
-            [DataMember]
-            public DateTimeOffset SessionStart { get; set; }
-            [DataMember]
-            public DateTimeOffset SessionEnd { get; set; }
         }
 
-        public class Handler : IRequestHandler<Command, VmLoggingSession>
+        public class Handler : IRequestHandler<Query, VmUsageLoggingSession>
         {
             private readonly VmLoggingContext _db;
             private readonly IMapper _mapper;
@@ -63,19 +53,20 @@ namespace Player.Vm.Api.Features.VmLoggingSessions
                 _authorizationService = authorizationService;
             }
 
-            public async Task<VmLoggingSession> Handle(Command request, CancellationToken cancellationToken)
+            public async Task<VmUsageLoggingSession> Handle(Query request, CancellationToken cancellationToken)
             {
-                //if (!(await _authorizationService.AuthorizeAsync(_user, null, new ContentDeveloperRequirement())).Succeeded)
+                //TODO: Chadif (!(await _authorizationService.AuthorizeAsync(_user, null, new ContentDeveloperRequirement())).Succeeded)
                 //    throw new ForbiddenException();
 
-                var machine = await _db.VmLoggingSessions.FindAsync(request.Id);
+                var VmUsageLoggingSession =  await _db.VmUsageLoggingSessions
+                    .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                    .SingleOrDefaultAsync(e => e.Id == request.Id);
 
-                if (machine == null)
-                    throw new EntityNotFoundException<VmLoggingSession>();
 
-                _mapper.Map(request, machine);
-                await _db.SaveChangesAsync();
-                return _mapper.Map<VmLoggingSession>(machine);
+                if (VmUsageLoggingSession == null)
+                    throw new EntityNotFoundException<VmUsageLoggingSession>();
+
+                return VmUsageLoggingSession;
             }
         }
     }

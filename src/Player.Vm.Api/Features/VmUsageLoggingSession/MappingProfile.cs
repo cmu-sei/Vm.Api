@@ -8,7 +8,7 @@ Carnegie Mellon(R) and CERT(R) are registered in the U.S. Patent and Trademark O
 DM20-0181
 */
 
-namespace Player.Vm.Api.Features.VmLoggingSessions
+namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
     using System.Linq;
     using AutoMapper;
@@ -18,10 +18,9 @@ namespace Player.Vm.Api.Features.VmLoggingSessions
     {
         public MappingProfile()
         {
-            CreateMap<Domain.Models.VmLoggingSession, VmLoggingSession>();
-            CreateMap<Create.Command, Domain.Models.VmLoggingSession>();
-            CreateMap<Edit.Command, Domain.Models.VmLoggingSession>();
-            
+            CreateMap<Domain.Models.VmUsageLoggingSession, VmUsageLoggingSession>();
+            CreateMap<Create.Command, Domain.Models.VmUsageLoggingSession>();
+            CreateMap<Edit.Command, Domain.Models.VmUsageLoggingSession>();            
         }
     }
 }

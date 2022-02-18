@@ -9,28 +9,21 @@ DM20-0181
 */
 
 using System;
-using System.ComponentModel.DataAnnotations;
-using System.ComponentModel.DataAnnotations.Schema;
-using System.Runtime.Serialization;
-using Microsoft.EntityFrameworkCore;
-using Microsoft.EntityFrameworkCore.Metadata.Builders;
+using System.Collections.Generic;
 
-namespace Player.Vm.Api.Domain.Models
+namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
-    public class VmUsageLog
+    /// <summary>
+    ///  A Logging session for Virtual Machines
+    /// </summary>
+    public class VmUsageLoggingSession
     {
-        [Key]
-        [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public Guid Id { get; set; }
-        public Guid SessionId { get; set; }
-        public Guid MachineId { get; set; }
-        public string MachineName { get; set; }
-        public Guid UserId { get; set; }
-        public string UserName { get; set; }
-        public DateTimeOffset MachineOpen { get; set; }
-        public DateTimeOffset MachineClose { get; set; }
+        public Guid TeamId { get; set; }
+        public string TeamName { get; set; }
+        public string SessionName { get; set; }
+        public DateTimeOffset SessionStart { get; set; }
+        public DateTimeOffset SessionEnd { get; set; }
 
     }
-
-
 }

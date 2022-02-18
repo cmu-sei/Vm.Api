@@ -9,15 +9,18 @@ DM20-0181
 */
 
 using System;
-using System.Collections.Generic;
+using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
+using System.Runtime.Serialization;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata.Builders;
 
-namespace Player.Vm.Api.Features.VmLoggingSessions
+namespace Player.Vm.Api.Domain.Models
 {
-    /// <summary>
-    ///  A Logging session for Virtual Machines
-    /// </summary>
-    public class VmLoggingSession
+    public class VmUsageLoggingSession
     {
+        [Key]
+        [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public Guid Id { get; set; }
         public Guid TeamId { get; set; }
         public string TeamName { get; set; }
@@ -26,4 +29,6 @@ namespace Player.Vm.Api.Features.VmLoggingSessions
         public DateTimeOffset SessionEnd { get; set; }
 
     }
+
+
 }

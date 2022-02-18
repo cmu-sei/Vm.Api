@@ -17,27 +17,27 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Swashbuckle.AspNetCore.Annotations;
 
-namespace Player.Vm.Api.Features.VmLoggingSessions
+namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
-    [Route("api/vmsessions")]
+    [Route("api/vmusageloggingsessions")]
     [ApiController]
     [AllowAnonymous]
-    public class VmLoggingSessionController : ControllerBase
+    public class VmUsageLoggingSessionController : ControllerBase
     {
         private readonly IMediator _mediator;
 
-        public VmLoggingSessionController(IMediator mediator)
+        public VmUsageLoggingSessionController(IMediator mediator)
         {
             _mediator = mediator;
         }
 
         /// <summary>
-        /// Get a single VmLoggingSession.
+        /// Get a single VmUsageLoggingSession.
         /// </summary>
         /// <param name="id">ID of a session.</param>
         /// <returns></returns>
         [HttpGet("{id}")]
-        [ProducesResponseType(typeof(VmLoggingSession), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(VmUsageLoggingSession), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "GetSession")]
         public async Task<IActionResult> Get([FromRoute] Guid id)
         {
@@ -47,11 +47,11 @@ namespace Player.Vm.Api.Features.VmLoggingSessions
 
 
         /// <summary>
-        /// Get all VmLoggingSessions.
+        /// Get all VmUsageLoggingSessions.
         /// </summary>
         /// <returns></returns>
         [HttpGet()]
-        [ProducesResponseType(typeof(IEnumerable<VmLoggingSession>), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(IEnumerable<VmUsageLoggingSession>), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "GetAllSessions")]
         public async Task<IActionResult> GetAll()
         {
@@ -60,12 +60,12 @@ namespace Player.Vm.Api.Features.VmLoggingSessions
         }
 
         /// <summary>
-        /// Create a new VmLoggingSession.
+        /// Create a new VmUsageLoggingSession.
         /// </summary>
         /// <param name="command"></param>
         /// <returns></returns>
         [HttpPost()]
-        [ProducesResponseType(typeof(VmLoggingSession), (int)HttpStatusCode.Created)]
+        [ProducesResponseType(typeof(VmUsageLoggingSession), (int)HttpStatusCode.Created)]
         [SwaggerOperation(OperationId = "CreateSession")]
         public async Task<IActionResult> Create(Create.Command command)
         {
@@ -74,13 +74,13 @@ namespace Player.Vm.Api.Features.VmLoggingSessions
         }
 
         /// <summary>
-        /// Update a VmLoggingSession.
+        /// Update a VmUsageLoggingSession.
         /// </summary>
-        /// <param name="id">ID of a VmLoggingSession.</param>
+        /// <param name="id">ID of a VmUsageLoggingSession.</param>
         /// <param name="command"></param>
         /// <returns></returns>
         [HttpPut("{id}")]
-        [ProducesResponseType(typeof(VmLoggingSession), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(VmUsageLoggingSession), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "EditSession")]
         public async Task<IActionResult> Edit([FromRoute] Guid id, Edit.Command command)
         {
@@ -90,9 +90,9 @@ namespace Player.Vm.Api.Features.VmLoggingSessions
         }
 
         /// <summary>
-        /// Delete a VmLoggingSession.
+        /// Delete a VmUsageLoggingSession.
         /// </summary>
-        /// <param name="id">ID of an VmLoggingSessions.</param>
+        /// <param name="id">ID of an VmUsageLoggingSessions.</param>
         /// <returns></returns>
         [HttpDelete("{id}")]
         [ProducesResponseType((int)HttpStatusCode.NoContent)]
@@ -102,5 +102,19 @@ namespace Player.Vm.Api.Features.VmLoggingSessions
             await _mediator.Send(new Delete.Command { Id = id });
             return NoContent();
         }
+
+        /// <summary>
+        /// End a VmUsageLoggingSession.
+        /// </summary>
+        /// <param name="id">ID of a VmUsageLoggingSession.</param>
+        /// <returns></returns>
+        [HttpPost("{id}/endsession")]
+        [ProducesResponseType(typeof(VmUsageLoggingSession), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "EndSession")]
+        public async Task<IActionResult> EndSession([FromRoute] Guid id)
+        {
+            var result = await _mediator.Send(new EndSession.Command { Id = id });
+            return Ok(result);
+        }        
     }
 }
