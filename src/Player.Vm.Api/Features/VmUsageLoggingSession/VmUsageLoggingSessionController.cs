@@ -60,6 +60,32 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         }
 
         /// <summary>
+        /// Get active VmUsageLoggingSessions.
+        /// </summary>
+        /// <returns></returns>
+        [HttpGet("active")]
+        [ProducesResponseType(typeof(IEnumerable<VmUsageLoggingSession>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "GetActiveSessions")]
+        public async Task<IActionResult> GetActive()
+        {
+            var result = await _mediator.Send(new GetActive.Query());
+            return Ok(result);
+        }        
+
+        /// <summary>
+        /// Get active VmUsageLoggingSessions By TeamId.
+        /// </summary>
+        /// <returns></returns>
+        [HttpGet("activebyteam/{teamId}")]
+        [ProducesResponseType(typeof(IEnumerable<VmUsageLoggingSession>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "GetActiveSessionsByTeam")]
+        public async Task<IActionResult> GetActiveByTeam([FromRoute] Guid teamId)
+        {
+            var result = await _mediator.Send(new GetActiveByTeam.Query { TeamId = teamId });
+            return Ok(result);
+        }   
+
+        /// <summary>
         /// Create a new VmUsageLoggingSession.
         /// </summary>
         /// <param name="command"></param>

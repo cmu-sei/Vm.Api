@@ -9,66 +9,61 @@ DM20-0181
 */
 
 using System;
+using System.Runtime.Serialization;
+using System.Security.Claims;
+using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
-using Player.Vm.Api.Data;
 using AutoMapper;
-using System.Runtime.Serialization;
-using Player.Vm.Api.Infrastructure.Exceptions;
-using System.Security.Claims;
-using System.Security.Principal;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using AutoMapper.QueryableExtensions;
-using System.Text.Json.Serialization;
+using Player.Vm.Api.Data;
+using Player.Vm.Api.Infrastructure.Exceptions;
+using Player.Vm.Api.Domain.Services;
+using System.Linq;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
-    public class EndSession
+    public class GetActive
     {
-        [DataContract(Name="EndVmUsageLoggingSessionCommand")]
-        public class Command : IRequest<VmUsageLoggingSession>
+        [DataContract(Name="GetActiveVmUsageLoggingSessionsQuery")]
+        public class Query : IRequest<VmUsageLoggingSession[]>
         {
-            /// <summary>
-            /// Data for a VmUsageLoggingSession.
-            /// </summary>
-            [JsonIgnore]
-            public Guid Id { get; set; }
         }
 
-        public class Handler : IRequestHandler<Command, VmUsageLoggingSession>
+        public class Handler : IRequestHandler<Query, VmUsageLoggingSession[]>
         {
             private readonly VmLoggingContext _db;
             private readonly IMapper _mapper;
             private readonly IAuthorizationService _authorizationService;
             private readonly ClaimsPrincipal _user;
 
+            private readonly IPlayerService _playerService;
+
             public Handler(
                 VmLoggingContext db,
                 IMapper mapper,
-                IAuthorizationService authorizationService)
+                IAuthorizationService authorizationService,
+                IPlayerService playerService)
             {
                 _db = db;
                 _mapper = mapper;
                 _authorizationService = authorizationService;
+                _playerService = playerService;
             }
 
-            public async Task<VmUsageLoggingSession> Handle(Command request, CancellationToken cancellationToken)
+            public async Task<VmUsageLoggingSession[]> Handle(Query request, CancellationToken cancellationToken)
             {
                 //if (!(await _authorizationService.AuthorizeAsync(_user, null, new ContentDeveloperRequirement())).Succeeded)
                 //    throw new ForbiddenException();
 
-                var vmUsageLoggingSession =  await _db.VmUsageLoggingSessions
-                    .SingleOrDefaultAsync(e => e.Id == request.Id);
 
-                if (vmUsageLoggingSession == null)
-                    throw new EntityNotFoundException<VmUsageLoggingSession>();                
-
-                vmUsageLoggingSession.SessionEnd = DateTimeOffset.UtcNow;
-
-                await _db.SaveChangesAsync();
-                return _mapper.Map<VmUsageLoggingSession>(vmUsageLoggingSession);
+                return await _db.VmUsageLoggingSessions
+                    .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                    .Where(s => s.SessionEnd <= DateTimeOffset.MinValue)
+                    .ToArrayAsync();
             }
         }
     }
