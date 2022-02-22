@@ -23,12 +23,12 @@ namespace Player.Vm.Api.Domain.Models
         [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public Guid Id { get; set; }
         public Guid SessionId { get; set; }
-        public Guid MachineId { get; set; }
-        public string MachineName { get; set; }
+        public Guid VmId { get; set; }
+        public string VmName { get; set; }
         public Guid UserId { get; set; }
         public string UserName { get; set; }
-        public DateTimeOffset MachineOpen { get; set; }
-        public DateTimeOffset MachineClose { get; set; }
+        public DateTimeOffset VmActiveDT { get; set; }
+        public DateTimeOffset VmInActiveDT { get; set; }
 
     }
 

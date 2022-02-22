@@ -83,8 +83,8 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                     throw new EntityNotFoundException<VmUsageLoggingSession>("Vm Usage Logging Session has already ended.");
 
                 var logEntry = _mapper.Map<Domain.Models.VmUsageLogEntry>(request);
-                logEntry.MachineOpen = DateTimeOffset.UtcNow;
-                logEntry.MachineClose = DateTimeOffset.MinValue;
+                logEntry.VmActiveDT = DateTimeOffset.UtcNow;
+                logEntry.VmInActiveDT = DateTimeOffset.MinValue;
 
                 await _db.VmUsageLogEntries.AddAsync(logEntry);
                 await _db.SaveChangesAsync();

@@ -71,7 +71,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 if (vmUsageLogEntry == null)
                     throw new EntityNotFoundException<VmUsageLogEntry>("Usage Log Entry not found.");                
 
-                vmUsageLogEntry.MachineClose = DateTimeOffset.UtcNow;
+                vmUsageLogEntry.VmInActiveDT = DateTimeOffset.UtcNow;
 
                 await _db.SaveChangesAsync();
                 return _mapper.Map<VmUsageLogEntry>(vmUsageLogEntry);
