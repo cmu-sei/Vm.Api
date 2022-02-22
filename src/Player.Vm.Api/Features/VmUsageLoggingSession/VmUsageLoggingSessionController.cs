@@ -141,6 +141,36 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         {
             var result = await _mediator.Send(new EndSession.Command { Id = id });
             return Ok(result);
-        }        
+        }     
+
+        /// <summary>
+        /// Create a new VmUsageLogEntry.
+        /// </summary>
+        /// <param name="id">ID of a VmUsageLoggingSession.</param>
+        /// <param name="command"></param>
+        /// <returns></returns>
+        [HttpPost("{id}/activevmlogentry")]
+        [ProducesResponseType(typeof(VmUsageLogEntry), (int)HttpStatusCode.Created)]
+        [SwaggerOperation(OperationId = "CreateUsageLogEntry")]
+        public async Task<IActionResult> CreateUsageLogVmActive(Create.Command command)
+        {
+            var result = await _mediator.Send(command);
+            return CreatedAtAction(nameof(CreateUsageLogVmActive), new { id = result.Id }, result);
+        }   
+
+
+        /// <summary>
+        /// End a VmUsageLogEntry.
+        /// </summary>
+        /// <param name="id">ID of a VmUsageLogEntry.</param>
+        /// <returns></returns>
+        [HttpPost("vmlogentry/{id}/endvmlogentry")]
+        [ProducesResponseType(typeof(VmUsageLogEntry), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "EndUsageLogVmInActive")]
+        public async Task<IActionResult> EndUsageLogVmInActive([FromRoute] Guid id)
+        {
+            var result = await _mediator.Send(new EndUsageLogVmInActive.Command { Id = id });
+            return Ok(result);
+        }  
     }
 }

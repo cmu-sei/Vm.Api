@@ -22,6 +22,7 @@ using System.Security.Principal;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using AutoMapper.QueryableExtensions;
+using Player.Vm.Api.Domain.Services;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
@@ -38,22 +39,24 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             private readonly VmLoggingContext _db;
             private readonly IMapper _mapper;
             private readonly IAuthorizationService _authorizationService;
-            private readonly ClaimsPrincipal _user;
+            private readonly IPlayerService _playerService;
 
             public Handler(
                 VmLoggingContext db,
                 IMapper mapper,
-                IAuthorizationService authorizationService)
+                IAuthorizationService authorizationService,
+                IPlayerService playerService)
             {
                 _db = db;
                 _mapper = mapper;
                 _authorizationService = authorizationService;
+                _playerService = playerService;
             }
 
             protected override async Task Handle(Command request, CancellationToken cancellationToken)
             {
-                //TODO: CHADif (!(await _authorizationService.AuthorizeAsync(_user, null, new ContentDeveloperRequirement())).Succeeded)
-                //    throw new ForbiddenException();
+                if (!(await _playerService.IsSystemAdmin(cancellationToken)))
+                    throw new ForbiddenException("You do not have permission to delete a Vm Usage Log");
 
                 var entry = _db.VmUsageLoggingSessions.FirstOrDefault(e => e.Id == request.Id);
 

@@ -10,6 +10,7 @@ DM20-0181
 
 using System;
 using System.Runtime.Serialization;
+using System.Linq;
 using System.Security.Claims;
 using System.Security.Principal;
 using System.Threading;
@@ -17,29 +18,39 @@ using System.Threading.Tasks;
 using MediatR;
 using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.EntityFrameworkCore;
-using AutoMapper.QueryableExtensions;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Infrastructure.Exceptions;
+using System.Collections.Generic;
 using Player.Vm.Api.Domain.Services;
-using System.Linq;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
-    public class GetActiveByTeam
+    public class CreateUsageLogVmActive
     {
-        [DataContract(Name="GetActiveByTeamVmUsageLoggingSessionsQuery")]
-        public class Query : IRequest<VmUsageLoggingSession[]>
+        [DataContract(Name = "CreateUsageLogVmActiveCommand")]
+        public class Command : IRequest<VmUsageLogEntry>
         {
-            /// <summary>   
-            /// The TeamId of the VmUsageLoggingSession to retrieve
+            /// <summary>
+            /// Data for a CreateUsageLogVmActive.
             /// </summary>
-            [DataMember]
-            public Guid TeamId { get; set; }
+            [DataMember]        
+            public Guid SessionId { get; set; }
+            [DataMember]        
+            public Guid MachineId { get; set; }
+            [DataMember]        
+            public string MachineName { get; set; }
+            [DataMember]        
+            public Guid UserId { get; set; }
+            [DataMember]        
+            public string UserName { get; set; }
+            [DataMember]        
+            public DateTimeOffset MachineOpen { get; set; }
+            [DataMember]        
+            public DateTimeOffset MachineClose { get; }
+
         }
 
-
-        public class Handler : IRequestHandler<Query, VmUsageLoggingSession[]>
+        public class Handler : IRequestHandler<Command, VmUsageLogEntry>
         {
             private readonly VmLoggingContext _db;
             private readonly IMapper _mapper;
@@ -58,15 +69,26 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 _playerService = playerService;
             }
 
-            public async Task<VmUsageLoggingSession[]> Handle(Query request, CancellationToken cancellationToken)
+            public async Task<VmUsageLogEntry> Handle(Command request, CancellationToken cancellationToken)
             {
                 if (!(await _playerService.IsSystemAdmin(cancellationToken)))
-                    throw new ForbiddenException("You do not have permission to view Vm Usage Logs");
+                    throw new ForbiddenException("You do not have permission to create a Vm Usage Log");
 
-                return await _db.VmUsageLoggingSessions
-                    .Where(s => s.SessionEnd <= DateTimeOffset.MinValue && s.TeamId == request.TeamId)
-                    .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
-                    .ToArrayAsync();
+                var entry = _db.VmUsageLoggingSessions.FirstOrDefault(e => e.Id == request.SessionId);
+
+                if (entry == null)
+                    throw new EntityNotFoundException<VmUsageLoggingSession>("Vm Usage Logging Session does not exist.");
+                
+                if (entry.SessionEnd > DateTimeOffset.MinValue)
+                    throw new EntityNotFoundException<VmUsageLoggingSession>("Vm Usage Logging Session has already ended.");
+
+                var logEntry = _mapper.Map<Domain.Models.VmUsageLogEntry>(request);
+                logEntry.MachineOpen = DateTimeOffset.UtcNow;
+                logEntry.MachineClose = DateTimeOffset.MinValue;
+
+                await _db.VmUsageLogEntries.AddAsync(logEntry);
+                await _db.SaveChangesAsync();
+                return _mapper.Map<VmUsageLogEntry>(logEntry);
             }
         }
     }

@@ -21,6 +21,7 @@ using Player.Vm.Api.Infrastructure.Exceptions;
 using System.Security.Claims;
 using System.Security.Principal;
 using Microsoft.AspNetCore.Authorization;
+using Player.Vm.Api.Domain.Services;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
@@ -41,22 +42,24 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             private readonly VmLoggingContext _db;
             private readonly IMapper _mapper;
             private readonly IAuthorizationService _authorizationService;
-            private readonly ClaimsPrincipal _user;
+            private readonly IPlayerService _playerService;
 
             public Handler(
                 VmLoggingContext db,
                 IMapper mapper,
-                IAuthorizationService authorizationService)
+                IAuthorizationService authorizationService,
+                IPlayerService playerService)
             {
                 _db = db;
                 _mapper = mapper;
                 _authorizationService = authorizationService;
+                _playerService = playerService;
             }
 
             public async Task<VmUsageLoggingSession> Handle(Query request, CancellationToken cancellationToken)
             {
-                //TODO: Chadif (!(await _authorizationService.AuthorizeAsync(_user, null, new ContentDeveloperRequirement())).Succeeded)
-                //    throw new ForbiddenException();
+                if (!(await _playerService.IsSystemAdmin(cancellationToken)))
+                    throw new ForbiddenException("You do not have permission to view Vm Usage Logs");
 
                 var VmUsageLoggingSession =  await _db.VmUsageLoggingSessions
                     .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)

@@ -36,8 +36,6 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             private readonly VmLoggingContext _db;
             private readonly IMapper _mapper;
             private readonly IAuthorizationService _authorizationService;
-            private readonly ClaimsPrincipal _user;
-
             private readonly IPlayerService _playerService;
 
             public Handler(
@@ -54,12 +52,8 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
 
             public async Task<VmUsageLoggingSession[]> Handle(Query request, CancellationToken cancellationToken)
             {
-                // TODO:  CHAD if (!(await _authorizationService.AuthorizeAsync(_user, null, new ContentDeveloperRequirement())).Succeeded)
-                //    throw new ForbiddenException();
-
-                //var x = await _playerService.GetViewsAsync(cancellationToken);
-            
-                System.Console.WriteLine("CHADDDD");
+                if (!(await _playerService.IsSystemAdmin(cancellationToken)))
+                    throw new ForbiddenException("You do not have permission to view Vm Usage Logs");
 
                 return await _db.VmUsageLoggingSessions
                     .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
