@@ -1,15 +1,16 @@
-// Copyright 2021 Carnegie Mellon University. All Rights Reserved.
+// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
 using System.Linq;
 using System.Threading;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Features.Vms;
 using Player.Api.Client;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Player.Vm.Api.Domain.Services
 {
@@ -21,56 +22,80 @@ namespace Player.Vm.Api.Domain.Services
 
     public class VmUsageLoggingService : IVmUsageLoggingService
     {
+        private readonly IServiceScopeFactory _scopeFactory;
 
-        private readonly ConcurrentDictionary<Guid, VmUsageLogEntry> _activeLogEntries = new ConcurrentDictionary<Guid, VmUsageLogEntry>();
-        private readonly VmLoggingContext _db;
-        private readonly IPlayerService _playerService;
-        private readonly IVmService _vmService;
-
-        public VmUsageLoggingService(
-            VmLoggingContext db, 
-            IPlayerService playerService,
-            IVmService vmService)
+        public VmUsageLoggingService(IServiceScopeFactory scopeFactory)
         {
-            _db = db;
-            _playerService = playerService;
-            _vmService = vmService;
-           
+            _scopeFactory = scopeFactory;
         }
 
         public async void CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds)
         {
-            Console.WriteLine("Creating Log Entry:  ");
             var ct = new CancellationToken();
-
             Player.Vm.Api.Features.Vms.Vm vm = null;
             User user = null;
 
             foreach (Guid teamId in teamIds)
             {
-                var activeSession = _db.VmUsageLoggingSessions.FirstOrDefault(s => s.TeamId == teamId && s.SessionEnd > DateTimeOffset.MinValue);
-                if (activeSession != null)
-                {
-                    if (user == null)
+                using (var scope = _scopeFactory.CreateScope())
+                {                
+                    var dbContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
+                    var activeSession = dbContext.VmUsageLoggingSessions.FirstOrDefault(s => s.TeamId == teamId && s.SessionEnd <= DateTimeOffset.MinValue);
+                    if (activeSession != null)
                     {
-                        // Get the User info once
-                        user = await _playerService.GetUserById(userId, ct);
-                        // Get the Vm info once
-                        vm = await _vmService.GetAsync(vmId, ct);
-                    }
-                    /*var logEntry = new VmUsageLogEntry {
-                        SessionId = activeSession.Id;
+                        if (user == null)
+                        {
+                            // Get the User info once
+                            using (var playerScope = _scopeFactory.CreateScope())
+                            {
+                                var playerApi = scope.ServiceProvider.GetRequiredService<IPlayerService>();
+                                user = await playerApi.GetUserById(userId, ct);
+                            }
 
-                    };*/
+                            // Get the Vm info once
+                            using (var vmScope = _scopeFactory.CreateScope())
+                            {
+                                var vmApi = scope.ServiceProvider.GetRequiredService<IVmService>();
+                                vm = await vmApi.GetAsync(vmId, ct);
+                            }
+                        }
+                        var logEntry = new VmUsageLogEntry {
+                            SessionId = activeSession.Id,
+                            VmId = vm.Id,
+                            VmName = vm.Name,
+                            UserId = user.Id,
+                            UserName = user.Name,
+                            VmActiveDT = DateTimeOffset.UtcNow,
+                            VmInActiveDT = DateTimeOffset.MinValue
+                        };
+
+                        await dbContext.VmUsageLogEntries.AddAsync(logEntry);
+                        await dbContext.SaveChangesAsync();
+                    }
                 }
             }
 
         }
 
-        public void CloseVmLogEntry(Guid vmLogEntryId)
+        public async void CloseVmLogEntry(Guid userId)
         {
-            Console.WriteLine("Closing Log Entry:  ");
             
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
+                var vmUsageLogEntry =  await dbContext.VmUsageLogEntries
+                    .SingleOrDefaultAsync(e => e.UserId == userId && e.VmInActiveDT <= DateTimeOffset.MinValue);
+
+                if (vmUsageLogEntry == null)
+                {
+                    // Unable to find a matching log entry
+                    return;
+                }
+
+                vmUsageLogEntry.VmInActiveDT = DateTimeOffset.UtcNow;
+                dbContext.Update<VmUsageLogEntry>(vmUsageLogEntry);
+                await dbContext.SaveChangesAsync();
+            }            
         }
     }
 
