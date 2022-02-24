@@ -36,9 +36,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             [DataMember]
             public Guid Id { get; set; }
             [DataMember]
-            public Guid TeamId { get; set; }
-            [DataMember]
-            public string TeamName { get; set; }
+            public Guid[] TeamIds { get; set; }
             [DataMember]
             public string SessionName { get; set; }
             [DataMember]

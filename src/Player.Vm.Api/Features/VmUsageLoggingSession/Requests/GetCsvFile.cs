@@ -93,6 +93,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                         s.Id + ", " + 
                         s.VmId  + ", " + 
                         s.VmName + ", " + 
+                        s.IpAddress.Replace(", ", " ") + ", " +
                         s.UserId + ", " + 
                         s.UserName + ", " + 
                         s.VmActiveDT + ", " + 
@@ -100,7 +101,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 }));
 
                 //Add header for CSV
-                data = "SessionID, LogID, VmID, VmName, UserId, UserName, VmActiveDateTime, VmInActiveDateTime\r\n" + data;
+                data = "SessionID, LogID, VmID, VmName, IpAddress, UserId, UserName, VmActiveDateTime, VmInActiveDateTime\r\n" + data;
 
                 byte[] bytes = Encoding.ASCII.GetBytes(data);
                 

@@ -19,8 +19,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
     public class VmUsageLoggingSession
     {
         public Guid Id { get; set; }
-        public Guid TeamId { get; set; }
-        public string TeamName { get; set; }
+        public Guid[] TeamIds { get; set; }
         public string SessionName { get; set; }
         public DateTimeOffset SessionStart { get; set; }
         public DateTimeOffset SessionEnd { get; set; }

@@ -34,51 +34,68 @@ namespace Player.Vm.Api.Domain.Services
             var ct = new CancellationToken();
             Player.Vm.Api.Features.Vms.Vm vm = null;
             User user = null;
+            var teams = teamIds.ToArray<Guid>();
 
-            foreach (Guid teamId in teamIds)
-            {
-                using (var scope = _scopeFactory.CreateScope())
-                {                
-                    var dbContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
-                    var activeSessions = await dbContext.VmUsageLoggingSessions
-                        .Where(s => s.TeamId == teamId && 
-                            s.SessionEnd <= DateTimeOffset.MinValue &&
-                            s.SessionStart <= DateTimeOffset.UtcNow)
-                        .ToArrayAsync();
 
-                    foreach (var session in activeSessions)
+            using (var scope = _scopeFactory.CreateScope())
+            {                
+                var dbContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
+                var activeSessions = await dbContext.VmUsageLoggingSessions
+                    .Where(s => s.SessionEnd <= DateTimeOffset.MinValue &&
+                        s.SessionStart <= DateTimeOffset.UtcNow)
+                    .ToArrayAsync();
+
+                foreach (var session in activeSessions)
+                {
+                    // First check to see if there is a matching TeamID in either list and only then proceed
+                    var teamFound = false;
+                    foreach (var teamId in session.TeamIds)
                     {
-                        if (user == null)
+                        if (teams.Contains(teamId))
                         {
-                            // Get the User info once
-                            using (var playerScope = _scopeFactory.CreateScope())
-                            {
-                                var playerApi = scope.ServiceProvider.GetRequiredService<IPlayerService>();
-                                user = await playerApi.GetUserById(userId, ct);
-                            }
-
-                            // Get the Vm info once
-                            using (var vmScope = _scopeFactory.CreateScope())
-                            {
-                                var vmApi = scope.ServiceProvider.GetRequiredService<IVmService>();
-                                vm = await vmApi.GetAsync(vmId, ct);
-                            }
+                            teamFound = true;
+                            break;
                         }
-                        var logEntry = new VmUsageLogEntry {
-                            SessionId = session.Id,
-                            VmId = vm.Id,
-                            VmName = vm.Name,
-                            UserId = user.Id,
-                            UserName = user.Name,
-                            VmActiveDT = DateTimeOffset.UtcNow,
-                            VmInActiveDT = DateTimeOffset.MinValue
-                        };
-
-                        await dbContext.VmUsageLogEntries.AddAsync(logEntry);
-                        await dbContext.SaveChangesAsync();
                     }
+
+                    if (!teamFound)
+                    {
+                        // This session doesn't have the team associated so skip it
+                        continue;
+                    }
+
+                    if (user == null)
+                    {
+                        // Get the User info once
+                        using (var playerScope = _scopeFactory.CreateScope())
+                        {
+                            var playerApi = scope.ServiceProvider.GetRequiredService<IPlayerService>();
+                            user = await playerApi.GetUserById(userId, ct);
+                        }
+
+                        // Get the Vm info once
+                        using (var vmScope = _scopeFactory.CreateScope())
+                        {
+                            var vmApi = scope.ServiceProvider.GetRequiredService<IVmService>();
+                            vm = await vmApi.GetAsync(vmId, ct);
+                        }
+                    }
+                    var logEntry = new VmUsageLogEntry {
+                        SessionId = session.Id,
+                        VmId = vm.Id,
+                        VmName = vm.Name,
+                        IpAddress = string.Join(", ", vm.IpAddresses),
+                        UserId = user.Id,
+                        UserName = user.Name,
+                        VmActiveDT = DateTimeOffset.UtcNow,
+                        VmInActiveDT = DateTimeOffset.MinValue
+                    };
+
+                    await dbContext.VmUsageLogEntries.AddAsync(logEntry);
+                    await dbContext.SaveChangesAsync();
                 }
             }
+        
 
         }
 

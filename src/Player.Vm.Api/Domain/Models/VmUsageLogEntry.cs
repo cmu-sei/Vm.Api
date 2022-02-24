@@ -25,6 +25,7 @@ namespace Player.Vm.Api.Domain.Models
         public Guid SessionId { get; set; }
         public Guid VmId { get; set; }
         public string VmName { get; set; }
+        public string IpAddress { get; set; }
         public Guid UserId { get; set; }
         public string UserName { get; set; }
         public DateTimeOffset VmActiveDT { get; set; }
