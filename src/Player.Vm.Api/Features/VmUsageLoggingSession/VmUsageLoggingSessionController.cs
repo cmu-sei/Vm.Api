@@ -16,6 +16,9 @@ using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Swashbuckle.AspNetCore.Annotations;
+using Player.Vm.Api.Infrastructure.Options;
+using Player.Vm.Api.Infrastructure.Options;
+using Microsoft.Extensions.Options;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
@@ -25,11 +28,28 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
     public class VmUsageLoggingSessionController : ControllerBase
     {
         private readonly IMediator _mediator;
-
-        public VmUsageLoggingSessionController(IMediator mediator)
+        private VmUsageLoggingOptions _options;
+        
+        public VmUsageLoggingSessionController(IMediator mediator, IOptionsMonitor<VmUsageLoggingOptions> vsphereOptionsMonitor)
         {
             _mediator = mediator;
+            _options = vsphereOptionsMonitor.CurrentValue;
         }
+
+
+
+        /// <summary>
+        /// Get a bool value to determine if VM Usage Logging is available.
+        /// </summary>
+        /// <returns></returns>
+        [HttpGet("isloggingenabled")]
+        [ProducesResponseType(typeof(VmUsageLoggingSession), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "GetIsLoggingEnabled")]
+        public IActionResult GetIsLoggingEnabled()
+        {
+            return Ok(_options.Enabled);
+        }
+
 
         /// <summary>
         /// Get a single VmUsageLoggingSession.
@@ -41,8 +61,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         [SwaggerOperation(OperationId = "GetSession")]
         public async Task<IActionResult> Get([FromRoute] Guid id)
         {
-            var result = await _mediator.Send(new Get.Query { Id = id });
-            return Ok(result);
+            if (_options.Enabled)
+            {
+                var result = await _mediator.Send(new Get.Query { Id = id });
+                return Ok(result);
+            }
+            else
+            {
+                return NotFound("Vm Usage Logging is disabled");
+            }
         }
 
 
@@ -55,8 +82,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         [SwaggerOperation(OperationId = "GetAllSessions")]
         public async Task<IActionResult> GetAll()
         {
-            var result = await _mediator.Send(new GetAll.Query());
-            return Ok(result);
+            if (_options.Enabled)
+            {
+                var result = await _mediator.Send(new GetAll.Query());
+                return Ok(result);
+            }
+            else
+            {
+                return NotFound("Vm Usage Logging is disabled");
+            }
         }
 
         /// <summary>
@@ -68,8 +102,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         [SwaggerOperation(OperationId = "GetActiveSessions")]
         public async Task<IActionResult> GetActive()
         {
-            var result = await _mediator.Send(new GetActive.Query());
-            return Ok(result);
+            if (_options.Enabled)
+            {
+                var result = await _mediator.Send(new GetActive.Query());
+                return Ok(result);
+            }
+            else
+            {
+                return NotFound("Vm Usage Logging is disabled");
+            }
         }        
 
         /// <summary>
@@ -82,8 +123,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         [SwaggerOperation(OperationId = "CreateSession")]
         public async Task<IActionResult> Create(Create.Command command)
         {
-            var result = await _mediator.Send(command);
-            return CreatedAtAction(nameof(Get), new { id = result.Id }, result);
+            if (_options.Enabled)
+            {
+                var result = await _mediator.Send(command);
+                return CreatedAtAction(nameof(Get), new { id = result.Id }, result);
+            }
+            else
+            {
+                return NotFound("Vm Usage Logging is disabled");
+            }
         }
 
         /// <summary>
@@ -97,9 +145,16 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         [SwaggerOperation(OperationId = "EditSession")]
         public async Task<IActionResult> Edit([FromRoute] Guid id, Edit.Command command)
         {
-            command.Id = id;
-            var result = await _mediator.Send(command);
-            return Ok(result);
+            if (_options.Enabled)
+            {
+                command.Id = id;
+                var result = await _mediator.Send(command);
+                return Ok(result);
+            }
+            else
+            {
+                return NotFound("Vm Usage Logging is disabled");
+            }
         }
 
         /// <summary>
@@ -112,8 +167,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         [SwaggerOperation(OperationId = "DeleteSession")]
         public async Task<IActionResult> Delete([FromRoute] Guid id)
         {
-            await _mediator.Send(new Delete.Command { Id = id });
-            return NoContent();
+            if (_options.Enabled)
+            {
+                await _mediator.Send(new Delete.Command { Id = id });
+                return NoContent();
+            }
+            else
+            {
+                return NotFound("Vm Usage Logging is disabled");
+            }
         }
 
         /// <summary>
@@ -126,8 +188,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         [SwaggerOperation(OperationId = "EndSession")]
         public async Task<IActionResult> EndSession([FromRoute] Guid id)
         {
-            var result = await _mediator.Send(new EndSession.Command { Id = id });
-            return Ok(result);
+            if (_options.Enabled)
+            {
+                var result = await _mediator.Send(new EndSession.Command { Id = id });
+                return Ok(result);
+            }
+            else
+            {
+                return NotFound("Vm Usage Logging is disabled");
+            }
         }     
 
         /// <summary>
@@ -139,8 +208,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         [SwaggerOperation(OperationId = "GetCsvFile")]
         public async Task<IActionResult> GetCsvFile([FromRoute] Guid id)
         {
-            var result = await _mediator.Send(new GetCsvFile.Query {SessionId = id});
-            return result;
+            if (_options.Enabled)
+            {
+                var result = await _mediator.Send(new GetCsvFile.Query {SessionId = id});
+                return result;
+            }
+            else
+            {
+                return NotFound("Vm Usage Logging is disabled");
+            }
         }
     }
 }

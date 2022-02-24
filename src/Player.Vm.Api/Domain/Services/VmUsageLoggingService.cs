@@ -11,6 +11,8 @@ using Player.Vm.Api.Features.Vms;
 using Player.Api.Client;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
+using Player.Vm.Api.Infrastructure.Options;
 
 namespace Player.Vm.Api.Domain.Services
 {
@@ -23,14 +25,22 @@ namespace Player.Vm.Api.Domain.Services
     public class VmUsageLoggingService : IVmUsageLoggingService
     {
         private readonly IServiceScopeFactory _scopeFactory;
+        private VmUsageLoggingOptions _options;
 
-        public VmUsageLoggingService(IServiceScopeFactory scopeFactory)
+        public VmUsageLoggingService(IServiceScopeFactory scopeFactory,
+            IOptionsMonitor<VmUsageLoggingOptions> vsphereOptionsMonitor)
         {
             _scopeFactory = scopeFactory;
+            _options = vsphereOptionsMonitor.CurrentValue;
         }
 
         public async void CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds)
         {
+            if (_options.Enabled == false)
+            {
+                return;
+            }
+
             var ct = new CancellationToken();
             Player.Vm.Api.Features.Vms.Vm vm = null;
             User user = null;
@@ -101,6 +111,10 @@ namespace Player.Vm.Api.Domain.Services
 
         public async void CloseVmLogEntry(Guid userId, Guid vmId)
         {
+            if (_options.Enabled == false)
+            {
+                return;
+            }
             
             using (var scope = _scopeFactory.CreateScope())
             {

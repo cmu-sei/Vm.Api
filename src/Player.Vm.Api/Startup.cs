@@ -149,7 +149,7 @@ namespace Player.Vm.Api
                 .AddScoped(config => config.GetService<IOptionsSnapshot<ConsoleUrlOptions>>().Value);
             
             services
-                .Configure<ConsoleUrlOptions>(Configuration.GetSection("VmUsageLogging"))
+                .Configure<VmUsageLoggingOptions>(Configuration.GetSection("VmUsageLogging"))
                 .AddScoped(config => config.GetService<IOptionsSnapshot<VmUsageLoggingOptions>>().Value);
 
             services.AddCors(options => options.UseConfiguredCors(Configuration.GetSection("CorsPolicy")));
