@@ -9,11 +9,15 @@ DM20-0181
 */
 
 using System;
+using System.IO;
+using System.Linq;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.AspNetCore.Mvc;
 using AutoMapper.QueryableExtensions;
 using System.Runtime.Serialization;
 using Player.Vm.Api.Data;
@@ -25,19 +29,19 @@ using Player.Vm.Api.Domain.Services;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
-    public class Get
+    public class GetCsvFile
     {
-        [DataContract(Name="GetVmUsageLoggingSessionQuery")]
-        public class Query : IRequest<VmUsageLoggingSession>
+        [DataContract(Name="GetCsvFileQuery")]
+        public class Query : IRequest<FileResult>
         {
             /// <summary>
-            /// The Id of the VmUsageLoggingSession to retrieve
+            /// The Id of the VmUsageLoggingSession to retrieve log entries for
             /// </summary>
             [DataMember]
-            public Guid Id { get; set; }
+            public Guid SessionId { get; set; }
         }
 
-        public class Handler : IRequestHandler<Query, VmUsageLoggingSession>
+        public class Handler : IRequestHandler<Query, FileResult>
         {
             private readonly VmLoggingContext _db;
             private readonly IMapper _mapper;
@@ -56,20 +60,54 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 _playerService = playerService;
             }
 
-            public async Task<VmUsageLoggingSession> Handle(Query request, CancellationToken cancellationToken)
+            public async Task<FileResult> Handle(Query request, CancellationToken cancellationToken)
             {
                 if (!(await _playerService.IsSystemAdmin(cancellationToken)))
-                    throw new ForbiddenException("You do not have permission to view Vm Usage Logs");
+                    throw new ForbiddenException("You do not have permission to download Vm Usage Logs");
 
                 var vmUsageLoggingSession =  await _db.VmUsageLoggingSessions
                     .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
-                    .SingleOrDefaultAsync(e => e.Id == request.Id);
-
+                    .SingleOrDefaultAsync(e => e.Id == request.SessionId);
 
                 if (vmUsageLoggingSession == null)
                     throw new EntityNotFoundException<VmUsageLoggingSession>();
 
-                return vmUsageLoggingSession;
+                var vmUsageLogEntries =  await _db.VmUsageLogEntries
+                    .ProjectTo<VmUsageLogEntry>(_mapper.ConfigurationProvider)
+                    .Where(e => e.SessionId == request.SessionId)
+                    .OrderByDescending(e => e.VmActiveDT)
+                    .ToArrayAsync();
+
+                if (vmUsageLogEntries == null)
+                    throw new EntityNotFoundException<VmUsageLogEntry>();
+
+                string fileName = vmUsageLoggingSession.SessionName + ".csv";
+                if (vmUsageLoggingSession.SessionName.Length == 0)
+                {
+                    // No name giving, use Guid
+                    fileName = vmUsageLoggingSession.Id + ".csv";
+                }
+
+                string data = string.Join("\r\n", Array.ConvertAll(vmUsageLogEntries, s => {
+                    return s.SessionId + ", " + 
+                        s.Id + ", " + 
+                        s.VmId  + ", " + 
+                        s.VmName + ", " + 
+                        s.UserId + ", " + 
+                        s.UserName + ", " + 
+                        s.VmActiveDT + ", " + 
+                        s.VmInActiveDT;
+                }));
+
+                //Add header for CSV
+                data = "SessionID, LogID, VmID, VmName, UserId, UserName, VmActiveDateTime, VmInActiveDateTime\r\n" + data;
+
+                byte[] bytes = Encoding.ASCII.GetBytes(data);
+                
+                var result = new FileContentResult(bytes, "text/csv");
+                result.FileDownloadName = fileName;
+
+                return result;
             }
         }
     }

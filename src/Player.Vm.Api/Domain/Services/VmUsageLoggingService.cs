@@ -17,7 +17,7 @@ namespace Player.Vm.Api.Domain.Services
     public interface IVmUsageLoggingService
     {
         void CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds);
-        void CloseVmLogEntry(Guid vmLogEntryId);
+        void CloseVmLogEntry(Guid vmLogEntryId, Guid vmId);
     }
 
     public class VmUsageLoggingService : IVmUsageLoggingService
@@ -40,8 +40,13 @@ namespace Player.Vm.Api.Domain.Services
                 using (var scope = _scopeFactory.CreateScope())
                 {                
                     var dbContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
-                    var activeSession = dbContext.VmUsageLoggingSessions.FirstOrDefault(s => s.TeamId == teamId && s.SessionEnd <= DateTimeOffset.MinValue);
-                    if (activeSession != null)
+                    var activeSessions = await dbContext.VmUsageLoggingSessions
+                        .Where(s => s.TeamId == teamId && 
+                            s.SessionEnd <= DateTimeOffset.MinValue &&
+                            s.SessionStart <= DateTimeOffset.UtcNow)
+                        .ToArrayAsync();
+
+                    foreach (var session in activeSessions)
                     {
                         if (user == null)
                         {
@@ -60,7 +65,7 @@ namespace Player.Vm.Api.Domain.Services
                             }
                         }
                         var logEntry = new VmUsageLogEntry {
-                            SessionId = activeSession.Id,
+                            SessionId = session.Id,
                             VmId = vm.Id,
                             VmName = vm.Name,
                             UserId = user.Id,
@@ -77,23 +82,30 @@ namespace Player.Vm.Api.Domain.Services
 
         }
 
-        public async void CloseVmLogEntry(Guid userId)
+        public async void CloseVmLogEntry(Guid userId, Guid vmId)
         {
             
             using (var scope = _scopeFactory.CreateScope())
             {
                 var dbContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
-                var vmUsageLogEntry =  await dbContext.VmUsageLogEntries
-                    .SingleOrDefaultAsync(e => e.UserId == userId && e.VmInActiveDT <= DateTimeOffset.MinValue);
+                var vmUsageLogEntries =  await dbContext.VmUsageLogEntries
+                    .Where(e => e.UserId == userId && 
+                        e.VmId == vmId && 
+                        e.VmInActiveDT <= DateTimeOffset.MinValue)
+                    .ToArrayAsync();
 
-                if (vmUsageLogEntry == null)
+                if (vmUsageLogEntries == null)
                 {
                     // Unable to find a matching log entry
                     return;
                 }
 
-                vmUsageLogEntry.VmInActiveDT = DateTimeOffset.UtcNow;
-                dbContext.Update<VmUsageLogEntry>(vmUsageLogEntry);
+                foreach (var log in vmUsageLogEntries)
+                {
+                    log.VmInActiveDT = DateTimeOffset.UtcNow;
+                    dbContext.Update<VmUsageLogEntry>(log);    
+                }
+                
                 await dbContext.SaveChangesAsync();
             }            
         }

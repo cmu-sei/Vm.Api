@@ -143,5 +143,17 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             return Ok(result);
         }     
 
+        /// <summary>
+        /// Get CSV file for all log entries in a VmUsageLoggingSession.
+        /// </summary>
+        /// <returns></returns>
+        [HttpGet("{id}/download")]
+        [Produces("text/csv")]
+        [SwaggerOperation(OperationId = "GetCsvFile")]
+        public async Task<IActionResult> GetCsvFile([FromRoute] Guid id)
+        {
+            var result = await _mediator.Send(new GetCsvFile.Query {SessionId = id});
+            return result;
+        }
     }
 }

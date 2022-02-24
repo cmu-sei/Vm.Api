@@ -12,8 +12,8 @@ using Player.Vm.Api.Data;
 namespace Player.Vm.Api.Data.Migrations.Postgres.VmLogging
 {
     [DbContext(typeof(VmLoggingContext))]
-    [Migration("20220218153958_Changed Name to VmUsageLoggingSession")]
-    partial class ChangedNametoVmUsageLoggingSession
+    [Migration("20220224122721_Initial VmLoggingContext")]
+    partial class InitialVmLoggingContext
     {
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
@@ -98,6 +98,47 @@ namespace Player.Vm.Api.Data.Migrations.Postgres.VmLogging
                     b.HasIndex("VmId");
 
                     b.ToTable("vm_team");
+                });
+
+            modelBuilder.Entity("Player.Vm.Api.Domain.Models.VmUsageLogEntry", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("user_id");
+
+                    b.Property<string>("UserName")
+                        .HasColumnType("text")
+                        .HasColumnName("user_name");
+
+                    b.Property<DateTimeOffset>("VmActiveDT")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("vm_active_dt");
+
+                    b.Property<Guid>("VmId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("vm_id");
+
+                    b.Property<DateTimeOffset>("VmInActiveDT")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("vm_in_active_dt");
+
+                    b.Property<string>("VmName")
+                        .HasColumnType("text")
+                        .HasColumnName("vm_name");
+
+                    b.HasKey("Id");
+
+                    b.ToTable("vm_usage_log_entries");
                 });
 
             modelBuilder.Entity("Player.Vm.Api.Domain.Models.VmUsageLoggingSession", b =>

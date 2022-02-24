@@ -19,10 +19,9 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         public MappingProfile()
         {
             CreateMap<Domain.Models.VmUsageLoggingSession, VmUsageLoggingSession>();
+            CreateMap<Domain.Models.VmUsageLogEntry, VmUsageLogEntry>();
             CreateMap<Create.Command, Domain.Models.VmUsageLoggingSession>();
             CreateMap<Edit.Command, Domain.Models.VmUsageLoggingSession>();    
-            CreateMap<CreateUsageLogVmActive.Command, Domain.Models.VmUsageLogEntry>();
-
         }
     }
 }

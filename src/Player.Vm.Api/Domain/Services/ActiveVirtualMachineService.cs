@@ -58,7 +58,7 @@ namespace Player.Vm.Api.Domain.Services
                 var entry = new KeyValuePair<Guid, ActiveVirtualMachine>(userId, activeVm);
                 var collection = (ICollection<KeyValuePair<Guid, ActiveVirtualMachine>>)_activeVirtualMachines;
 
-                _vmUsageLoggingService.CloseVmLogEntry(userId);
+                _vmUsageLoggingService.CloseVmLogEntry(userId, activeVm.VmId);
 
                 if (collection.Remove(entry))
                 {

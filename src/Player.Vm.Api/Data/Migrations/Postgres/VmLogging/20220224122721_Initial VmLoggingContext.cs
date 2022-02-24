@@ -5,7 +5,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace Player.Vm.Api.Data.Migrations.Postgres.VmLogging
 {
-    public partial class VmLoggingDb : Migration
+    public partial class InitialVmLoggingContext : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
@@ -43,7 +43,25 @@ namespace Player.Vm.Api.Data.Migrations.Postgres.VmLogging
                 });
 
             migrationBuilder.CreateTable(
-                name: "vm_logging_sessions",
+                name: "vm_usage_log_entries",
+                columns: table => new
+                {
+                    id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "uuid_generate_v4()"),
+                    session_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    vm_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    vm_name = table.Column<string>(type: "text", nullable: true),
+                    user_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    user_name = table.Column<string>(type: "text", nullable: true),
+                    vm_active_dt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    vm_in_active_dt = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("PK_vm_usage_log_entries", x => x.id);
+                });
+
+            migrationBuilder.CreateTable(
+                name: "vm_usage_logging_sessions",
                 columns: table => new
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "uuid_generate_v4()"),
@@ -55,7 +73,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres.VmLogging
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("PK_vm_logging_sessions", x => x.id);
+                    table.PrimaryKey("PK_vm_usage_logging_sessions", x => x.id);
                 });
 
             migrationBuilder.CreateTable(
@@ -91,10 +109,13 @@ namespace Player.Vm.Api.Data.Migrations.Postgres.VmLogging
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(
-                name: "vm_logging_sessions");
+                name: "vm_team");
 
             migrationBuilder.DropTable(
-                name: "vm_team");
+                name: "vm_usage_log_entries");
+
+            migrationBuilder.DropTable(
+                name: "vm_usage_logging_sessions");
 
             migrationBuilder.DropTable(
                 name: "team");
