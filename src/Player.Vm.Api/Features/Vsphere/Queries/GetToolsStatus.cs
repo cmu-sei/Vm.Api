@@ -11,7 +11,7 @@ using Player.Vm.Api.Infrastructure.Exceptions;
 using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vms;
-using NetVimClient;
+using VimClient;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
