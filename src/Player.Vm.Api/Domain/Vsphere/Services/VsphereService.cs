@@ -10,7 +10,7 @@ using System.IO;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
-using NetVimClient;
+using VimClient;
 using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Models;
@@ -438,8 +438,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             VmPowerState State = VmPowerState.off;
             string state = null;
 
-            NetVimClient.ObjectContent[] oc = propertiesResponse.returnval;
-            NetVimClient.ObjectContent obj = oc[0];
+            VimClient.ObjectContent[] oc = propertiesResponse.returnval;
+            VimClient.ObjectContent obj = oc[0];
 
             foreach (DynamicProperty dp in obj.propSet)
             {
@@ -574,8 +574,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public VirtualMachineToolsStatus GetVmToolsStatus(RetrievePropertiesResponse propertiesResponse)
         {
-            NetVimClient.ObjectContent[] oc = propertiesResponse.returnval;
-            NetVimClient.ObjectContent obj = oc[0];
+            VimClient.ObjectContent[] oc = propertiesResponse.returnval;
+            VimClient.ObjectContent obj = oc[0];
             foreach (DynamicProperty dp in obj.propSet)
             {
                 if (dp.val.GetType() == typeof(VirtualMachineSummary))
@@ -617,8 +617,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 _props,
                 VmFilter(vmReference));
 
-            NetVimClient.ObjectContent[] oc = response.returnval;
-            NetVimClient.ObjectContent obj = oc[0];
+            VimClient.ObjectContent[] oc = response.returnval;
+            VimClient.ObjectContent obj = oc[0];
 
             foreach (DynamicProperty dp in obj.propSet)
             {
@@ -708,7 +708,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             RetrievePropertiesResponse response = await _client.RetrievePropertiesAsync(
                 _props,
                 TaskFilter(task));
-            NetVimClient.ObjectContent[] oc = response.returnval;
+            VimClient.ObjectContent[] oc = response.returnval;
             info = (TaskInfo)oc[0].propSet[0].val;
             return info;
         }
@@ -1394,7 +1394,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 _props,
                 VmFilter(machineReference, "name summary.guest.toolsStatus summary.runtime.host summary.runtime.powerState config.hardware.device"));
 
-            NetVimClient.ObjectContent vm = propertiesResponse.returnval.FirstOrDefault();
+            VimClient.ObjectContent vm = propertiesResponse.returnval.FirstOrDefault();
 
             var toolsStatus = vm.GetProperty("summary.guest.toolsStatus") as Nullable<VirtualMachineToolsStatus>;
             VirtualMachineToolsStatus vmToolsStatus = VirtualMachineToolsStatus.toolsNotRunning;
@@ -1449,7 +1449,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 throw new InvalidOperationException();
             }
             var datastores = clunkyTree.FindType("Datastore");
-            foreach (NetVimClient.ObjectContent rawDatastore in datastores)
+            foreach (VimClient.ObjectContent rawDatastore in datastores)
             {
                 if (dsName == rawDatastore.GetProperty("name").ToString())
                 {
@@ -1464,7 +1464,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return null;
         }
 
-        private async Task<NetVimClient.ObjectContent[]> LoadReferenceTree(VimPortTypeClient client)
+        private async Task<VimClient.ObjectContent[]> LoadReferenceTree(VimPortTypeClient client)
         {
             var plan = new TraversalSpec
             {

@@ -10,7 +10,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.SignalR;
-using NetVimClient;
+using VimClient;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Domain.Vsphere.Models;
@@ -101,7 +101,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                 _taskServiceHealthCheck.CompletedRun();
                 await _resetEvent.WaitAsync(new TimeSpan(0, 0, 0, 0, intervalMilliseconds));
-            }        }
+            }
+        }
 
         public void CheckTasks()
         {
