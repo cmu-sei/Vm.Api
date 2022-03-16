@@ -75,42 +75,24 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         /// <summary>
         /// Get all VmUsageLoggingSessions.
         /// </summary>
+        /// <param name="onlyActive"></param>
         /// <returns></returns>
         [HttpGet()]
         [ProducesResponseType(typeof(IEnumerable<VmUsageLoggingSession>), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "GetAllSessions")]
-        public async Task<IActionResult> GetAll()
+        public async Task<IActionResult> GetAll(bool? onlyActive)
         {
             if (_options.Enabled)
             {
-                var result = await _mediator.Send(new GetAll.Query());
+                var result = await _mediator.Send(new GetAll.Query {OnlyActive = onlyActive.HasValue ? onlyActive.Value : false});
+                
                 return Ok(result);
             }
             else
             {
                 return NotFound("Vm Usage Logging is disabled");
             }
-        }
-
-        /// <summary>
-        /// Get active VmUsageLoggingSessions.
-        /// </summary>
-        /// <returns></returns>
-        [HttpGet("active")]
-        [ProducesResponseType(typeof(IEnumerable<VmUsageLoggingSession>), (int)HttpStatusCode.OK)]
-        [SwaggerOperation(OperationId = "GetActiveSessions")]
-        public async Task<IActionResult> GetActive()
-        {
-            if (_options.Enabled)
-            {
-                var result = await _mediator.Send(new GetActive.Query());
-                return Ok(result);
-            }
-            else
-            {
-                return NotFound("Vm Usage Logging is disabled");
-            }
-        }        
+        }       
 
         /// <summary>
         /// Create a new VmUsageLoggingSession.

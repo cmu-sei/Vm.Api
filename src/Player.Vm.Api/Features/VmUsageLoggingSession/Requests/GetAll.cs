@@ -8,6 +8,7 @@ Carnegie Mellon(R) and CERT(R) are registered in the U.S. Patent and Trademark O
 DM20-0181
 */
 
+using System;
 using System.Runtime.Serialization;
 using System.Security.Claims;
 using System.Security.Principal;
@@ -21,6 +22,7 @@ using AutoMapper.QueryableExtensions;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Domain.Services;
+using System.Linq;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
@@ -29,6 +31,11 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         [DataContract(Name="GetVmUsageLoggingSessionsQuery")]
         public class Query : IRequest<VmUsageLoggingSession[]>
         {
+            /// <summary>
+            /// Optional Bool when set to true only the active sessions will be returned
+            /// </summary>
+            [DataMember]
+            public bool OnlyActive { get; set; }
         }
 
         public class Handler : IRequestHandler<Query, VmUsageLoggingSession[]>
@@ -55,9 +62,18 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 if (!(await _playerService.IsSystemAdmin(cancellationToken)))
                     throw new ForbiddenException("You do not have permission to view Vm Usage Logs");
 
-                return await _db.VmUsageLoggingSessions
-                    .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
-                    .ToArrayAsync();
+                if (request.OnlyActive == true)
+                {
+                    return await _db.VmUsageLoggingSessions
+                        .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                        .Where(s => s.SessionEnd <= DateTimeOffset.MinValue)
+                        .ToArrayAsync();                }
+                else
+                {
+                    return await _db.VmUsageLoggingSessions
+                        .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                        .ToArrayAsync();
+                }
             }
         }
     }
