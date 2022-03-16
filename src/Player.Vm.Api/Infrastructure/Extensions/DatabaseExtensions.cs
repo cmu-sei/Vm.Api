@@ -24,6 +24,7 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                 {
                     var databaseOptions = services.GetService<DatabaseOptions>();
                     var vmCtx = services.GetRequiredService<VmContext>();
+                    var loggingOptions = services.GetService<VmUsageLoggingOptions>();
 
                     if (vmCtx != null)
                     {
@@ -40,6 +41,19 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                         {
                             vmCtx.Database.EnsureCreated();
                         }
+                    }
+
+                    if (loggingOptions.Enabled)
+                    {
+                        var vmCtxLogging = services.GetRequiredService<VmLoggingContext>();
+
+                        if (databaseOptions.DevModeRecreate)
+                            vmCtxLogging.Database.EnsureDeleted();
+
+                        if (databaseOptions.DevModeRecreate)
+                        {
+                            vmCtxLogging.Database.EnsureCreated();
+                        }                        
                     }
 
                 }
