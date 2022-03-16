@@ -243,7 +243,7 @@ namespace Player.Vm.Api
             services.AddSingleton<ICallbackBackgroundService>(x => x.GetService<CallbackBackgroundService>());
             services.AddSingleton<IAuthenticationService, AuthenticationService>();
             services.AddSingleton<IActiveVirtualMachineService, ActiveVirtualMachineService>();
-            services.AddSingleton<IVmUsageLoggingService, VmUsageLoggingService>();
+            services.AddScoped<IVmUsageLoggingService, VmUsageLoggingService>();
 
             // Vsphere Services
             services.AddSingleton<ConnectionService>();

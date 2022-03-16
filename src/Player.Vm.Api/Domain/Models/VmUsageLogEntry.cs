@@ -22,14 +22,14 @@ namespace Player.Vm.Api.Domain.Models
         [Key]
         [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public Guid Id { get; set; }
-        public Guid SessionId { get; set; }
+        public VmUsageLoggingSession Session { get; set; }
         public Guid VmId { get; set; }
         public string VmName { get; set; }
         public string IpAddress { get; set; }
         public Guid UserId { get; set; }
         public string UserName { get; set; }
         public DateTimeOffset VmActiveDT { get; set; }
-        public DateTimeOffset VmInActiveDT { get; set; }
+        public DateTimeOffset VmInactiveDT { get; set; }
 
     }
 

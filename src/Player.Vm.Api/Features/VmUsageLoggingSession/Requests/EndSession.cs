@@ -70,7 +70,6 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
 
                 vmUsageLoggingSession.SessionEnd = DateTimeOffset.UtcNow;
 
-                _db.VmUsageLoggingSessions.Update(vmUsageLoggingSession);
                 await _db.SaveChangesAsync();
                 return _mapper.Map<VmUsageLoggingSession>(vmUsageLoggingSession);
             }

@@ -29,9 +29,9 @@ using Player.Vm.Api.Domain.Services;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
-    public class GetCsvFile
+    public class GetVmUsageCsvFile
     {
-        [DataContract(Name="GetCsvFileQuery")]
+        [DataContract(Name="GetVmUsageCsvFileQuery")]
         public class Query : IRequest<FileResult>
         {
             /// <summary>
@@ -97,7 +97,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                         s.UserId + ", " + 
                         s.UserName + ", " + 
                         s.VmActiveDT + ", " + 
-                        s.VmInActiveDT;
+                        s.VmInactiveDT;
                 }));
 
                 //Add header for CSV

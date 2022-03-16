@@ -17,7 +17,6 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Swashbuckle.AspNetCore.Annotations;
 using Player.Vm.Api.Infrastructure.Options;
-using Player.Vm.Api.Infrastructure.Options;
 using Microsoft.Extensions.Options;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
@@ -205,12 +204,12 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         /// <returns></returns>
         [HttpGet("{id}/download")]
         [Produces("text/csv")]
-        [SwaggerOperation(OperationId = "GetCsvFile")]
-        public async Task<IActionResult> GetCsvFile([FromRoute] Guid id)
+        [SwaggerOperation(OperationId = "GetVmUsageCsvFile")]
+        public async Task<IActionResult> GetVmUsageCsvFile([FromRoute] Guid id)
         {
             if (_options.Enabled)
             {
-                var result = await _mediator.Send(new GetCsvFile.Query {SessionId = id});
+                var result = await _mediator.Send(new GetVmUsageCsvFile.Query {SessionId = id});
                 return result;
             }
             else

@@ -23,7 +23,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         public Guid UserId { get; set; }
         public string UserName { get; set; }
         public DateTimeOffset VmActiveDT { get; set; }
-        public DateTimeOffset VmInActiveDT { get; set; }
+        public DateTimeOffset VmInactiveDT { get; set; }
 
     }
 

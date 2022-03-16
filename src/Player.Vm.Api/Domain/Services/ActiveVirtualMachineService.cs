@@ -17,11 +17,9 @@ namespace Player.Vm.Api.Domain.Services
     public class ActiveVirtualMachineService : IActiveVirtualMachineService
     {
         private readonly ConcurrentDictionary<Guid, ActiveVirtualMachine> _activeVirtualMachines = new ConcurrentDictionary<Guid, ActiveVirtualMachine>();
-        private readonly IVmUsageLoggingService _vmUsageLoggingService;
 
-        public ActiveVirtualMachineService(IVmUsageLoggingService vmUsageLoggingService)
+        public ActiveVirtualMachineService()
         {
-            _vmUsageLoggingService = vmUsageLoggingService;
         }
 
         public ActiveVirtualMachine GetActiveVirtualMachineForUser(Guid userId)
@@ -40,8 +38,6 @@ namespace Player.Vm.Api.Domain.Services
         {
             var activeVm = new ActiveVirtualMachine(vmId, connectionId, teamIds);
 
-            _vmUsageLoggingService.CreateVmLogEntry(userId, vmId, teamIds);
-
             return _activeVirtualMachines.AddOrUpdate(userId, activeVm, (userId, v) =>
             {
                 return activeVm;
@@ -57,8 +53,6 @@ namespace Player.Vm.Api.Domain.Services
                 var activeVm = new ActiveVirtualMachine(currentVm.VmId, connectionId, currentVm.TeamIds);
                 var entry = new KeyValuePair<Guid, ActiveVirtualMachine>(userId, activeVm);
                 var collection = (ICollection<KeyValuePair<Guid, ActiveVirtualMachine>>)_activeVirtualMachines;
-
-                _vmUsageLoggingService.CloseVmLogEntry(userId, activeVm.VmId);
 
                 if (collection.Remove(entry))
                 {

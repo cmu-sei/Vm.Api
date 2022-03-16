@@ -10,135 +10,126 @@ using Player.Vm.Api.Data;
 using Player.Vm.Api.Features.Vms;
 using Player.Api.Client;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.DependencyInjection;
-using Microsoft.Extensions.Options;
+using System.Threading.Tasks;
 using Player.Vm.Api.Infrastructure.Options;
 
 namespace Player.Vm.Api.Domain.Services
 {
     public interface IVmUsageLoggingService
     {
-        void CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds);
-        void CloseVmLogEntry(Guid vmLogEntryId, Guid vmId);
+        Task CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task CloseVmLogEntry(Guid userId, Guid vmId, CancellationToken ct);
     }
 
     public class VmUsageLoggingService : IVmUsageLoggingService
     {
-        private readonly IServiceScopeFactory _scopeFactory;
-        private VmUsageLoggingOptions _options;
+        private readonly VmLoggingContext _loggingContext;
+        private readonly VmUsageLoggingOptions _loggingOptions;
+        private readonly IPlayerService _playerService;
+        private readonly IVmService _vmService;
 
-        public VmUsageLoggingService(IServiceScopeFactory scopeFactory,
-            IOptionsMonitor<VmUsageLoggingOptions> vsphereOptionsMonitor)
+        public VmUsageLoggingService(
+            VmLoggingContext loggingContext, 
+            VmUsageLoggingOptions loggingOptions,
+            IPlayerService playerService,
+            IVmService vmService)
         {
-            _scopeFactory = scopeFactory;
-            _options = vsphereOptionsMonitor.CurrentValue;
+            _loggingContext = loggingContext;
+            _loggingOptions = loggingOptions;
+            _playerService = playerService;
+            _vmService = vmService;
         }
 
-        public async void CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds)
+       public async Task CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds, CancellationToken ct)
         {
-            if (_options.Enabled == false)
+            if (_loggingOptions.Enabled == false)
             {
                 return;
             }
 
-            var ct = new CancellationToken();
             Player.Vm.Api.Features.Vms.Vm vm = null;
             User user = null;
             var teams = teamIds.ToArray<Guid>();
 
 
-            using (var scope = _scopeFactory.CreateScope())
-            {                
-                var dbContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
-                var activeSessions = await dbContext.VmUsageLoggingSessions
-                    .Where(s => s.SessionEnd <= DateTimeOffset.MinValue &&
-                        s.SessionStart <= DateTimeOffset.UtcNow)
-                    .ToArrayAsync();
+            var activeSessions = await _loggingContext.VmUsageLoggingSessions
+                .Where(s => s.SessionEnd <= DateTimeOffset.MinValue &&
+                    s.SessionStart <= DateTimeOffset.UtcNow)
+                .ToArrayAsync();
 
-                foreach (var session in activeSessions)
+            foreach (var session in activeSessions)
+            {
+                // First check to see if there is a matching TeamID in either list and only then proceed
+                var teamFound = false;
+                foreach (var teamId in session.TeamIds)
                 {
-                    // First check to see if there is a matching TeamID in either list and only then proceed
-                    var teamFound = false;
-                    foreach (var teamId in session.TeamIds)
+                    if (teams.Contains(teamId))
                     {
-                        if (teams.Contains(teamId))
-                        {
-                            teamFound = true;
-                            break;
-                        }
+                        teamFound = true;
+                        break;
                     }
-
-                    if (!teamFound)
-                    {
-                        // This session doesn't have the team associated so skip it
-                        continue;
-                    }
-
-                    if (user == null)
-                    {
-                        // Get the User info once
-                        using (var playerScope = _scopeFactory.CreateScope())
-                        {
-                            var playerApi = scope.ServiceProvider.GetRequiredService<IPlayerService>();
-                            user = await playerApi.GetUserById(userId, ct);
-                        }
-
-                        // Get the Vm info once
-                        using (var vmScope = _scopeFactory.CreateScope())
-                        {
-                            var vmApi = scope.ServiceProvider.GetRequiredService<IVmService>();
-                            vm = await vmApi.GetAsync(vmId, ct);
-                        }
-                    }
-                    var logEntry = new VmUsageLogEntry {
-                        SessionId = session.Id,
-                        VmId = vm.Id,
-                        VmName = vm.Name,
-                        IpAddress = string.Join(", ", vm.IpAddresses),
-                        UserId = user.Id,
-                        UserName = user.Name,
-                        VmActiveDT = DateTimeOffset.UtcNow,
-                        VmInActiveDT = DateTimeOffset.MinValue
-                    };
-
-                    await dbContext.VmUsageLogEntries.AddAsync(logEntry);
-                    await dbContext.SaveChangesAsync();
                 }
+
+                if (!teamFound)
+                {
+                    // This session doesn't have the team associated so skip it
+                    continue;
+                }
+
+                if (user == null)
+                {
+                    // Get the User info once
+                    user = await _playerService.GetUserById(userId, ct);
+
+                    // Get the Vm info once
+                    vm = await _vmService.GetAsync(vmId, ct);
+                }
+
+                var logEntry = new VmUsageLogEntry {
+                    Session = session,
+                    VmId = vm.Id,
+                    VmName = vm.Name,
+                    IpAddress = string.Join(", ", vm.IpAddresses),
+                    UserId = user.Id,
+                    UserName = user.Name,
+                    VmActiveDT = DateTimeOffset.UtcNow,
+                    VmInactiveDT = DateTimeOffset.MinValue
+                };
+
+                await _loggingContext.VmUsageLogEntries.AddAsync(logEntry);
+                await _loggingContext.SaveChangesAsync();
             }
+
         
 
         }
 
-        public async void CloseVmLogEntry(Guid userId, Guid vmId)
+        public async Task CloseVmLogEntry(Guid userId, Guid vmId, CancellationToken ct)
         {
-            if (_options.Enabled == false)
+            if (_loggingOptions.Enabled == false)
             {
                 return;
             }
-            
-            using (var scope = _scopeFactory.CreateScope())
+
+            var vmUsageLogEntries =  await _loggingContext.VmUsageLogEntries
+                .Where(e => e.UserId == userId && 
+                    e.VmId == vmId && 
+                    e.VmInactiveDT <= DateTimeOffset.MinValue)
+                .ToArrayAsync();
+
+            if (vmUsageLogEntries == null)
             {
-                var dbContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
-                var vmUsageLogEntries =  await dbContext.VmUsageLogEntries
-                    .Where(e => e.UserId == userId && 
-                        e.VmId == vmId && 
-                        e.VmInActiveDT <= DateTimeOffset.MinValue)
-                    .ToArrayAsync();
+                // Unable to find a matching log entry
+                return;
+            }
 
-                if (vmUsageLogEntries == null)
-                {
-                    // Unable to find a matching log entry
-                    return;
-                }
-
-                foreach (var log in vmUsageLogEntries)
-                {
-                    log.VmInActiveDT = DateTimeOffset.UtcNow;
-                    dbContext.Update<VmUsageLogEntry>(log);    
-                }
+            foreach (var log in vmUsageLogEntries)
+            {
+                log.VmInactiveDT = DateTimeOffset.UtcNow;
+            }
+            
+            await _loggingContext.SaveChangesAsync();
                 
-                await dbContext.SaveChangesAsync();
-            }            
         }
     }
 
