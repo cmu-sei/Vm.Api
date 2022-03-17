@@ -12,6 +12,7 @@ using Player.Api.Client;
 using Microsoft.EntityFrameworkCore;
 using System.Threading.Tasks;
 using Player.Vm.Api.Infrastructure.Options;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Player.Vm.Api.Domain.Services
 {
@@ -23,18 +24,18 @@ namespace Player.Vm.Api.Domain.Services
 
     public class VmUsageLoggingService : IVmUsageLoggingService
     {
-        private readonly VmLoggingContext _loggingContext;
+         private readonly IServiceScopeFactory _scopeFactory;
         private readonly VmUsageLoggingOptions _loggingOptions;
         private readonly IPlayerService _playerService;
         private readonly IVmService _vmService;
 
         public VmUsageLoggingService(
-            VmLoggingContext loggingContext, 
+            IServiceScopeFactory scopeFactory, 
             VmUsageLoggingOptions loggingOptions,
             IPlayerService playerService,
             IVmService vmService)
         {
-            _loggingContext = loggingContext;
+            _scopeFactory = scopeFactory;
             _loggingOptions = loggingOptions;
             _playerService = playerService;
             _vmService = vmService;
@@ -51,53 +52,56 @@ namespace Player.Vm.Api.Domain.Services
             User user = null;
             var teams = teamIds.ToArray<Guid>();
 
-
-            var activeSessions = await _loggingContext.VmUsageLoggingSessions
-                .Where(s => s.SessionEnd <= DateTimeOffset.MinValue &&
-                    s.SessionStart <= DateTimeOffset.UtcNow)
-                .ToArrayAsync();
-
-            foreach (var session in activeSessions)
+            using (var scope = _scopeFactory.CreateScope())
             {
-                // First check to see if there is a matching TeamID in either list and only then proceed
-                var teamFound = false;
-                foreach (var teamId in session.TeamIds)
+                var dbContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
+                var activeSessions = await dbContext.VmUsageLoggingSessions
+                    .Where(s => s.SessionEnd <= DateTimeOffset.MinValue &&
+                        s.SessionStart <= DateTimeOffset.UtcNow)
+                    .ToArrayAsync();
+
+                foreach (var session in activeSessions)
                 {
-                    if (teams.Contains(teamId))
+                    // First check to see if there is a matching TeamID in either list and only then proceed
+                    var teamFound = false;
+                    foreach (var teamId in session.TeamIds)
                     {
-                        teamFound = true;
-                        break;
+                        if (teams.Contains(teamId))
+                        {
+                            teamFound = true;
+                            break;
+                        }
                     }
+
+                    if (!teamFound)
+                    {
+                        // This session doesn't have the team associated so skip it
+                        continue;
+                    }
+
+                    if (user == null)
+                    {
+                        // Get the User info once
+                        user = await _playerService.GetUserById(userId, ct);
+
+                        // Get the Vm info once
+                        vm = await _vmService.GetAsync(vmId, ct);
+                    }
+
+                    var logEntry = new VmUsageLogEntry {
+                        Session = session,
+                        VmId = vm.Id,
+                        VmName = vm.Name,
+                        IpAddress = string.Join(", ", vm.IpAddresses),
+                        UserId = user.Id,
+                        UserName = user.Name,
+                        VmActiveDT = DateTimeOffset.UtcNow,
+                        VmInactiveDT = DateTimeOffset.MinValue
+                    };
+
+                    await dbContext.VmUsageLogEntries.AddAsync(logEntry);
+                    await dbContext.SaveChangesAsync();
                 }
-
-                if (!teamFound)
-                {
-                    // This session doesn't have the team associated so skip it
-                    continue;
-                }
-
-                if (user == null)
-                {
-                    // Get the User info once
-                    user = await _playerService.GetUserById(userId, ct);
-
-                    // Get the Vm info once
-                    vm = await _vmService.GetAsync(vmId, ct);
-                }
-
-                var logEntry = new VmUsageLogEntry {
-                    Session = session,
-                    VmId = vm.Id,
-                    VmName = vm.Name,
-                    IpAddress = string.Join(", ", vm.IpAddresses),
-                    UserId = user.Id,
-                    UserName = user.Name,
-                    VmActiveDT = DateTimeOffset.UtcNow,
-                    VmInactiveDT = DateTimeOffset.MinValue
-                };
-
-                await _loggingContext.VmUsageLogEntries.AddAsync(logEntry);
-                await _loggingContext.SaveChangesAsync();
             }
 
         
@@ -111,25 +115,28 @@ namespace Player.Vm.Api.Domain.Services
                 return;
             }
 
-            var vmUsageLogEntries =  await _loggingContext.VmUsageLogEntries
-                .Where(e => e.UserId == userId && 
-                    e.VmId == vmId && 
-                    e.VmInactiveDT <= DateTimeOffset.MinValue)
-                .ToArrayAsync();
-
-            if (vmUsageLogEntries == null)
+            using (var scope = _scopeFactory.CreateScope())
             {
-                // Unable to find a matching log entry
-                return;
-            }
+                var dbContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
+                var vmUsageLogEntries =  await dbContext.VmUsageLogEntries
+                    .Where(e => e.UserId == userId && 
+                        e.VmId == vmId && 
+                        e.VmInactiveDT <= DateTimeOffset.MinValue)
+                    .ToArrayAsync();
 
-            foreach (var log in vmUsageLogEntries)
-            {
-                log.VmInactiveDT = DateTimeOffset.UtcNow;
-            }
-            
-            await _loggingContext.SaveChangesAsync();
+                if (vmUsageLogEntries == null)
+                {
+                    // Unable to find a matching log entry
+                    return;
+                }
+
+                foreach (var log in vmUsageLogEntries)
+                {
+                    log.VmInactiveDT = DateTimeOffset.UtcNow;
+                }
                 
+                await dbContext.SaveChangesAsync();
+            }
         }
     }
 

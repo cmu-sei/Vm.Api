@@ -67,11 +67,13 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                     return await _db.VmUsageLoggingSessions
                         .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
                         .Where(s => s.SessionEnd <= DateTimeOffset.MinValue)
+                        .OrderByDescending(s => s.SessionStart)
                         .ToArrayAsync();                }
                 else
                 {
                     return await _db.VmUsageLoggingSessions
                         .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                        .OrderByDescending(s => s.SessionStart)
                         .ToArrayAsync();
                 }
             }

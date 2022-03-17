@@ -42,7 +42,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         /// </summary>
         /// <returns></returns>
         [HttpGet("isloggingenabled")]
-        [ProducesResponseType(typeof(VmUsageLoggingSession), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(bool), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "GetIsLoggingEnabled")]
         public IActionResult GetIsLoggingEnabled()
         {
