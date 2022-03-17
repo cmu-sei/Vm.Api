@@ -48,10 +48,8 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                         var vmCtxLogging = services.GetRequiredService<VmLoggingContext>();
 
                         if (databaseOptions.DevModeRecreate)
-                            vmCtxLogging.Database.EnsureDeleted();
-
-                        if (databaseOptions.DevModeRecreate)
                         {
+                            vmCtxLogging.Database.EnsureDeleted();
                             vmCtxLogging.Database.EnsureCreated();
                         }                        
                     }
