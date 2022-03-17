@@ -1,8 +1,3 @@
-/*
-Copyright 2021 Carnegie Mellon University. All Rights Reserved. 
- Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
-*/
-
 ﻿using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
@@ -37,7 +32,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres.VmLogging
                 columns: table => new
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "uuid_generate_v4()"),
-                    session_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    session_id = table.Column<Guid>(type: "uuid", nullable: false),
                     vm_id = table.Column<Guid>(type: "uuid", nullable: false),
                     vm_name = table.Column<string>(type: "text", nullable: true),
                     ip_address = table.Column<string>(type: "text", nullable: true),
@@ -53,7 +48,8 @@ namespace Player.Vm.Api.Data.Migrations.Postgres.VmLogging
                         name: "FK_vm_usage_log_entries_vm_usage_logging_sessions_session_id",
                         column: x => x.session_id,
                         principalTable: "vm_usage_logging_sessions",
-                        principalColumn: "id");
+                        principalColumn: "id",
+                        onDelete: ReferentialAction.Cascade);
                 });
 
             migrationBuilder.CreateIndex(

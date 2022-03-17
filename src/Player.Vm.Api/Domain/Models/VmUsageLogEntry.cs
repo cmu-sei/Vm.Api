@@ -22,7 +22,8 @@ namespace Player.Vm.Api.Domain.Models
         [Key]
         [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public Guid Id { get; set; }
-        public VmUsageLoggingSession Session { get; set; }
+        public Guid SessionId { get; set; }
+        public virtual VmUsageLoggingSession Session { get; set; }
         public Guid VmId { get; set; }
         public string VmName { get; set; }
         public string IpAddress { get; set; }
