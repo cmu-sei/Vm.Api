@@ -48,10 +48,18 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                         var vmCtxLogging = services.GetRequiredService<VmLoggingContext>();
 
                         if (databaseOptions.DevModeRecreate)
-                        {
                             vmCtxLogging.Database.EnsureDeleted();
+
+                        // Do not run migrations on Sqlite, only devModeRecreate allowed
+                        if (!vmCtxLogging.Database.IsSqlite())
+                        {
+                            vmCtxLogging.Database.Migrate();
+                        }
+                        
+                        if (databaseOptions.DevModeRecreate)
+                        {
                             vmCtxLogging.Database.EnsureCreated();
-                        }                        
+                        }                       
                     }
 
                 }
