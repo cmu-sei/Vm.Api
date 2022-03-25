@@ -9,6 +9,7 @@ DM20-0181
 */
 
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
@@ -59,19 +60,19 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
 
             public async Task<VmUsageLoggingSession> Handle(Command request, CancellationToken cancellationToken)
             {
-                if (!(await _playerService.IsSystemAdmin(cancellationToken)))
-                    throw new ForbiddenException("You do not have permission to end a Vm Usage Log");
+                var entry = _db.VmUsageLoggingSessions.FirstOrDefault(e => e.Id == request.Id);
 
-                var vmUsageLoggingSession =  await _db.VmUsageLoggingSessions
-                    .SingleOrDefaultAsync(e => e.Id == request.Id);
-
-                if (vmUsageLoggingSession == null)
+                if (entry == null)
                     throw new EntityNotFoundException<VmUsageLoggingSession>();                
 
-                vmUsageLoggingSession.SessionEnd = DateTimeOffset.UtcNow;
+                if (!(await _playerService.IsSystemAdmin(cancellationToken) ||
+                      await _playerService.IsViewAdmin(entry.ViewId, cancellationToken)))
+                    throw new ForbiddenException("You do not have permission to end the specified Vm Usage Log");
+
+                entry.SessionEnd = DateTimeOffset.UtcNow;
 
                 await _db.SaveChangesAsync();
-                return _mapper.Map<VmUsageLoggingSession>(vmUsageLoggingSession);
+                return _mapper.Map<VmUsageLoggingSession>(entry);
             }
         }
     }

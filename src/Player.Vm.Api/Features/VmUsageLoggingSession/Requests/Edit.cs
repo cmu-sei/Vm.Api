@@ -11,6 +11,7 @@ DM20-0181
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Linq;
 using MediatR;
 using Player.Vm.Api.Data;
 using AutoMapper;
@@ -33,6 +34,8 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             /// <summary>
             /// Data for a VmUsageLoggingSession.
             /// </summary>
+            [DataMember]
+            public Guid ViewId { get; set; }
             [DataMember]
             public Guid Id { get; set; }
             [DataMember]
@@ -66,17 +69,18 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
 
             public async Task<VmUsageLoggingSession> Handle(Command request, CancellationToken cancellationToken)
             {
-                if (!(await _playerService.IsSystemAdmin(cancellationToken)))
-                    throw new ForbiddenException("You do not have permission to edit a Vm Usage Log");
+                var entry = _db.VmUsageLoggingSessions.FirstOrDefault(e => e.Id == request.Id);
 
-                var machine = await _db.VmUsageLoggingSessions.FindAsync(request.Id);
+                if (entry == null)
+                    throw new EntityNotFoundException<VmUsageLoggingSession>();                
 
-                if (machine == null)
-                    throw new EntityNotFoundException<VmUsageLoggingSession>();
+                if (!(await _playerService.IsSystemAdmin(cancellationToken) ||
+                      await _playerService.IsViewAdmin(entry.ViewId, cancellationToken)))
+                    throw new ForbiddenException("You do not have permission to edit the specified Vm Usage Log");
 
-                _mapper.Map(request, machine);
+                _mapper.Map(request, entry);
                 await _db.SaveChangesAsync();
-                return _mapper.Map<VmUsageLoggingSession>(machine);
+                return _mapper.Map<VmUsageLoggingSession>(entry);
             }
         }
     }

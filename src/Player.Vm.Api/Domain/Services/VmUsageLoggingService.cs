@@ -54,7 +54,7 @@ namespace Player.Vm.Api.Domain.Services
             var teams = teamIds.ToArray<Guid>();
 
             var activeSessions = await _dbContext.VmUsageLoggingSessions
-                .Where(s => s.SessionEnd <= DateTimeOffset.MinValue &&
+                .Where(s => (s.SessionEnd <= DateTimeOffset.MinValue || s.SessionEnd > DateTimeOffset.UtcNow) &&
                     s.SessionStart <= DateTimeOffset.UtcNow)
                 .ToArrayAsync();
 

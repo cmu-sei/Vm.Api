@@ -33,12 +33,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             /// Data for a VmUsageLoggingSession.
             /// </summary>
             [DataMember]
+            public Guid ViewId { get; set; }
+            [DataMember]
             public Guid[] TeamIds { get; set; }
             [DataMember]
             public string SessionName { get; set; }
             [DataMember]
             public DateTimeOffset SessionStart { get; set; }
-
+            [DataMember]
+            public DateTimeOffset SessionEnd { get; set; }
 
         }
 
@@ -63,12 +66,13 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
 
             public async Task<VmUsageLoggingSession> Handle(Command request, CancellationToken cancellationToken)
             {
-                if (!(await _playerService.IsSystemAdmin(cancellationToken)))
+                if (!(await _playerService.IsSystemAdmin(cancellationToken) ||
+                      await _playerService.IsViewAdmin(request.ViewId, cancellationToken)))
                     throw new ForbiddenException("You do not have permission to create a Vm Usage Log");
 
                 var loggingSession = _mapper.Map<Domain.Models.VmUsageLoggingSession>(request);
 
-                loggingSession.SessionEnd = DateTimeOffset.MinValue;
+                loggingSession.CreatedDt = DateTimeOffset.UtcNow;
 
                 await _db.VmUsageLoggingSessions.AddAsync(loggingSession);
                 await _db.SaveChangesAsync();

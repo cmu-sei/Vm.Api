@@ -2,6 +2,7 @@
 using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Player.Vm.Api.Data;
@@ -11,9 +12,10 @@ using Player.Vm.Api.Data;
 namespace Player.Vm.Api.Data.Migrations.Postgres.VmLogging
 {
     [DbContext(typeof(VmLoggingContext))]
-    partial class VmLoggingContextModelSnapshot : ModelSnapshot
+    [Migration("20220324222157_Added ViewId")]
+    partial class AddedViewId
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -77,10 +79,6 @@ namespace Player.Vm.Api.Data.Migrations.Postgres.VmLogging
                         .HasColumnType("uuid")
                         .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
-
-                    b.Property<DateTimeOffset>("CreatedDt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_dt");
 
                     b.Property<DateTimeOffset>("SessionEnd")
                         .HasColumnType("timestamp with time zone")

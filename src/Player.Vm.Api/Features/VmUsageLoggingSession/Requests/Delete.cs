@@ -55,13 +55,14 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
 
             protected override async Task Handle(Command request, CancellationToken cancellationToken)
             {
-                if (!(await _playerService.IsSystemAdmin(cancellationToken)))
-                    throw new ForbiddenException("You do not have permission to delete a Vm Usage Log");
-
                 var entry = _db.VmUsageLoggingSessions.FirstOrDefault(e => e.Id == request.Id);
 
                 if (entry == null)
-                    throw new EntityNotFoundException<VmUsageLoggingSession>();
+                    throw new EntityNotFoundException<VmUsageLoggingSession>();                
+
+                if (!(await _playerService.IsSystemAdmin(cancellationToken) ||
+                      await _playerService.IsViewAdmin(entry.ViewId, cancellationToken)))
+                    throw new ForbiddenException("You do not have permission to delete the specified Vm Usage Log");
 
                 _db.VmUsageLoggingSessions.Remove(entry);
                 await _db.SaveChangesAsync(cancellationToken);

@@ -35,6 +35,8 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             /// Optional Bool when set to true only the active sessions will be returned
             /// </summary>
             [DataMember]
+            public Guid ViewId { get; set; }
+            [DataMember]
             public bool OnlyActive { get; set; }
         }
 
@@ -59,22 +61,51 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
 
             public async Task<VmUsageLoggingSession[]> Handle(Query request, CancellationToken cancellationToken)
             {
-                if (!(await _playerService.IsSystemAdmin(cancellationToken)))
-                    throw new ForbiddenException("You do not have permission to view Vm Usage Logs");
-
+                var isSystemAdmin = await _playerService.IsSystemAdmin(cancellationToken);
+                if (!((request.ViewId == Guid.Empty && isSystemAdmin) ||
+                     (request.ViewId != Guid.Empty && (isSystemAdmin || await _playerService.IsViewAdmin(request.ViewId, cancellationToken)))))
+                    throw new ForbiddenException("You do not have permission to view Vm Usage Logs.");
+                
                 if (request.OnlyActive == true)
                 {
-                    return await _db.VmUsageLoggingSessions
-                        .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
-                        .Where(s => s.SessionEnd <= DateTimeOffset.MinValue)
-                        .OrderByDescending(s => s.SessionStart)
-                        .ToArrayAsync();                }
+                    if (request.ViewId == Guid.Empty)
+                    {
+                        return await _db.VmUsageLoggingSessions
+                            .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                            .Where(s => s.SessionEnd <= DateTimeOffset.MinValue || s.SessionEnd > DateTimeOffset.UtcNow)
+                            .OrderByDescending(s => s.CreatedDt)
+                            .ToArrayAsync();
+                    }
+                    else
+                    {
+                        return await _db.VmUsageLoggingSessions
+                            .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                            .Where(s => s.ViewId == request.ViewId && 
+                                        (s.SessionEnd <= DateTimeOffset.MinValue || s.SessionEnd > DateTimeOffset.UtcNow))
+                            .OrderByDescending(s => s.CreatedDt)
+                            .ToArrayAsync();                        
+                    }
+
+                }
                 else
                 {
-                    return await _db.VmUsageLoggingSessions
-                        .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
-                        .OrderByDescending(s => s.SessionStart)
-                        .ToArrayAsync();
+                    if (request.ViewId == Guid.Empty)
+                    {
+                        return await _db.VmUsageLoggingSessions
+                            .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                            .Where(s => s.SessionEnd < DateTimeOffset.UtcNow)
+                            .OrderByDescending(s => s.CreatedDt)
+                            .ToArrayAsync();
+                    }
+                    else
+                    {
+                        return await _db.VmUsageLoggingSessions
+                            .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                            .Where(s => s.ViewId == request.ViewId && s.SessionEnd < DateTimeOffset.UtcNow)
+                            .OrderByDescending(s => s.CreatedDt)
+                            .ToArrayAsync();
+                    }
+
                 }
             }
         }

@@ -62,15 +62,14 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
 
             public async Task<FileResult> Handle(Query request, CancellationToken cancellationToken)
             {
-                if (!(await _playerService.IsSystemAdmin(cancellationToken)))
-                    throw new ForbiddenException("You do not have permission to download Vm Usage Logs");
+                var entry = _db.VmUsageLoggingSessions.FirstOrDefault(e => e.Id == request.SessionId);
 
-                var vmUsageLoggingSession =  await _db.VmUsageLoggingSessions
-                    .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
-                    .SingleOrDefaultAsync(e => e.Id == request.SessionId);
+                if (entry == null)
+                    throw new EntityNotFoundException<VmUsageLoggingSession>();                
 
-                if (vmUsageLoggingSession == null)
-                    throw new EntityNotFoundException<VmUsageLoggingSession>();
+                if (!(await _playerService.IsSystemAdmin(cancellationToken) ||
+                      await _playerService.IsViewAdmin(entry.ViewId, cancellationToken)))
+                    throw new ForbiddenException("You do not have permission to view the specified Vm Usage Log");
 
                 var vmUsageLogEntries =  await _db.VmUsageLogEntries
                     .ProjectTo<VmUsageLogEntry>(_mapper.ConfigurationProvider)
@@ -81,11 +80,11 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 if (vmUsageLogEntries == null)
                     throw new EntityNotFoundException<VmUsageLogEntry>();
 
-                string fileName = vmUsageLoggingSession.SessionName + ".csv";
-                if (vmUsageLoggingSession.SessionName.Length == 0)
+                string fileName = entry.SessionName + ".csv";
+                if (entry.SessionName.Length == 0)
                 {
                     // No name giving, use Guid
-                    fileName = vmUsageLoggingSession.Id + ".csv";
+                    fileName = entry.Id + ".csv";
                 }
 
                 string data = string.Join("\r\n", Array.ConvertAll(vmUsageLogEntries, s => {

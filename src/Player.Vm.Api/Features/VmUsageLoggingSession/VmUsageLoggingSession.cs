@@ -10,6 +10,8 @@ DM20-0181
 
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
+
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
@@ -19,9 +21,12 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
     public class VmUsageLoggingSession
     {
         public Guid Id { get; set; }
+        public Guid ViewId { get; set; }
         public Guid[] TeamIds { get; set; }
         public string SessionName { get; set; }
+        public DateTimeOffset CreatedDt { get; set; }
         public DateTimeOffset SessionStart { get; set; }
+        [DefaultValue("0001-01-01T00:00:00+00:00")]
         public DateTimeOffset SessionEnd { get; set; }
 
     }

@@ -75,16 +75,21 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         /// <summary>
         /// Get all VmUsageLoggingSessions.
         /// </summary>
+        /// <param name="viewId"></param>
         /// <param name="onlyActive"></param>
         /// <returns></returns>
         [HttpGet()]
         [ProducesResponseType(typeof(IEnumerable<VmUsageLoggingSession>), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "GetAllSessions")]
-        public async Task<IActionResult> GetAll(bool? onlyActive)
+        public async Task<IActionResult> GetAll(Guid? viewId, bool? onlyActive)
         {
             if (_options.Enabled)
             {
-                var result = await _mediator.Send(new GetAll.Query {OnlyActive = onlyActive.HasValue ? onlyActive.Value : false});
+                var result = await _mediator.Send(
+                    new GetAll.Query {
+                        OnlyActive = onlyActive.HasValue ? onlyActive.Value : false,
+                        ViewId = viewId.HasValue ? viewId.Value : Guid.Empty
+                        });
                 
                 return Ok(result);
             }
