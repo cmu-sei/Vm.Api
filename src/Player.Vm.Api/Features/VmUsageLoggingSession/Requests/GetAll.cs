@@ -93,7 +93,6 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                     {
                         return await _db.VmUsageLoggingSessions
                             .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
-                            .Where(s => s.SessionEnd < DateTimeOffset.UtcNow)
                             .OrderByDescending(s => s.CreatedDt)
                             .ToArrayAsync();
                     }
@@ -101,7 +100,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                     {
                         return await _db.VmUsageLoggingSessions
                             .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
-                            .Where(s => s.ViewId == request.ViewId && s.SessionEnd < DateTimeOffset.UtcNow)
+                            .Where(s => s.ViewId == request.ViewId)
                             .OrderByDescending(s => s.CreatedDt)
                             .ToArrayAsync();
                     }
