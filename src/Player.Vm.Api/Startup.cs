@@ -89,16 +89,14 @@ namespace Player.Vm.Api
                         .AddInterceptors(serviceProvider.GetRequiredService<EventTransactionInterceptor>())
                         .UseConfiguredDatabase(Configuration));
                     
-                    if (vmLoggingEnabled) 
-                    {
-                        var vmLoggingConnectionString = Configuration["VmUsageLogging:PostgreSql"].Trim();
 
-                        /* Note:  When using multiple DB contexts, dotnet ef migrations must specify which context:  ie:
-                        dotnet ef migrations add "VmLoggingDb Initial" --context VmLoggingContext -o Data/Migrations/Postgres/VmLogging
-                        */
-                        services.AddDbContextPool<VmLoggingContext>(
-                            options => options.UseNpgsql(vmLoggingConnectionString));
-                    }
+                    var vmLoggingConnectionString = Configuration["VmUsageLogging:PostgreSql"].Trim();
+
+                    /* Note:  When using multiple DB contexts, dotnet ef migrations must specify which context:  ie:
+                    dotnet ef migrations add "VmLoggingDb Initial" --context VmLoggingContext -o Data/Migrations/Postgres/VmLogging
+                    */
+                    services.AddDbContextPool<VmLoggingContext>(
+                        options => options.UseNpgsql(vmLoggingConnectionString));
                     break;
             }
 
