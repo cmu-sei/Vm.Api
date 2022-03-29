@@ -33,7 +33,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             /// Data for a VmUsageLoggingSession.
             /// </summary>
             [DataMember]
-            public Guid ViewId { get; set; }
+            public Nullable<Guid> ViewId { get; set; }
             [DataMember]
             public Guid[] TeamIds { get; set; }
             [DataMember]

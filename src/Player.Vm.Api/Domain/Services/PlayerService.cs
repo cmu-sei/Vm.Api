@@ -15,7 +15,7 @@ namespace Player.Vm.Api.Domain.Services
     public interface IPlayerService
     {
         Task<bool> IsSystemAdmin(CancellationToken ct);
-        Task<bool> IsViewAdmin(Guid viewId, CancellationToken ct);
+        Task<bool> IsViewAdmin(Nullable<Guid> viewId, CancellationToken ct);
         Task<bool> CanManageTeamsAsync(IEnumerable<Guid> teamIds, bool all, CancellationToken ct);
         Task<bool> CanManageTeamAsync(Guid teamId, CancellationToken ct);
         Task<bool> CanAccessTeamsAsync(IEnumerable<Guid> teamIds, CancellationToken ct);
@@ -57,9 +57,14 @@ namespace Player.Vm.Api.Domain.Services
             return user.IsSystemAdmin;
         }
 
-        public async Task<bool> IsViewAdmin(Guid viewId, CancellationToken ct)
+        public async Task<bool> IsViewAdmin(Nullable<Guid> viewId, CancellationToken ct)
         {
-            var permissions = await _playerApiClient.GetUserViewPermissionsAsync(viewId, _userId, ct);
+            if (viewId == null)
+            {
+                return false;
+            }
+
+            var permissions = await _playerApiClient.GetUserViewPermissionsAsync((Guid)viewId, _userId, ct);
 
             if (permissions.Any(p => p.Key == "ViewAdmin" && p.Value == "true"))
             {

@@ -35,7 +35,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             /// Optional Bool when set to true only the active sessions will be returned
             /// </summary>
             [DataMember]
-            public Guid ViewId { get; set; }
+            public Nullable<Guid> ViewId { get; set; }
             [DataMember]
             public bool OnlyActive { get; set; }
         }
@@ -62,13 +62,13 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             public async Task<VmUsageLoggingSession[]> Handle(Query request, CancellationToken cancellationToken)
             {
                 var isSystemAdmin = await _playerService.IsSystemAdmin(cancellationToken);
-                if (!((request.ViewId == Guid.Empty && isSystemAdmin) ||
-                     (request.ViewId != Guid.Empty && (isSystemAdmin || await _playerService.IsViewAdmin(request.ViewId, cancellationToken)))))
+                if (!((request.ViewId == null && isSystemAdmin) ||
+                     (request.ViewId != null && (isSystemAdmin || await _playerService.IsViewAdmin(request.ViewId, cancellationToken)))))
                     throw new ForbiddenException("You do not have permission to view Vm Usage Logs.");
                 
                 if (request.OnlyActive == true)
                 {
-                    if (request.ViewId == Guid.Empty)
+                    if (request.ViewId == null)
                     {
                         return await _db.VmUsageLoggingSessions
                             .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
@@ -89,7 +89,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 }
                 else
                 {
-                    if (request.ViewId == Guid.Empty)
+                    if (request.ViewId == null)
                     {
                         return await _db.VmUsageLoggingSessions
                             .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)

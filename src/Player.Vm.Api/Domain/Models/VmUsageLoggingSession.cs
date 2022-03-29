@@ -22,7 +22,7 @@ namespace Player.Vm.Api.Domain.Models
         [Key]
         [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public Guid Id { get; set; }
-        public Guid ViewId { get; set; }
+        public Nullable<Guid> ViewId { get; set; }
         public Guid[] TeamIds { get; set; }
         public string SessionName { get; set; }
         public DateTimeOffset CreatedDt { get; set; }

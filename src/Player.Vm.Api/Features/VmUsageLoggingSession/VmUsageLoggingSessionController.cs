@@ -88,7 +88,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 var result = await _mediator.Send(
                     new GetAll.Query {
                         OnlyActive = onlyActive.HasValue ? onlyActive.Value : false,
-                        ViewId = viewId.HasValue ? viewId.Value : Guid.Empty
+                        ViewId = viewId.HasValue ? viewId.Value : null
                         });
                 
                 return Ok(result);
