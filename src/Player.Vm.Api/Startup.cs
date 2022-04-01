@@ -1,6 +1,7 @@
 // Copyright 2021 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
+using System;
 using System.IdentityModel.Tokens.Jwt;
 using System.Reflection;
 using System.Security.Principal;
@@ -73,6 +74,7 @@ namespace Player.Vm.Api
                     tags: new[] { "live" });
 
             var provider = Configuration["Database:Provider"];
+            var vmLoggingEnabled = bool.Parse((Configuration["VmUsageLogging:Enabled"]));
             switch (provider)
             {
                 case "InMemory":
@@ -86,6 +88,15 @@ namespace Player.Vm.Api
                     services.AddDbContextPool<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
                         .AddInterceptors(serviceProvider.GetRequiredService<EventTransactionInterceptor>())
                         .UseConfiguredDatabase(Configuration));
+                    
+
+                    var vmLoggingConnectionString = Configuration["VmUsageLogging:PostgreSql"].Trim();
+
+                    /* Note:  When using multiple DB contexts, dotnet ef migrations must specify which context:  ie:
+                    dotnet ef migrations add "VmLoggingDb Initial" --context VmLoggingContext -o Data/Migrations/Postgres/VmLogging
+                    */
+                    services.AddDbContextPool<VmLoggingContext>(
+                        options => options.UseNpgsql(vmLoggingConnectionString));
                     break;
             }
 
@@ -134,6 +145,10 @@ namespace Player.Vm.Api
             services
                 .Configure<ConsoleUrlOptions>(Configuration.GetSection("ConsoleUrls"))
                 .AddScoped(config => config.GetService<IOptionsSnapshot<ConsoleUrlOptions>>().Value);
+            
+            services
+                .Configure<VmUsageLoggingOptions>(Configuration.GetSection("VmUsageLogging"))
+                .AddScoped(config => config.GetService<IOptionsSnapshot<VmUsageLoggingOptions>>().Value);
 
             services.AddCors(options => options.UseConfiguredCors(Configuration.GetSection("CorsPolicy")));
             services.AddMvc()
@@ -226,6 +241,7 @@ namespace Player.Vm.Api
             services.AddSingleton<ICallbackBackgroundService>(x => x.GetService<CallbackBackgroundService>());
             services.AddSingleton<IAuthenticationService, AuthenticationService>();
             services.AddSingleton<IActiveVirtualMachineService, ActiveVirtualMachineService>();
+            services.AddScoped<IVmUsageLoggingService, VmUsageLoggingService>();
 
             // Vsphere Services
             services.AddSingleton<ConnectionService>();

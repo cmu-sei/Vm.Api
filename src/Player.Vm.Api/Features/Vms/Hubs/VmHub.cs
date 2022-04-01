@@ -11,6 +11,8 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using Player.Api.Client;
+using Player.Vm.Api.Data;
+using Player.Vm.Api.Infrastructure.Options;
 
 namespace Player.Vm.Api.Features.Vms.Hubs
 {
@@ -20,17 +22,21 @@ namespace Player.Vm.Api.Features.Vms.Hubs
         private readonly IActiveVirtualMachineService _activeVirtualMachineService;
         private readonly IVmService _vmService;
         private readonly IViewService _viewService;
+        private readonly IVmUsageLoggingService _vmUsageLoggingService;
         private const string UserGroupPrefix = "ActiveConsoles";
 
-        public VmHub(IPlayerService playerService,
-                     IActiveVirtualMachineService activeVirtualMachineService,
-                     IVmService vmService,
-                     IViewService viewService)
+        public VmHub(
+            IActiveVirtualMachineService activeVirtualMachineService,
+            IVmUsageLoggingService vmUsageLoggingService,
+            IViewService viewService,
+            IPlayerService playerService,
+            IVmService vmService)
         {
-            _playerService = playerService;
             _activeVirtualMachineService = activeVirtualMachineService;
-            _vmService = vmService;
+            _vmUsageLoggingService = vmUsageLoggingService;
             _viewService = viewService;
+            _playerService = playerService;
+            _vmService = vmService;
         }
 
         public async Task JoinView(Guid viewId)
@@ -171,6 +177,8 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             var newVmId = _activeVirtualMachineService.SetActiveVirtualMachineForUser(userId, vmId, Context.ConnectionId, teamIds);
 
             await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, newVmId, userId);
+            
+            await _vmUsageLoggingService.CreateVmLogEntry(userId, vmId, teamIds, Context.ConnectionAborted);
         }
 
         public async Task UnsetActiveVirtualMachine()
@@ -195,6 +203,8 @@ namespace Player.Vm.Api.Features.Vms.Hubs
                 var groups = GetGroups(activeVirtualMachine.TeamIds, viewIds, userId);
 
                 await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, null, userId);
+
+                await _vmUsageLoggingService.CloseVmLogEntry(userId, activeVirtualMachine.VmId, Context.ConnectionAborted);
             }
         }
 
