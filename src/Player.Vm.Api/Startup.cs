@@ -36,6 +36,9 @@ using Player.Vm.Api.Infrastructure.Extensions;
 using Player.Vm.Api.Infrastructure.Options;
 using AuthorizationOptions = Player.Vm.Api.Infrastructure.Options.AuthorizationOptions;
 using Player.Vm.Api.Infrastructure.Constants;
+using System.Linq;
+using System.Collections.Generic;
+using Player.Vm.Api.Infrastructure.ClaimsTransformers;
 
 namespace Player.Vm.Api
 {
@@ -88,7 +91,7 @@ namespace Player.Vm.Api
                     services.AddDbContextPool<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
                         .AddInterceptors(serviceProvider.GetRequiredService<EventTransactionInterceptor>())
                         .UseConfiguredDatabase(Configuration));
-                    
+
 
                     var vmLoggingConnectionString = Configuration["VmUsageLogging:PostgreSql"].Trim();
 
@@ -145,7 +148,7 @@ namespace Player.Vm.Api
             services
                 .Configure<ConsoleUrlOptions>(Configuration.GetSection("ConsoleUrls"))
                 .AddScoped(config => config.GetService<IOptionsSnapshot<ConsoleUrlOptions>>().Value);
-            
+
             services
                 .Configure<VmUsageLoggingOptions>(Configuration.GetSection("VmUsageLogging"))
                 .AddScoped(config => config.GetService<IOptionsSnapshot<VmUsageLoggingOptions>>().Value);
@@ -164,7 +167,7 @@ namespace Player.Vm.Api
 
                 foreach (var scope in _authOptions.AuthorizationScope.Split(' '))
                 {
-                    policyBuilder.RequireScope(scope);
+                    policyBuilder.RequireClaim("scope", scope);
                 }
 
                 options.DefaultPolicy = policyBuilder.Build();
@@ -199,10 +202,24 @@ namespace Player.Vm.Api
                 options.Authority = _authOptions.Authority;
                 options.RequireHttpsMetadata = _authOptions.RequireHttpsMetadata;
                 options.SaveToken = true;
+
+                string[] validAudiences;
+
+                if (_authOptions.ValidAudiences != null && _authOptions.ValidAudiences.Any())
+                {
+                    validAudiences = _authOptions.ValidAudiences;
+                }
+                else
+                {
+                    var list = new List<string>() { _authOptions.PrivilegedScope };
+                    list.AddRange(_authOptions.AuthorizationScope.Split(' '));
+                    validAudiences = list.ToArray();
+                }
+
                 options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
                 {
-                    ValidateAudience = false,
-                    ValidateIssuer = true
+                    ValidateAudience = _authOptions.ValidateAudience,
+                    ValidAudiences = validAudiences
                 };
 
                 options.Events = new JwtBearerEvents
@@ -242,6 +259,7 @@ namespace Player.Vm.Api
             services.AddSingleton<IAuthenticationService, AuthenticationService>();
             services.AddSingleton<IActiveVirtualMachineService, ActiveVirtualMachineService>();
             services.AddScoped<IVmUsageLoggingService, VmUsageLoggingService>();
+            services.AddScoped<Microsoft.AspNetCore.Authentication.IClaimsTransformation, ClaimsTransformer>();
 
             // Vsphere Services
             services.AddSingleton<ConnectionService>();
