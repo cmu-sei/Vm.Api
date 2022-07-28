@@ -84,7 +84,8 @@ public class CallbackBackgroundService : BackgroundService, ICallbackBackgroundS
         try
         {
             using var scope = _scopeFactory.CreateScope();
-            var dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
+            var vmContext = scope.ServiceProvider.GetRequiredService<VmContext>();
+            var vmLoggingContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
 
             // Don't process if event is expired
             if (!e.IsExpired())
@@ -94,18 +95,26 @@ public class CallbackBackgroundService : BackgroundService, ICallbackBackgroundS
                     case EventType.ViewCreated:
                         // Since payload field is of type object, the json serialization in player makes it into string containing json
                         var payloadCreate = JsonConvert.DeserializeObject<ViewCreated>(e.WebhookEvent.Payload.ToString());
-                        await CloneMaps(payloadCreate, dbContext);
+                        if (payloadCreate.ParentId.HasValue)
+                        {
+                            var client = _clientFactory.CreateClient("player-admin");
+                            client.BaseAddress = new Uri(_clientOptions.CurrentValue.urls.playerApi);
+                            var playerClient = new PlayerApiClient(client);
+                            await CloneMaps(payloadCreate, vmContext, playerClient);
+                            await CloneVmLoggingSessions(payloadCreate, vmLoggingContext, playerClient);
+                        }
                         break;
                     case EventType.ViewDeleted:
                         var payloadDelete = JsonConvert.DeserializeObject<ViewDeleted>(e.WebhookEvent.Payload.ToString());
-                        await DeleteClonedMaps(payloadDelete.ViewId, dbContext);
+                        await DeleteClonedMaps(payloadDelete.ViewId, vmContext);
+                        await EndVmLoggingSessions(payloadDelete.ViewId, vmLoggingContext);
                         break;
                 }
             }
 
             // if no exceptions, remove this event from the db so we don't process it again
-            dbContext.WebhookEvents.Remove(e.WebhookEvent);
-            await dbContext.SaveChangesAsync();
+            vmContext.WebhookEvents.Remove(e.WebhookEvent);
+            await vmContext.SaveChangesAsync();
         }
         catch (Exception ex)
         {
@@ -120,17 +129,8 @@ public class CallbackBackgroundService : BackgroundService, ICallbackBackgroundS
         }
     }
 
-    private async Task CloneMaps(ViewCreated form, VmContext dbContext)
+    private async Task CloneMaps(ViewCreated form, VmContext dbContext, PlayerApiClient playerClient)
     {
-        if (!form.ParentId.HasValue)
-        {
-            return;
-        }
-
-        var client = _clientFactory.CreateClient("player-admin");
-        client.BaseAddress = new Uri(_clientOptions.CurrentValue.urls.playerApi);
-        var playerClient = new PlayerApiClient(client);
-
         // Get maps assigned to parent view
         var maps = await dbContext.Maps
             .Where(m => m.ViewId == form.ParentId)
@@ -184,6 +184,30 @@ public class CallbackBackgroundService : BackgroundService, ICallbackBackgroundS
         await dbContext.SaveChangesAsync();
     }
 
+    private async Task CloneVmLoggingSessions(ViewCreated form, VmLoggingContext dbContext, PlayerApiClient playerClient)
+    {
+        // Get sessions assigned to parent view
+        var sessions = await dbContext.VmUsageLoggingSessions
+            .Where(m => m.ViewId == form.ParentId)
+            .ToListAsync();
+        if (sessions.Any())
+        {
+            // Create clone for the child view with all of the child view teams
+            var childTeams = (await playerClient.GetViewTeamsAsync(form.ViewId)).ToList();
+            var clone = new Models.VmUsageLoggingSession();
+            clone.ViewId = form.ViewId;
+            clone.SessionName = form.ViewName;
+            clone.CreatedDt = DateTimeOffset.UtcNow;
+            clone.SessionStart = DateTimeOffset.UtcNow;
+            clone.SessionEnd = DateTimeOffset.UtcNow.AddYears(1);
+
+            var cloneTeamIds = childTeams.Select(t => (Guid)t.Id);
+            clone.TeamIds = cloneTeamIds.ToArray();
+            dbContext.VmUsageLoggingSessions.Add(clone);
+            await dbContext.SaveChangesAsync();
+        }
+    }
+
     // Delete all maps associated with the deleted view
     private async Task DeleteClonedMaps(Guid viewId, VmContext dbContext)
     {
@@ -200,6 +224,27 @@ public class CallbackBackgroundService : BackgroundService, ICallbackBackgroundS
             }
 
             dbContext.Remove(map);
+        }
+
+        await dbContext.SaveChangesAsync();
+    }
+
+    // End all sessions associated with the deleted view
+    private async Task EndVmLoggingSessions(Guid viewId, VmLoggingContext dbContext)
+    {
+        var sessionsToEnd = await dbContext.VmUsageLoggingSessions
+            .Where(m => m.ViewId == viewId)
+            .ToListAsync();
+
+        foreach (var session in sessionsToEnd)
+        {
+            // if the current value in SessionEnd is later than the current time,
+            // set SessionEnd to the current time
+            var currentTime = DateTimeOffset.UtcNow;
+            if (session.SessionEnd.CompareTo(currentTime) > 0)
+            {
+                session.SessionEnd = currentTime;
+            }
         }
 
         await dbContext.SaveChangesAsync();
