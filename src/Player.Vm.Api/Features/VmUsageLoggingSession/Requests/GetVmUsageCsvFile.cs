@@ -65,7 +65,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 var entry = _db.VmUsageLoggingSessions.FirstOrDefault(e => e.Id == request.SessionId);
 
                 if (entry == null)
-                    throw new EntityNotFoundException<VmUsageLoggingSession>();                
+                    throw new EntityNotFoundException<VmUsageLoggingSession>();
 
                 if (!(await _playerService.IsSystemAdmin(cancellationToken) ||
                       await _playerService.IsViewAdmin(entry.ViewId, cancellationToken)))
@@ -88,22 +88,22 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 }
 
                 string data = string.Join("\r\n", Array.ConvertAll(vmUsageLogEntries, s => {
-                    return s.SessionId + ", " + 
-                        s.Id + ", " + 
-                        s.VmId  + ", " + 
-                        s.VmName + ", " + 
+                    return s.SessionId + ", " +
+                        s.Id + ", " +
+                        s.VmId  + ", " +
+                        s.VmName + ", " +
                         s.IpAddress.Replace(", ", " ") + ", " +
-                        s.UserId + ", " + 
-                        s.UserName + ", " + 
-                        s.VmActiveDT + ", " + 
+                        s.UserId + ", " +
+                        s.UserName + ", " +
+                        s.VmActiveDT + ", " +
                         s.VmInactiveDT;
                 }));
 
                 //Add header for CSV
-                data = "SessionID, LogID, VmID, VmName, IpAddress, UserId, UserName, VmActiveDateTime, VmInActiveDateTime\r\n" + data;
+                data = "SessionID, LogID, VmID, VmName, IpAddress, UserId, UserName, VmActiveDateTime, VmInactiveDateTime\r\n" + data;
 
                 byte[] bytes = Encoding.ASCII.GetBytes(data);
-                
+
                 var result = new FileContentResult(bytes, "text/csv");
                 result.FileDownloadName = fileName;
 
