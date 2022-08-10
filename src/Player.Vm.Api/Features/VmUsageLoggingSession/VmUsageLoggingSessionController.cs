@@ -28,7 +28,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
     {
         private readonly IMediator _mediator;
         private VmUsageLoggingOptions _options;
-        
+
         public VmUsageLoggingSessionController(IMediator mediator, IOptionsMonitor<VmUsageLoggingOptions> vsphereOptionsMonitor)
         {
             _mediator = mediator;
@@ -90,14 +90,14 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                         OnlyActive = onlyActive.HasValue ? onlyActive.Value : false,
                         ViewId = viewId.HasValue ? viewId.Value : null
                         });
-                
+
                 return Ok(result);
             }
             else
             {
                 return NotFound("Vm Usage Logging is disabled");
             }
-        }       
+        }
 
         /// <summary>
         /// Create a new VmUsageLoggingSession.
@@ -183,7 +183,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             {
                 return NotFound("Vm Usage Logging is disabled");
             }
-        }     
+        }
 
         /// <summary>
         /// Get CSV file for all log entries in a VmUsageLoggingSession.
@@ -198,6 +198,28 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
             {
                 var result = await _mediator.Send(new GetVmUsageCsvFile.Query {SessionId = id});
                 return result;
+            }
+            else
+            {
+                return NotFound("Vm Usage Logging is disabled");
+            }
+        }
+
+        /// <summary>
+        /// Get VM Usage Report for a timespan.
+        /// </summary>
+        /// <param name="reportStart">The start date/time for the report.</param>
+        /// <param name="reportEnd">IThe end date/time for the report.</param>
+        /// <returns></returns>
+        [HttpGet("report")]
+        [ProducesResponseType(typeof(List<VmUsageReport>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "GetVmUsageReport")]
+        public async Task<IActionResult> GetVmUsageReport([FromQuery] DateTimeOffset reportStart, DateTimeOffset reportEnd)
+        {
+            if (_options.Enabled)
+            {
+                var result = await _mediator.Send(new GetVmUsageReport.Query {ReportStart = reportStart, ReportEnd = reportEnd});
+                return Ok(result);
             }
             else
             {
