@@ -72,7 +72,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 var sessionIdList = sessionList.Select(s => s.Id);
                 List<VmUsageReport> vmUsageReportList;
                 var flatVmUsageLogEntryList = await _db.VmUsageLogEntries
-                    .Where(e => sessionIdList.Contains(e.SessionId))
+                    .Where(e => sessionIdList.Contains(e.SessionId) && e.VmInactiveDT > e.VmActiveDT)
                     .Select(e => new {
                         SessionId = e.SessionId,
                         SessionName = e.Session.SessionName,
