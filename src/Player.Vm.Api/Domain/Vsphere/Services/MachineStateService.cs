@@ -12,10 +12,8 @@ using Microsoft.Extensions.DependencyInjection;
 using Player.Vm.Api.Data;
 using Microsoft.EntityFrameworkCore;
 using System.Linq;
-using System.Collections.Concurrent;
 using VimClient;
 using System.Collections.Generic;
-using Player.Vm.Api.Domain.Vsphere.Models;
 using Microsoft.Extensions.Caching.Memory;
 using Player.Vm.Api.Domain.Models;
 using Nito.AsyncEx;
@@ -70,8 +68,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     using (var scope = _serviceProvider.CreateScope())
                     {
                         InitScope(scope);
-                        var events = await GetEvents();
-                        await ProcessEvents(events);
+
+                        if (_options.Enabled)
+                        {
+                            var events = await GetEvents();
+                            await ProcessEvents(events);
+                        }
                     }
                 }
                 catch (Exception ex)

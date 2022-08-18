@@ -5,10 +5,10 @@
     <noWarn>1591</noWarn>
   </PropertyGroup>
   <ItemGroup>
-    <PackageReference Include="AutoMapper" Version="10.1.1" />
+    <PackageReference Include="AutoMapper" Version="11.0.1" />
     <PackageReference Include="Microsoft.OpenApi" Version="1.2.3" />
     <PackageReference Include="Player.Api.Client" Version="3.2.0" />
-    <PackageReference Include="AutoMapper.Extensions.Microsoft.DependencyInjection" Version="8.1.1" />
+    <PackageReference Include="AutoMapper.Extensions.Microsoft.DependencyInjection" Version="11.0.0" />
     <PackageReference Include="IdentityServer4.AccessTokenValidation" Version="3.0.1" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="6.0.1">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
@@ -30,5 +30,7 @@
     <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="6.0.1" />
     <PackageReference Include="AspNetCore.HealthChecks.Sqlite" Version="6.0.1" />
     <PackageReference Include="VimClient" Version="7.0.0" />
+    <PackageReference Include="Corsinvest.ProxmoxVE.Api" Version="7.3.2" />
+    <PackageReference Include="Corsinvest.ProxmoxVE.Api.Extension" Version="7.3.6" />
   </ItemGroup>
 </Project>

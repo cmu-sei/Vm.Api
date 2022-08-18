@@ -5,6 +5,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
 {
     public class VsphereOptions
     {
+        public bool Enabled { get; set; }
         public string Host { get; set; }
 
         public string Username { get; set; }

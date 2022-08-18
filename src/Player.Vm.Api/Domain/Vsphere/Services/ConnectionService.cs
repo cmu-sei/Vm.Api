@@ -159,34 +159,42 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                     _options = _optionsMonitor.CurrentValue;
 
-                    await Connect();
-
-                    if (count == _options.LoadCacheAfterIterations)
+                    if (!_options.Enabled)
                     {
-                        count = 0;
+                        _logger.LogInformation("Vsphere disabled, skipping");
                     }
-
-                    if (count == 0 || _forceReload)
+                    else
                     {
-                        lock (_lock)
+                        await Connect();
+
+                        if (count == _options.LoadCacheAfterIterations)
                         {
-                            _forceReload = false;
                             count = 0;
                         }
 
-                        await LoadCache();
-                    }
+                        if (count == 0 || _forceReload)
+                        {
+                            lock (_lock)
+                            {
+                                _forceReload = false;
+                                count = 0;
+                            }
 
-                    _logger.LogInformation($"Finished Connect Loop at {DateTime.UtcNow} with {_machineCache.Count()} Machines");
+                            await LoadCache();
+                        }
+
+                        _logger.LogInformation($"Finished Connect Loop at {DateTime.UtcNow} with {_machineCache.Count()} Machines");
+                        count++;
+                    }
                 }
                 catch (Exception ex)
                 {
                     _logger.LogError(ex, "Exception encountered in ConnectionService loop");
                     count = 0;
                 }
+
                 _connectionServiceHealthCheck.CompletedRun();
                 await _resetEvent.WaitAsync(new TimeSpan(0, 0, _options.ConnectionRetryIntervalSeconds));
-                count++;
             }
         }
 
@@ -398,6 +406,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                         var powerState = vsphereVirtualMachine.State == "on" ? PowerState.On : PowerState.Off;
                         vm.PowerState = powerState;
                         vm.IpAddresses = vsphereVirtualMachine.IpAddresses;
+                        vm.Type = VmType.Vsphere;
                     }
                 }
 

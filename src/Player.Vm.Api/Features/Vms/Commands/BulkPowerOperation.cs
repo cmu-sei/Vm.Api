@@ -78,7 +78,7 @@ namespace Player.Vm.Api.Features.Vms
                     {
                         errorsDict.Add(id, "Virtual Machine Not Found");
                     }
-                    else if (vm.PowerState == PowerState.Unknown)
+                    else if (vm.PowerState == PowerState.Unknown || vm.Type != VmType.Vsphere)
                     {
                         errorsDict.Add(id, "Unsupported Operation");
                     }

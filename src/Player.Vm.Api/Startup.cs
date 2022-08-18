@@ -39,6 +39,8 @@ using Player.Vm.Api.Infrastructure.Constants;
 using System.Linq;
 using System.Collections.Generic;
 using Player.Vm.Api.Infrastructure.ClaimsTransformers;
+using Player.Vm.Api.Domain.Proxmox.Services;
+using Player.Vm.Api.Domain.Proxmox.Options;
 
 namespace Player.Vm.Api
 {
@@ -152,6 +154,10 @@ namespace Player.Vm.Api
             services
                 .Configure<VmUsageLoggingOptions>(Configuration.GetSection("VmUsageLogging"))
                 .AddScoped(config => config.GetService<IOptionsSnapshot<VmUsageLoggingOptions>>().Value);
+
+            services
+                .Configure<ProxmoxOptions>(Configuration.GetSection("Proxmox"))
+                .AddScoped(config => config.GetService<IOptionsSnapshot<ProxmoxOptions>>().Value);
 
             services.AddCors(options => options.UseConfiguredCors(Configuration.GetSection("CorsPolicy")));
             services.AddMvc()
@@ -272,6 +278,12 @@ namespace Player.Vm.Api
             services.AddSingleton<MachineStateService>();
             services.AddSingleton<IHostedService>(x => x.GetService<MachineStateService>());
             services.AddSingleton<IMachineStateService>(x => x.GetService<MachineStateService>());
+
+            // Proxmox Services
+            services.AddScoped<IProxmoxService, ProxmoxService>();
+            services.AddSingleton<ProxmoxStateService>();
+            services.AddSingleton<IHostedService>(x => x.GetService<ProxmoxStateService>());
+            services.AddSingleton<IProxmoxStateService>(x => x.GetService<ProxmoxStateService>());
 
             services.AddTransient<EventTransactionInterceptor>();
 

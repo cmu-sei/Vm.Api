@@ -21,6 +21,11 @@ namespace Player.Vm.Api.Features.Vms
         public string Url { get; set; }
 
         /// <summary>
+        /// True if this VM's Url has not been explicitly set and a default value has been computed
+        /// </summary>
+        public bool DefaultUrl { get; set; }
+
+        /// <summary>
         /// The Vm's name
         /// </summary>
         /// <value></value>
@@ -61,5 +66,15 @@ namespace Player.Vm.Api.Features.Vms
         /// This is used for non-VMware Vms such as in Azure or AWS.
         /// </summary>
         public ConsoleConnectionInfo ConsoleConnectionInfo { get; set; }
+
+        /// <summary>
+        /// The Type of hypervisor or platform this VM runs on.
+        /// </summary>
+        public VmType Type { get; set; }
+
+        /// <summary>
+        /// Information for connecting to a Proxmox Vm.
+        /// </summary>
+        public ProxmoxVmInfo ProxmoxVmInfo { get; set; }
     }
 }
