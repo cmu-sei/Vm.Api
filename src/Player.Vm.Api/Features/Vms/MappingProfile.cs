@@ -3,6 +3,7 @@
 
 using AutoMapper;
 using Player.Vm.Api.Infrastructure.Options;
+using System;
 using System.Linq;
 
 namespace Player.Vm.Api.Features.Vms
@@ -20,6 +21,7 @@ namespace Player.Vm.Api.Features.Vms
             CreateMap<VmUpdateForm, Domain.Models.Vm>();
 
             CreateMap<VmCreateForm, Domain.Models.Vm>()
+                .ForMember(dest => dest.Type, opt => opt.MapFrom(src => src.ProxmoxVmInfo != null ? Domain.Models.VmType.Proxmox : Domain.Models.VmType.Unknown))
                 .ForMember(dest => dest.VmTeams, opt => opt.MapFrom(src => src.TeamIds.Select(x => new Domain.Models.VmTeam(x, src.Id.Value))));
 
             CreateMap<VmMap, Domain.Models.VmMap>();
@@ -45,6 +47,8 @@ namespace Player.Vm.Api.Features.Vms
 
             CreateMap<VmMapUpdateForm, Domain.Models.VmMap>()
                 .ForMember(dest => dest.Coordinates, opt => opt.Ignore());
+
+            CreateMap<Domain.Models.ProxmoxVmInfo, ProxmoxVmInfo>().ReverseMap();
         }
     }
 

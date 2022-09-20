@@ -160,7 +160,7 @@ namespace Player.Vm.Api.Features.Vms
         }
 
         /// <summary>
-        /// Updates a new Virtual Machine
+        /// Updates a Virtual Machine
         /// </summary>
         /// <remarks>
         /// Updates a Virtual Machine with the attributes specified

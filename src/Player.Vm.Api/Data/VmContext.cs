@@ -24,6 +24,7 @@ namespace Player.Vm.Api.Data
         public DbSet<VmTeam> VmTeams { get; set; }
         public DbSet<VmMap> Maps { get; set; }
         public DbSet<Player.Api.Client.WebhookEvent> WebhookEvents { get; set; }
+        public DbSet<ProxmoxVmInfo> ProxmoxVmInfo { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

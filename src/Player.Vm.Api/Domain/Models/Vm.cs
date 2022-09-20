@@ -35,14 +35,25 @@ namespace Player.Vm.Api.Domain.Models
         public string[] IpAddresses { get; set; }
 
         public bool HasPendingTasks { get; set; }
+        public VmType Type { get; set; }
 
         public ConsoleConnectionInfo ConsoleConnectionInfo { get; set; }
+
+        public virtual ProxmoxVmInfo ProxmoxVmInfo { get; set; }
 
         public bool TeamsLoaded
         {
             get
             {
                 return this.VmTeams != null && this.VmTeams.Count > 0;
+            }
+        }
+
+        public bool DefaultUrl
+        {
+            get
+            {
+                return string.IsNullOrEmpty(this.Url);
             }
         }
 
@@ -68,7 +79,34 @@ namespace Player.Vm.Api.Domain.Models
                 return this.Url;
             }
 
-            return $"{options.Vsphere.Url}/vm/{this.Id}/console";
+            var baseUrl = options.DefaultUrl;
+
+            switch (this.Type)
+            {
+                case VmType.Vsphere:
+                    {
+                        if (options.Vsphere != null && !string.IsNullOrEmpty(options.Vsphere.Url))
+                        {
+                            baseUrl = options.Vsphere.Url;
+                        }
+                        break;
+                    }
+
+                case VmType.Proxmox:
+                    {
+                        if (options.Proxmox != null && !string.IsNullOrEmpty(options.Proxmox.Url))
+                        {
+                            baseUrl = options.Proxmox.Url;
+                        }
+                        break;
+                    }
+
+                default:
+                    baseUrl = options.DefaultUrl;
+                    break;
+            }
+
+            return $"{baseUrl.TrimEnd('/')}/vm/{this.Id}/console";
         }
     }
 
@@ -78,6 +116,14 @@ namespace Player.Vm.Api.Domain.Models
         On,
         Off,
         Suspended
+    }
+
+    public enum VmType
+    {
+        Unknown,
+        Vsphere,
+        Proxmox,
+        Azure,
     }
 
 
@@ -90,6 +136,9 @@ namespace Player.Vm.Api.Domain.Models
                 .HasConversion(
                     v => JsonSerializer.Serialize(v, DefaultJsonSettings.Settings),
                     v => JsonSerializer.Deserialize<ConsoleConnectionInfo>(v, DefaultJsonSettings.Settings));
+
+            // Replace with only including for VmType Proxmox if possible in the future
+            builder.Navigation(x => x.ProxmoxVmInfo).AutoInclude();
         }
     }
 }

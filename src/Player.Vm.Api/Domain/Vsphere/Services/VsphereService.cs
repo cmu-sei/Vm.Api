@@ -115,7 +115,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
             else
             {
-                url = url = $"wss://{host}/ticket/{ticket.ticket}";
+                url = $"wss://{host}/ticket/{ticket.ticket}";
             }
 
             _logger.LogDebug($"Returning url: {url}");

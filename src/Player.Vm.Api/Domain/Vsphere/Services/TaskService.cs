@@ -87,7 +87,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     using (var scope = _serviceProvider.CreateScope())
                     {
                         _dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
-                        await processTasks();
+
+                        if (_options.Enabled)
+                        {
+                            await processTasks();
+                        }
                     }
                 }
                 catch (Exception ex)

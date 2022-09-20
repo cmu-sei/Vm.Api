@@ -23,5 +23,10 @@ namespace Player.Vm.Api.Features.Vms
         /// This is used for non-VMware Vms such as in Azure or AWS.
         /// </summary>
         public ConsoleConnectionInfo ConsoleConnectionInfo { get; set; }
+
+        /// <summary>
+        /// For Proxmox Vms only. Necessary information to connect to this Vm.
+        /// </summary>
+        public ProxmoxVmInfo ProxmoxVmInfo { get; set; }
     }
 }

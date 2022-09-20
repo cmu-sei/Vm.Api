@@ -21,5 +21,18 @@ namespace Player.Vm.Api.Infrastructure.Extensions
 
             return camelCaseStr;
         }
+
+        /// <summary>
+        /// Naive pluralizer that adds an s to the end of a string if count is not 1
+        /// </summary>
+        public static string Pluralize(this string str, int count)
+        {
+            if (count == 1)
+            {
+                return str;
+            }
+
+            return str + 's';
+        }
     }
 }
