@@ -1,4 +1,4 @@
-name: Header_Check
+name: Header Check
 
 on:
   pull_request:
@@ -7,5 +7,9 @@ on:
 
 jobs:
   header-check:
-    name: Check Headers
-    uses: cmu-sei/Crucible-Github-Actions/.github/workflows/header.yaml@main
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check Headers
+        uses: cmu-sei/Crucible-Github-Actions/actions/header@header-v1.0
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
