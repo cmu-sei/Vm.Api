@@ -1,4 +1,4 @@
-name: Header_Check
+name: Header Check
 
 on:
   pull_request:
@@ -6,41 +6,10 @@ on:
       - development
 
 jobs:
-  build:
+  header-check:
     runs-on: ubuntu-latest
-
     steps:
-      - uses: actions/checkout@v2
-        with:
-          ref: ${{ github.head_ref }}
-        
-      - uses: actions/setup-python@v2
-        with:
-          python-version: '3.x'
-          architecture: 'x64'
-          
-      - name: Check for and Add Headers
-        run: |
-          python ./.github/workflows/script.py
-          
-      - name: Git Diff
-        id: git_diff
-        run: |
-          FILESCHANGED=$(git diff --quiet || echo "TRUE")
-          echo "FILESCHANGED=$FILESCHANGED" >> $GITHUB_ENV     
-          
-      - name: Commit and push files
-        if: env.FILESCHANGED == 'TRUE'
-        run: |
-          echo "Files have been changed"
-          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git config --local user.name "github-actions[bot]"
-          git commit -m "Add missing document markings" -a
-
-      - name: Push changes
-        if: env.FILESCHANGED == 'TRUE'
-        uses: ad-m/github-push-action@master
+      - name: Check Headers
+        uses: cmu-sei/Crucible-Github-Actions/actions/header@header-v1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: ${{ github.head_ref }}
-      
