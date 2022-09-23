@@ -82,7 +82,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
 
                 await _resetEvent.WaitAsync(
-                    new TimeSpan(0, 0, 0, _options.CheckTaskProgressIntervalMilliseconds),
+                    new TimeSpan(0, 0, 0, 0, _options.CheckTaskProgressIntervalMilliseconds),
                     cancellationToken);
             }
         }
@@ -131,7 +131,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 return;
             }
 
-            var filteredEvents = events.GroupBy(x => x.vm.vm)
+            var filteredEvents = events.GroupBy(x => x.vm.vm.Value)
                 .Select(g => g.OrderByDescending(l => l.createdTime).First())
                 .ToArray();
 
@@ -141,7 +141,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                 if (id.HasValue)
                 {
-                    eventDict.Add(id.Value, evt);
+                    eventDict.TryAdd(id.Value, evt);
                 }
             }
 
