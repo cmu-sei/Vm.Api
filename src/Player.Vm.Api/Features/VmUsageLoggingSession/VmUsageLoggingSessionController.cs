@@ -191,12 +191,13 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         /// <returns></returns>
         [HttpGet("{id}/download")]
         [Produces("text/csv")]
+        [SwaggerResponse((int)HttpStatusCode.OK, "CSV File", null, "text/csv")]
         [SwaggerOperation(OperationId = "GetVmUsageCsvFile")]
         public async Task<IActionResult> GetVmUsageCsvFile([FromRoute] Guid id)
         {
             if (_options.Enabled)
             {
-                var result = await _mediator.Send(new GetVmUsageCsvFile.Query {SessionId = id});
+                var result = await _mediator.Send(new GetVmUsageCsvFile.Query { SessionId = id });
                 return result;
             }
             else
