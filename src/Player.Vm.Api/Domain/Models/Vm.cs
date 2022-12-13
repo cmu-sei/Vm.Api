@@ -37,6 +37,8 @@ namespace Player.Vm.Api.Domain.Models
         public bool HasPendingTasks { get; set; }
         public VmType Type { get; set; }
 
+        public bool Embeddable { get; set; } = true;
+
         public ConsoleConnectionInfo ConsoleConnectionInfo { get; set; }
 
         public virtual ProxmoxVmInfo ProxmoxVmInfo { get; set; }
@@ -139,6 +141,11 @@ namespace Player.Vm.Api.Domain.Models
 
             // Replace with only including for VmType Proxmox if possible in the future
             builder.Navigation(x => x.ProxmoxVmInfo).AutoInclude();
+
+            builder
+                .Property(x => x.Embeddable)
+                .HasDefaultValue<bool>(true)
+                .ValueGeneratedNever();
         }
     }
 }

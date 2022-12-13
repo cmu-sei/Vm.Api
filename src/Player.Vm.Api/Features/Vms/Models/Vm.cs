@@ -76,5 +76,10 @@ namespace Player.Vm.Api.Features.Vms
         /// Information for connecting to a Proxmox Vm.
         /// </summary>
         public ProxmoxVmInfo ProxmoxVmInfo { get; set; }
+
+        /// <summary>
+        /// If false, only allow opening this VM in a new tab
+        /// </summary>
+        public bool Embeddable { get; set; }
     }
 }
