@@ -459,7 +459,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
             catch (Exception ex)
             {
-                // Expected exception if shutdown failed, handled in finally
+                // Expected exception if reboot failed, handled in finally
             }
             finally
             {
