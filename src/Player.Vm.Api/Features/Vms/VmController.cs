@@ -268,6 +268,19 @@ namespace Player.Vm.Api.Features.Vms
         }
 
         /// <summary>
+        /// Reboot multiple Virtual Machines
+        /// </summary>
+        [HttpPost("vms/actions/reboot")]
+        [ProducesResponseType(typeof(BulkPowerOperation.Response), (int)HttpStatusCode.Accepted)]
+        [SwaggerOperation(OperationId = "bulkReboot")]
+        public async Task<IActionResult> BulkReboot(BulkPowerOperation.Command command)
+        {
+            command.Operation = PowerOperation.Reboot;
+            var result = await _mediator.Send(command);
+            return Accepted(result);
+        }
+
+        /// <summary>
         /// Shutdown multiple Virtual Machines
         /// </summary>
         [HttpPost("vms/actions/shutdown")]
