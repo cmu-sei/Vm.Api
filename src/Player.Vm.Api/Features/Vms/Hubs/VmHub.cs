@@ -1,4 +1,4 @@
-// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
+// Copyright 2023 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
@@ -157,6 +157,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
         }
 
+
         public async Task SetActiveVirtualMachine(Guid vmId)
         {
             var vm = await _vmService.GetAsync(vmId, Context.ConnectionAborted);
@@ -172,11 +173,20 @@ namespace Player.Vm.Api.Features.Vms.Hubs
                 teamIds.Add(primaryTeamId);
             }
 
-            var groups = GetGroups(teamIds, viewIds, userId);
+            var groups = GetGroups(teamIds, viewIds, userId, vmId);
 
-            var newVmId = _activeVirtualMachineService.SetActiveVirtualMachineForUser(userId, vmId, Context.ConnectionId, teamIds);
+            var newVmId = _activeVirtualMachineService.SetActiveVirtualMachineForUser(userId, Context.User.GetName(), vmId, Context.ConnectionId, teamIds);
 
             await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, newVmId, userId);
+
+            // Begin Handling of displaying current users connected to an individual VM
+            var usernames = _activeVirtualMachineService.GetActiveVirtualMachineUsers(vmId);
+            if (usernames.Length == 1) 
+            {
+                // Add the Group to the Signalr Hub only if this a new VM connection
+                await Groups.AddToGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(vmId));
+            }
+            await Clients.Groups(groups).SendAsync(GetCurrentVmUsersChannelName(vmId), vmId, usernames);
 
             await _vmUsageLoggingService.CreateVmLogEntry(userId, vmId, teamIds, Context.ConnectionAborted);
         }
@@ -195,20 +205,28 @@ namespace Player.Vm.Api.Features.Vms.Hubs
         private async Task UnsetActiveVirtualMachineInternal()
         {
             var userId = Context.User.GetId();
-            var activeVirtualMachine = _activeVirtualMachineService.UnsetActiveVirtualMachineForUser(userId, Context.ConnectionId);
+            var activeVirtualMachine = _activeVirtualMachineService.UnsetActiveVirtualMachineForUser(userId, Context.User.GetName(), Context.ConnectionId);
 
             if (activeVirtualMachine != null)
             {
                 var viewIds = await _viewService.GetViewIdsForTeams(activeVirtualMachine.TeamIds, Context.ConnectionAborted);
-                var groups = GetGroups(activeVirtualMachine.TeamIds, viewIds, userId);
-
+                var groups = GetGroups(activeVirtualMachine.TeamIds, viewIds, userId, activeVirtualMachine.VmId);
                 await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, null, userId);
+
+                // Begin Handling of displaying current users connected to an individual VM
+                var usernames = _activeVirtualMachineService.GetActiveVirtualMachineUsers(activeVirtualMachine.VmId);
+                await Clients.Groups(groups).SendAsync(GetCurrentVmUsersChannelName(activeVirtualMachine.VmId), activeVirtualMachine.VmId, usernames);
+                if (usernames == null) 
+                {
+                    // Remove the Group to the Signalr Hub only if no users are currently connected
+                    await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(activeVirtualMachine.VmId));
+                }
 
                 await _vmUsageLoggingService.CloseVmLogEntry(userId, activeVirtualMachine.VmId, Context.ConnectionAborted);
             }
         }
 
-        private string[] GetGroups(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, Guid userId)
+        private string[] GetGroups(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, Guid userId, Guid vmId)
         {
             var groups = new List<string>();
 
@@ -221,6 +239,11 @@ namespace Player.Vm.Api.Features.Vms.Hubs
                 // those following the entire view who have ViewAdmin
                 // those following the entire view who are on the same Team
                 groups.Add(GetGroup(id));
+            }
+
+            if (vmId != null)
+            {
+                groups.Add(GetCurrentVmUsersChannelName(vmId));
             }
 
             return groups.ToArray();
@@ -250,6 +273,23 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
             return group.ToString();
         }
+
+        /// <summary>
+        /// Get the signalR channel name for the given vm user
+        /// </summary>
+        /// <param name="vmId"></param>
+        /// <returns>a string in the form of {VmUserChannelPrefix}-{vmId}</returns>
+        private string GetCurrentVmUsersChannelName(Guid vmId)
+        {
+            var channelName = new StringBuilder(VmHubMethods.CurrentVirtualMachineUsers);
+
+            if (vmId != null)
+            {
+                channelName.Append($"-{vmId.ToString()}");
+            }
+
+            return channelName.ToString();
+        }
     }
 
     public static class VmHubMethods
@@ -258,5 +298,6 @@ namespace Player.Vm.Api.Features.Vms.Hubs
         public const string VmUpdated = "VmUpdated";
         public const string VmDeleted = "VmDeleted";
         public const string ActiveVirtualMachine = "ActiveVirtualMachine";
+        public const string CurrentVirtualMachineUsers = "CurrentVirtualMachineUsers";
     }
 }
