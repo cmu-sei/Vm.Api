@@ -181,12 +181,9 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
             // Begin Handling of displaying current users connected to an individual VM
             var usernames = _activeVirtualMachineService.GetActiveVirtualMachineUsers(vmId);
-            if (usernames.Length == 1) 
-            {
-                // Add the Group to the Signalr Hub only if this a new VM connection
-                await Groups.AddToGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(vmId));
-            }
-            await Clients.Groups(groups).SendAsync(GetCurrentVmUsersChannelName(vmId), vmId, usernames);
+            // Add the Group to the Signalr Hub only if this a new VM connection
+            await Groups.AddToGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(vmId));
+            await Clients.Groups(GetCurrentVmUsersChannelName(vmId)).SendAsync(VmHubMethods.CurrentVirtualMachineUsers, vmId, usernames);
 
             await _vmUsageLoggingService.CreateVmLogEntry(userId, vmId, teamIds, Context.ConnectionAborted);
         }
@@ -215,12 +212,8 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
                 // Begin Handling of displaying current users connected to an individual VM
                 var usernames = _activeVirtualMachineService.GetActiveVirtualMachineUsers(activeVirtualMachine.VmId);
-                await Clients.Groups(groups).SendAsync(GetCurrentVmUsersChannelName(activeVirtualMachine.VmId), activeVirtualMachine.VmId, usernames);
-                if (usernames == null) 
-                {
-                    // Remove the Group to the Signalr Hub only if no users are currently connected
-                    await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(activeVirtualMachine.VmId));
-                }
+                await Clients.Groups(GetCurrentVmUsersChannelName(activeVirtualMachine.VmId)).SendAsync(VmHubMethods.CurrentVirtualMachineUsers, activeVirtualMachine.VmId, usernames);
+                await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(activeVirtualMachine.VmId));
 
                 await _vmUsageLoggingService.CloseVmLogEntry(userId, activeVirtualMachine.VmId, Context.ConnectionAborted);
             }
