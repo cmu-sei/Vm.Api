@@ -35,6 +35,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<string> SetResolution(Guid id, int width, int height);
         Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation);
         Task<Dictionary<Guid, string>> BulkShutdown(Guid[] ids);
+        Task<Dictionary<Guid, string>> BulkReboot(Guid[] ids);
         Task<Dictionary<Guid, PowerState>> GetPowerState(IEnumerable<Guid> machineIds);
         Task<IEnumerable<Event>> GetEvents(EventFilterSpec filterSpec);
     }
@@ -414,6 +415,51 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             catch (Exception ex)
             {
                 // Expected exception if shutdown failed, handled in finally
+            }
+            finally
+            {
+                foreach (var kvp in taskDict)
+                {
+                    if (kvp.Value.Exception == null)
+                    {
+                        retDict.Add(kvp.Key, string.Empty);
+                    }
+                    else
+                    {
+                        retDict.Add(kvp.Key, kvp.Value.Exception.InnerException.Message);
+                    }
+                }
+            }
+
+            return retDict;
+        }
+
+        public async Task<Dictionary<Guid, string>> BulkReboot(Guid[] ids)
+        {
+            Dictionary<Guid, string> retDict = new Dictionary<Guid, string>();
+            Dictionary<Guid, Task> taskDict = new Dictionary<Guid, Task>();
+
+            foreach (var id in ids)
+            {
+                ManagedObjectReference vmReference = await GetVm(id);
+
+                if (vmReference == null)
+                {
+                    _logger.LogDebug($"Could not get vm reference for {id}");
+                    retDict.Add(id, "Virtual machine not found");
+                    continue;
+                }
+
+                taskDict.Add(id, _client.RebootGuestAsync(vmReference));
+            }
+
+            try
+            {
+                await Task.WhenAll(taskDict.Values.Where(x => x != null)).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                // Expected exception if reboot failed, handled in finally
             }
             finally
             {

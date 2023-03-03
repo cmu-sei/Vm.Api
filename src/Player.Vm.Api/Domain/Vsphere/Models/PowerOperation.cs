@@ -7,6 +7,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Models
     {
         PowerOn,
         PowerOff,
-        Shutdown
+        Shutdown,
+        Reboot
     }
 }

@@ -112,6 +112,15 @@ namespace Player.Vm.Api.Features.Vms
                         .ToLookup(x => x.Key, x => x.Value)
                         .ToDictionary(x => x.Key, g => g.First());
                 }
+                else if (request.Operation == PowerOperation.Reboot)
+                {
+                    var results = await _vsphereService.BulkReboot(acceptedList.ToArray());
+
+                    errorsDict = errorsDict
+                        .Concat(results)
+                        .ToLookup(x => x.Key, x => x.Value)
+                        .ToDictionary(x => x.Key, g => g.First());
+                }
                 else
                 {
                     await _vsphereService.BulkPowerOperation(acceptedList.ToArray(), request.Operation);
