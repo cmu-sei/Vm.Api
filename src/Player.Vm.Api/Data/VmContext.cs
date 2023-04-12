@@ -20,7 +20,6 @@ namespace Player.Vm.Api.Data
         }
 
         public DbSet<Domain.Models.Vm> Vms { get; set; }
-        public DbSet<Team> Teams { get; set; }
         public DbSet<VmTeam> VmTeams { get; set; }
         public DbSet<VmMap> Maps { get; set; }
         public DbSet<Player.Api.Client.WebhookEvent> WebhookEvents { get; set; }

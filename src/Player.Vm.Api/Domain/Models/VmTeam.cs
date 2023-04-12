@@ -18,7 +18,6 @@ namespace Player.Vm.Api.Domain.Models
         }
 
         public Guid TeamId { get; set; }
-        public virtual Team Team { get; set; }
 
         public Guid VmId { get; set; }
         public virtual Vm Vm { get; set; }
@@ -29,11 +28,6 @@ namespace Player.Vm.Api.Domain.Models
         public void Configure(EntityTypeBuilder<VmTeam> builder)
         {
             builder.HasKey(e => new { e.TeamId, e.VmId });
-
-            builder
-                .HasOne(tu => tu.Team)
-                .WithMany(t => t.VmTeams)
-                .HasForeignKey(tu => tu.TeamId);
 
             builder
                 .HasOne(tu => tu.Vm)
