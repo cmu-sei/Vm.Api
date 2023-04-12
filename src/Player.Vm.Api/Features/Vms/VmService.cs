@@ -237,19 +237,6 @@ namespace Player.Vm.Api.Features.Vms
             if (!(await _permissionsService.CanWrite(formTeams, ct)))
                 throw new ForbiddenException();
 
-            var teamList = await _context.Teams
-                .Where(t => formTeams.Contains(t.Id))
-                .Select(t => t.Id)
-                .ToListAsync(ct);
-
-            foreach (var vmTeam in vmEntity.VmTeams)
-            {
-                if (!teamList.Contains(vmTeam.TeamId))
-                {
-                    _context.Teams.Add(new Domain.Models.Team() { Id = vmTeam.TeamId });
-                }
-            }
-
             _context.Vms.Add(vmEntity);
             await _context.SaveChangesAsync(ct);
 
@@ -315,14 +302,6 @@ namespace Player.Vm.Api.Features.Vms
 
             if (!(await _permissionsService.CanWrite(new[] { teamId }, ct)))
                 throw new ForbiddenException();
-
-            var team = await _context.Teams.SingleOrDefaultAsync(t => t.Id == teamId, ct);
-
-            if (team == null)
-            {
-                Domain.Models.Team te = new Domain.Models.Team { Id = teamId };
-                _context.Teams.Add(te);
-            }
 
             var vmteam = await _context.VmTeams.SingleOrDefaultAsync(vt => vt.VmId == vmId && vt.TeamId == teamId);
 
