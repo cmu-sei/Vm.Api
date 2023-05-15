@@ -49,18 +49,10 @@ namespace Player.Vm.Api.Domain.Services
 
             if (!_cache.TryGetValue(teamId, out viewId))
             {
-                try
-                {
-                    var team = await _playerApiClient.GetTeamAsync(teamId, ct);
-                    viewId = team.ViewId;
+                var team = await _playerApiClient.GetTeamAsync(teamId, ct);
+                viewId = team.ViewId;
 
-                    _cache.Set(teamId, viewId, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromHours(12)));
-                }
-                catch (Exception ex)
-                {
-                    viewId = null;
-                    _logger.LogError(ex, $"Error Getting ViewId for TeamId: {teamId}");
-                }
+                _cache.Set(teamId, viewId, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromHours(12)));
             }
 
             return viewId;
