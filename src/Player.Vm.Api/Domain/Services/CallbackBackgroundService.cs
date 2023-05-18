@@ -85,7 +85,7 @@ public class CallbackBackgroundService : BackgroundService, ICallbackBackgroundS
         {
             using var scope = _scopeFactory.CreateScope();
             var vmContext = scope.ServiceProvider.GetRequiredService<VmContext>();
-            var vmLoggingContext = scope.ServiceProvider.GetRequiredService<VmLoggingContext>();
+            var vmLoggingContext = scope.ServiceProvider.GetService<VmLoggingContext>();
 
             // Don't process if event is expired
             if (!e.IsExpired())
@@ -186,6 +186,8 @@ public class CallbackBackgroundService : BackgroundService, ICallbackBackgroundS
 
     private async Task CloneVmLoggingSessions(ViewCreated form, VmLoggingContext dbContext, PlayerApiClient playerClient)
     {
+        if (dbContext == null) return;
+
         // Get sessions assigned to parent view
         var sessions = await dbContext.VmUsageLoggingSessions
             .Where(m => m.ViewId == form.ParentId)
@@ -232,6 +234,8 @@ public class CallbackBackgroundService : BackgroundService, ICallbackBackgroundS
     // End all sessions associated with the deleted view
     private async Task EndVmLoggingSessions(Guid viewId, VmLoggingContext dbContext)
     {
+        if (dbContext == null) return;
+
         var sessionsToEnd = await dbContext.VmUsageLoggingSessions
             .Where(m => m.ViewId == viewId)
             .ToListAsync();
