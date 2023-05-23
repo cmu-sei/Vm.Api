@@ -14,121 +14,132 @@ using System.Threading.Tasks;
 using Player.Vm.Api.Infrastructure.Options;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Player.Vm.Api.Domain.Services
+namespace Player.Vm.Api.Domain.Services;
+
+public interface IVmUsageLoggingService
 {
-    public interface IVmUsageLoggingService
+    Task CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds, CancellationToken ct);
+    Task CloseVmLogEntry(Guid userId, Guid vmId, CancellationToken ct);
+}
+
+public class DisabledVmUsageLoggingService : IVmUsageLoggingService
+{
+    public async Task CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds, CancellationToken ct)
     {
-        Task CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds, CancellationToken ct);
-        Task CloseVmLogEntry(Guid userId, Guid vmId, CancellationToken ct);
+        return;
     }
 
-    public class VmUsageLoggingService : IVmUsageLoggingService
+    public async Task CloseVmLogEntry(Guid userId, Guid vmId, CancellationToken ct)
     {
-        private readonly VmUsageLoggingOptions _loggingOptions;
-        private readonly IPlayerService _playerService;
-        private readonly IVmService _vmService;
-        private readonly VmLoggingContext _dbContext;
+        return;
+    }
+}
 
-        public VmUsageLoggingService(
-            IServiceScopeFactory scopeFactory,
-            VmUsageLoggingOptions loggingOptions,
-            IPlayerService playerService,
-            IVmService vmService,
-            VmLoggingContext dbContext)
+public class VmUsageLoggingService : IVmUsageLoggingService
+{
+    private readonly VmUsageLoggingOptions _loggingOptions;
+    private readonly IPlayerService _playerService;
+    private readonly IVmService _vmService;
+    private readonly VmLoggingContext _dbContext;
+
+    public VmUsageLoggingService(
+        IServiceScopeFactory scopeFactory,
+        VmUsageLoggingOptions loggingOptions,
+        IPlayerService playerService,
+        IVmService vmService,
+        VmLoggingContext dbContext)
+    {
+        _loggingOptions = loggingOptions;
+        _playerService = playerService;
+        _vmService = vmService;
+        _dbContext = dbContext;
+    }
+
+    public async Task CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds, CancellationToken ct)
+    {
+        if (_loggingOptions.Enabled == false)
         {
-            _loggingOptions = loggingOptions;
-            _playerService = playerService;
-            _vmService = vmService;
-            _dbContext = dbContext;
+            return;
         }
 
-        public async Task CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds, CancellationToken ct)
+        Player.Vm.Api.Features.Vms.Vm vm = null;
+        User user = null;
+        var teams = teamIds.ToArray<Guid>();
+
+        var activeSessions = await _dbContext.VmUsageLoggingSessions
+            .Where(s => (s.SessionEnd <= DateTimeOffset.MinValue || s.SessionEnd > DateTimeOffset.UtcNow) &&
+                s.SessionStart <= DateTimeOffset.UtcNow)
+            .ToArrayAsync();
+
+        foreach (var session in activeSessions)
         {
-            if (_loggingOptions.Enabled == false)
+            // First check to see if there is a matching TeamID in either list and only then proceed
+            var teamFound = false;
+            foreach (var teamId in session.TeamIds)
             {
-                return;
-            }
-
-            Player.Vm.Api.Features.Vms.Vm vm = null;
-            User user = null;
-            var teams = teamIds.ToArray<Guid>();
-
-            var activeSessions = await _dbContext.VmUsageLoggingSessions
-                .Where(s => (s.SessionEnd <= DateTimeOffset.MinValue || s.SessionEnd > DateTimeOffset.UtcNow) &&
-                    s.SessionStart <= DateTimeOffset.UtcNow)
-                .ToArrayAsync();
-
-            foreach (var session in activeSessions)
-            {
-                // First check to see if there is a matching TeamID in either list and only then proceed
-                var teamFound = false;
-                foreach (var teamId in session.TeamIds)
+                if (teams.Contains(teamId))
                 {
-                    if (teams.Contains(teamId))
-                    {
-                        teamFound = true;
-                        break;
-                    }
+                    teamFound = true;
+                    break;
                 }
-
-                if (!teamFound)
-                {
-                    // This session doesn't have the team associated so skip it
-                    continue;
-                }
-
-                if (user == null)
-                {
-                    // Get the User info once
-                    user = await _playerService.GetUserById(userId, ct);
-
-                    // Get the Vm info once
-                    vm = await _vmService.GetAsync(vmId, ct);
-                }
-
-                var logEntry = new VmUsageLogEntry
-                {
-                    Session = session,
-                    VmId = vm.Id,
-                    VmName = vm.Name,
-                    IpAddress = string.Join(", ", vm.IpAddresses),
-                    UserId = user.Id,
-                    UserName = user.Name,
-                    VmActiveDT = DateTimeOffset.UtcNow,
-                    VmInactiveDT = DateTimeOffset.MinValue
-                };
-
-                await _dbContext.VmUsageLogEntries.AddAsync(logEntry);
-                await _dbContext.SaveChangesAsync();
             }
-        }
 
-        public async Task CloseVmLogEntry(Guid userId, Guid vmId, CancellationToken ct)
-        {
-            if (_loggingOptions.Enabled == false)
+            if (!teamFound)
             {
-                return;
+                // This session doesn't have the team associated so skip it
+                continue;
             }
 
-            var vmUsageLogEntries = await _dbContext.VmUsageLogEntries
-                .Where(e => e.UserId == userId &&
-                    e.VmId == vmId &&
-                    e.VmInactiveDT <= DateTimeOffset.MinValue)
-                .ToArrayAsync();
-
-            if (vmUsageLogEntries == null)
+            if (user == null)
             {
-                // Unable to find a matching log entry
-                return;
+                // Get the User info once
+                user = await _playerService.GetUserById(userId, ct);
+
+                // Get the Vm info once
+                vm = await _vmService.GetAsync(vmId, ct);
             }
 
-            foreach (var log in vmUsageLogEntries)
+            var logEntry = new VmUsageLogEntry
             {
-                log.VmInactiveDT = DateTimeOffset.UtcNow;
-            }
+                Session = session,
+                VmId = vm.Id,
+                VmName = vm.Name,
+                IpAddress = string.Join(", ", vm.IpAddresses),
+                UserId = user.Id,
+                UserName = user.Name,
+                VmActiveDT = DateTimeOffset.UtcNow,
+                VmInactiveDT = DateTimeOffset.MinValue
+            };
 
+            await _dbContext.VmUsageLogEntries.AddAsync(logEntry);
             await _dbContext.SaveChangesAsync();
         }
     }
 
+    public async Task CloseVmLogEntry(Guid userId, Guid vmId, CancellationToken ct)
+    {
+        if (_loggingOptions.Enabled == false)
+        {
+            return;
+        }
+
+        var vmUsageLogEntries = await _dbContext.VmUsageLogEntries
+            .Where(e => e.UserId == userId &&
+                e.VmId == vmId &&
+                e.VmInactiveDT <= DateTimeOffset.MinValue)
+            .ToArrayAsync();
+
+        if (vmUsageLogEntries == null)
+        {
+            // Unable to find a matching log entry
+            return;
+        }
+
+        foreach (var log in vmUsageLogEntries)
+        {
+            log.VmInactiveDT = DateTimeOffset.UtcNow;
+        }
+
+        await _dbContext.SaveChangesAsync();
+    }
 }
