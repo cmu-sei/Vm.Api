@@ -103,6 +103,12 @@ namespace Player.Vm.Api
                         */
                         services.AddDbContextPool<VmLoggingContext>(
                             options => options.UseNpgsql(vmLoggingConnectionString));
+
+                        services.AddScoped<IVmUsageLoggingService, VmUsageLoggingService>();
+                    }
+                    else
+                    {
+                        services.AddSingleton<IVmUsageLoggingService, DisabledVmUsageLoggingService>();
                     }
 
                     break;
@@ -267,7 +273,6 @@ namespace Player.Vm.Api
             services.AddSingleton<ICallbackBackgroundService>(x => x.GetService<CallbackBackgroundService>());
             services.AddSingleton<IAuthenticationService, AuthenticationService>();
             services.AddSingleton<IActiveVirtualMachineService, ActiveVirtualMachineService>();
-            services.AddScoped<IVmUsageLoggingService, VmUsageLoggingService>();
             services.AddScoped<Microsoft.AspNetCore.Authentication.IClaimsTransformation, ClaimsTransformer>();
 
             // Vsphere Services
