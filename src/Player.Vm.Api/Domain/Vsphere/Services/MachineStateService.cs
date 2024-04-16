@@ -18,6 +18,8 @@ using Microsoft.Extensions.Caching.Memory;
 using Player.Vm.Api.Domain.Models;
 using Nito.AsyncEx;
 using Player.Vm.Api.Infrastructure.Extensions;
+using System.Collections.Concurrent;
+using Player.Vm.Api.Domain.Vsphere.Models;
 
 namespace Player.Vm.Api.Domain.Vsphere.Services
 {
@@ -29,19 +31,17 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
     public class MachineStateService : BackgroundService, IMachineStateService
     {
         private readonly ILogger<MachineStateService> _logger;
-        private VsphereOptions _options;
         private readonly IOptionsMonitor<VsphereOptions> _optionsMonitor;
         private readonly IServiceProvider _serviceProvider;
         private VmContext _dbContext;
         private IVsphereService _vsphereService;
         private readonly IConnectionService _connectionService;
         private AsyncAutoResetEvent _resetEvent = new AsyncAutoResetEvent(false);
-        private DateTime _lastCheckedTime = DateTime.UtcNow;
+        private ConcurrentDictionary<string, DateTime> _lastCheckedTimes = new ConcurrentDictionary<string, DateTime>();
 
         public MachineStateService(
                 IOptionsMonitor<VsphereOptions> optionsMonitor,
                 ILogger<MachineStateService> logger,
-                IMemoryCache cache,
                 IConnectionService connectionService,
                 IServiceProvider serviceProvider
             )
@@ -69,11 +69,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     {
                         InitScope(scope);
 
-                        if (_options.Enabled)
-                        {
-                            var events = await GetEvents();
-                            await ProcessEvents(events);
-                        }
+                        var events = await GetEvents();
+                        await ProcessEvents(events);
                     }
                 }
                 catch (Exception ex)
@@ -82,7 +79,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
 
                 await _resetEvent.WaitAsync(
-                    new TimeSpan(0, 0, 0, 0, _options.CheckTaskProgressIntervalMilliseconds),
+                    new TimeSpan(0, 0, 0, 0, _optionsMonitor.CurrentValue.CheckTaskProgressIntervalMilliseconds),
                     cancellationToken);
             }
         }
@@ -91,15 +88,50 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         {
             _dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
             _vsphereService = scope.ServiceProvider.GetRequiredService<IVsphereService>();
-            _options = _optionsMonitor.CurrentValue;
         }
 
-        private async Task<IEnumerable<Event>> GetEvents()
+        private async Task<Dictionary<string, IEnumerable<Event>>> GetEvents()
         {
-            var now = DateTime.UtcNow;
-            var events = await _vsphereService.GetEvents(GetFilterSpec(_lastCheckedTime));
-            _lastCheckedTime = now;
+            var connections = _connectionService.GetAllConnections();
+            var taskList = new List<Task<KeyValuePair<string, IEnumerable<Event>>>>();
+            var events = new Dictionary<string, IEnumerable<Event>>();
+
+            foreach (var connection in connections)
+            {
+                if (connection.Enabled)
+                {
+                    taskList.Add(GetEvents(connection));
+                }
+            }
+
+            var results = await Task.WhenAll(taskList);
+
+            foreach (var kvp in results)
+            {
+                events.Add(kvp.Key, kvp.Value);
+            }
+
             return events;
+        }
+
+        private async Task<KeyValuePair<string, IEnumerable<Event>>> GetEvents(VsphereConnection connection)
+        {
+            var lastCheckedTime = _lastCheckedTimes.GetOrAdd(connection.Address, DateTime.UtcNow);
+            IEnumerable<Event> events;
+            var now = DateTime.UtcNow;
+
+            try
+            {
+                events = await _vsphereService.GetEvents(GetFilterSpec(lastCheckedTime), connection);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Exception getting events from {connection.Address}");
+                return new KeyValuePair<string, IEnumerable<Event>>(connection.Address, new List<Event>());
+            }
+
+            _lastCheckedTimes[connection.Address] = now;
+            return new KeyValuePair<string, IEnumerable<Event>>(connection.Address, events);
         }
 
         private EventFilterSpec GetFilterSpec(DateTime beginTime)
@@ -122,26 +154,30 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return filterSpec;
         }
 
-        private async Task ProcessEvents(IEnumerable<Event> events)
+        private async Task ProcessEvents(Dictionary<string, IEnumerable<Event>> events)
         {
             var eventDict = new Dictionary<Guid, Event>();
 
-            if (!events.Any())
+            if (!events.SelectMany(x => x.Value).Any())
             {
                 return;
             }
 
-            var filteredEvents = events.GroupBy(x => x.vm.vm.Value)
+            foreach (var eventList in events)
+            {
+                var connectionEvents = eventList.Value;
+                var filteredEvents = connectionEvents.GroupBy(x => x.vm.vm.Value)
                 .Select(g => g.OrderByDescending(l => l.createdTime).First())
                 .ToArray();
 
-            foreach (var evt in filteredEvents)
-            {
-                var id = _connectionService.GetVmIdByRef(evt.vm.vm.Value);
-
-                if (id.HasValue)
+                foreach (var evt in filteredEvents)
                 {
-                    eventDict.TryAdd(id.Value, evt);
+                    var id = _connectionService.GetVmIdByRef(evt.vm.vm.Value, eventList.Key);
+
+                    if (id.HasValue)
+                    {
+                        eventDict.TryAdd(id.Value, evt);
+                    }
                 }
             }
 

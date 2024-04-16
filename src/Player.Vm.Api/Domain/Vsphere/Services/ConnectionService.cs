@@ -8,12 +8,10 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
-using System.ServiceModel;
 using System.Threading;
 using System.Threading.Tasks;
 using VimClient;
 using Player.Vm.Api.Domain.Vsphere.Models;
-using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Microsoft.Extensions.DependencyInjection;
 using Player.Vm.Api.Data;
@@ -23,654 +21,235 @@ using Nito.AsyncEx;
 using Player.Vm.Api.Infrastructure.Extensions;
 using Player.Vm.Api.Domain.Services.HealthChecks;
 
-namespace Player.Vm.Api.Domain.Vsphere.Services
+namespace Player.Vm.Api.Domain.Vsphere.Services;
+
+public interface IConnectionService
 {
-    public interface IConnectionService
+    ManagedObjectReference GetMachineById(Guid id);
+    Guid? GetVmIdByRef(string reference, string vsphereHost);
+    List<Network> GetNetworksByHost(string hostReference, string vsphereHost);
+    Network GetNetworkByReference(string networkReference, string vsphereHost);
+    Network GetNetworkByName(string networkName, string vsphereHost);
+    Datastore GetDatastoreByName(string dsName, string vsphereHost);
+    VsphereConnection GetConnection(string hostname);
+    VsphereAggregate GetAggregate(Guid id);
+    IEnumerable<VsphereConnection> GetAllConnections();
+}
+
+public class ConnectionService : BackgroundService, IConnectionService
+{
+    private readonly ILogger<ConnectionService> _logger;
+    private readonly IOptionsMonitor<VsphereOptions> _optionsMonitor;
+    private readonly IServiceProvider _serviceProvider;
+
+    private AsyncAutoResetEvent _resetEvent = new AsyncAutoResetEvent(false);
+    private readonly ConnectionServiceHealthCheck _connectionServiceHealthCheck;
+
+    public ConcurrentDictionary<string, VsphereConnection> _connections = new ConcurrentDictionary<string, VsphereConnection>(); // address to connection
+    public ConcurrentDictionary<Guid, string> _machines = new ConcurrentDictionary<Guid, string>(); // machine to vsphere address
+
+    public ConnectionService(
+            IOptionsMonitor<VsphereOptions> vsphereOptionsMonitor,
+            ILogger<ConnectionService> logger,
+            IServiceProvider serviceProvider,
+            ConnectionServiceHealthCheck connectionServiceHealthCheck
+        )
     {
-        VimPortTypeClient GetClient();
-        ServiceContent GetServiceContent();
-        UserSession GetSession();
-        ManagedObjectReference GetProps();
-        ManagedObjectReference GetMachineById(Guid id);
-        Guid? GetVmIdByRef(string reference);
-        List<Network> GetNetworksByHost(string hostReference);
-        Network GetNetworkByReference(string networkReference);
-        Network GetNetworkByName(string networkName);
-        Datastore GetDatastoreByName(string dsName);
-        void ReloadCache();
+        _optionsMonitor = vsphereOptionsMonitor;
+        _logger = logger;
+        _serviceProvider = serviceProvider;
+        _connectionServiceHealthCheck = connectionServiceHealthCheck;
     }
 
-    public class ConnectionService : BackgroundService, IConnectionService
+    protected override async Task ExecuteAsync(CancellationToken cancellationToken)
     {
-        private readonly ILogger<ConnectionService> _logger;
-        private VsphereOptions _options;
-        private readonly IOptionsMonitor<VsphereOptions> _optionsMonitor;
-        private readonly IServiceProvider _serviceProvider;
+        await Task.Yield();
 
-        private VimPortTypeClient _client;
-        private ServiceContent _sic;
-        private UserSession _session;
-        private ManagedObjectReference _props;
-
-        public ConcurrentDictionary<Guid, ManagedObjectReference> _machineCache = new ConcurrentDictionary<Guid, ManagedObjectReference>();
-        public ConcurrentDictionary<string, List<Network>> _networkCache = new ConcurrentDictionary<string, List<Network>>();
-        public ConcurrentDictionary<string, Datastore> _datastoreCache = new ConcurrentDictionary<string, Datastore>();
-        public ConcurrentDictionary<string, Guid> _vmGuids = new ConcurrentDictionary<string, Guid>();
-
-        private object _lock = new object();
-        private AsyncAutoResetEvent _resetEvent = new AsyncAutoResetEvent(false);
-        private bool _forceReload = false;
-        private readonly ConnectionServiceHealthCheck _connectionServiceHealthCheck;
-
-        public ConnectionService(
-                IOptionsMonitor<VsphereOptions> vsphereOptionsMonitor,
-                ILogger<ConnectionService> logger,
-                IServiceProvider serviceProvider,
-                ConnectionServiceHealthCheck connectionServiceHealthCheck
-            )
+        while (!cancellationToken.IsCancellationRequested)
         {
-            _options = vsphereOptionsMonitor.CurrentValue;
-            _optionsMonitor = vsphereOptionsMonitor;
-            _logger = logger;
-            _serviceProvider = serviceProvider;
-            _connectionServiceHealthCheck = connectionServiceHealthCheck;
-            _connectionServiceHealthCheck.HealthAllowance = _options.HealthAllowanceSeconds;
+            var taskDict = new Dictionary<string, Task<IEnumerable<VsphereVirtualMachine>>>();
+
+            foreach (var host in _optionsMonitor.CurrentValue.Hosts)
+            {
+                // Create or update Host
+                var connection = _connections.GetOrAdd(host.Address, x => new VsphereConnection(host, _optionsMonitor.CurrentValue, _logger));
+                connection.Options = _optionsMonitor.CurrentValue;
+                connection.Host = host;
+
+                taskDict.Add(connection.Address, connection.Load());
+            }
+
+            var result = await Task.WhenAll(taskDict.Values);
+            this.ProcessTasks(taskDict);
+
+            await this.UpdateVms(result.SelectMany(x => x));
+
+            _connectionServiceHealthCheck.HealthAllowance = _optionsMonitor.CurrentValue.HealthAllowanceSeconds;
+            _connectionServiceHealthCheck.CompletedRun();
+            await _resetEvent.WaitAsync(new TimeSpan(0, 0, _optionsMonitor.CurrentValue.ConnectionRetryIntervalSeconds));
+        }
+    }
+
+    private void ProcessTasks(Dictionary<string, Task<IEnumerable<VsphereVirtualMachine>>> taskDict)
+    {
+        // Add or update machines cache
+        foreach (var kvp in taskDict)
+        {
+            var machines = kvp.Value.Result;
+
+            foreach (var machine in machines)
+            {
+                _machines.AddOrUpdate(machine.Id, kvp.Key, (k, v) => v = kvp.Key);
+            }
         }
 
-        public VimPortTypeClient GetClient()
+        // Remove machines that no longer exist from cache
+        var allMachines = _connections.Values.SelectMany(x => x.MachineCache.Select(y => y.Key));
+
+        foreach (var kvp in _machines)
         {
-            return _client;
+            if (!allMachines.Contains(kvp.Key))
+            {
+                _machines.TryRemove(kvp);
+            }
+        }
+    }
+
+    private async Task UpdateVms(IEnumerable<VsphereVirtualMachine> vsphereVirtualMachines)
+    {
+        using (var scope = _serviceProvider.CreateScope())
+        {
+            var dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
+            var vms = await dbContext.Vms.ToArrayAsync();
+
+            foreach (var vsphereVirtualMachine in vsphereVirtualMachines)
+            {
+                var vm = vms.FirstOrDefault(x => x.Id == vsphereVirtualMachine.Id);
+
+                if (vm != null)
+                {
+                    var powerState = vsphereVirtualMachine.State == "on" ? PowerState.On : PowerState.Off;
+                    vm.PowerState = powerState;
+                    vm.IpAddresses = vsphereVirtualMachine.IpAddresses;
+                    vm.Type = VmType.Vsphere;
+                }
+            }
+
+            var count = await dbContext.SaveChangesAsync();
+        }
+    }
+
+    public VsphereAggregate GetAggregate(Guid id)
+    {
+        string address;
+
+        if (_machines.TryGetValue(id, out address))
+        {
+            VsphereConnection connection;
+
+            if (_connections.TryGetValue(address, out connection))
+            {
+                ManagedObjectReference machineReference;
+                if (connection.MachineCache.TryGetValue(id, out machineReference))
+                {
+                    return new VsphereAggregate(connection, machineReference);
+                }
+            }
         }
 
-        public ServiceContent GetServiceContent()
+        return null;
+    }
+
+    public IEnumerable<VsphereConnection> GetAllConnections()
+    {
+        return _connections.Values;
+    }
+
+    public VsphereConnection GetConnection(string hostname)
+    {
+        VsphereConnection connection = null;
+        _connections.TryGetValue(hostname, out connection);
+        return connection;
+    }
+
+    public ManagedObjectReference GetMachineById(Guid id)
+    {
+        ManagedObjectReference machineReference;
+        foreach (var connection in _connections.Values)
         {
-            return _sic;
+            if (connection.MachineCache.TryGetValue(id, out machineReference))
+            {
+                return machineReference;
+            }
         }
 
-        public UserSession GetSession()
-        {
-            return _session;
-        }
+        return null;
+    }
 
-        public ManagedObjectReference GetProps()
-        {
-            return _props;
-        }
-
-        public ManagedObjectReference GetMachineById(Guid id)
-        {
-            ManagedObjectReference machineReference = null;
-            _machineCache.TryGetValue(id, out machineReference);
-            return machineReference;
-        }
-
-        public Guid? GetVmIdByRef(string reference)
+    public Guid? GetVmIdByRef(string reference, string vsphereHost)
+    {
+        VsphereConnection connection;
+        if (_connections.TryGetValue(vsphereHost, out connection))
         {
             Guid id;
-            if (_vmGuids.TryGetValue(reference, out id))
+            if (connection.VmGuids.TryGetValue(reference, out id))
             {
                 return id;
             }
-            else
-            {
-                return null;
-            }
         }
 
-        public List<Network> GetNetworksByHost(string hostReference)
+        return null;
+    }
+
+    public List<Network> GetNetworksByHost(string hostReference, string vsphereHost)
+    {
+        VsphereConnection connection;
+        List<Network> networks = new List<Network>();
+
+        if (_connections.TryGetValue(vsphereHost, out connection))
         {
-            List<Network> networks;
-            _networkCache.TryGetValue(hostReference, out networks);
-
-            if (networks == null)
-                networks = new List<Network>();
-
-            return networks;
+            connection.NetworkCache.TryGetValue(hostReference, out networks);
         }
 
-        public Network GetNetworkByReference(string networkReference)
+        return networks;
+    }
+
+    public Network GetNetworkByReference(string networkReference, string vsphereHost)
+    {
+        VsphereConnection connection;
+        Network network = null;
+
+        if (_connections.TryGetValue(vsphereHost, out connection))
         {
-            return _networkCache.Values.SelectMany(x => x).Where(n => n.Reference == networkReference).FirstOrDefault();
+            network = connection.NetworkCache.Values.SelectMany(x => x).Where(n => n.Reference == networkReference).FirstOrDefault();
         }
 
-        public Network GetNetworkByName(string networkName)
+        return network;
+    }
+
+    public Network GetNetworkByName(string networkName, string vsphereHost)
+    {
+        VsphereConnection connection;
+        Network network = null;
+
+        if (_connections.TryGetValue(vsphereHost, out connection))
         {
-            return _networkCache.Values.SelectMany(x => x).Where(n => n.Name == networkName).FirstOrDefault();
+            network = connection.NetworkCache.Values.SelectMany(x => x).Where(n => n.Name == networkName).FirstOrDefault();
         }
 
-        public Datastore GetDatastoreByName(string dsName)
+        return network;
+    }
+
+    public Datastore GetDatastoreByName(string dsName, string vsphereHost)
+    {
+        VsphereConnection connection;
+        Datastore datastore = null;
+
+        if (_connections.TryGetValue(vsphereHost, out connection))
         {
-            Datastore datastore = null;
-            _datastoreCache.TryGetValue(dsName, out datastore);
-            return datastore;
+            connection.DatastoreCache.TryGetValue(dsName, out datastore);
         }
 
-        protected override async Task ExecuteAsync(CancellationToken cancellationToken)
-        {
-            await Task.Yield();
-
-            int count = 0;
-
-            while (!cancellationToken.IsCancellationRequested)
-            {
-                try
-                {
-                    _logger.LogInformation($"Starting Connect Loop at {DateTime.UtcNow}");
-
-                    _options = _optionsMonitor.CurrentValue;
-
-                    if (!_options.Enabled)
-                    {
-                        _logger.LogInformation("Vsphere disabled, skipping");
-                    }
-                    else
-                    {
-                        await Connect();
-
-                        if (count == _options.LoadCacheAfterIterations)
-                        {
-                            count = 0;
-                        }
-
-                        if (count == 0 || _forceReload)
-                        {
-                            lock (_lock)
-                            {
-                                _forceReload = false;
-                                count = 0;
-                            }
-
-                            await LoadCache();
-                        }
-
-                        _logger.LogInformation($"Finished Connect Loop at {DateTime.UtcNow} with {_machineCache.Count()} Machines");
-                        count++;
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Exception encountered in ConnectionService loop");
-                    count = 0;
-                }
-
-                _connectionServiceHealthCheck.CompletedRun();
-                await _resetEvent.WaitAsync(new TimeSpan(0, 0, _options.ConnectionRetryIntervalSeconds));
-            }
-        }
-
-        public void ReloadCache()
-        {
-            lock (_lock)
-            {
-                _forceReload = true;
-                _resetEvent.Set();
-            }
-        }
-
-        #region Cache Setup
-
-        private async Task LoadCache()
-        {
-            var plan = new TraversalSpec
-            {
-                name = "FolderTraverseSpec",
-                type = "Folder",
-                path = "childEntity",
-                selectSet = new SelectionSpec[] {
-
-                    new TraversalSpec()
-                    {
-                        type = "Datacenter",
-                        path = "networkFolder",
-                        selectSet = new SelectionSpec[] {
-                            new SelectionSpec {
-                                name = "FolderTraverseSpec"
-                            }
-                        }
-                    },
-
-                    new TraversalSpec()
-                    {
-                        type = "Datacenter",
-                        path = "vmFolder",
-                        selectSet = new SelectionSpec[] {
-                            new SelectionSpec {
-                                name = "FolderTraverseSpec"
-                            }
-                        }
-                    },
-
-                    new TraversalSpec()
-                    {
-                        type = "Datacenter",
-                        path = "datastore",
-                        selectSet = new SelectionSpec[] {
-                            new SelectionSpec {
-                                name = "FolderTraverseSpec"
-                            }
-                        }
-                    },
-
-                    new TraversalSpec()
-                    {
-                        type = "Folder",
-                        path = "childEntity",
-                        selectSet = new SelectionSpec[] {
-                            new SelectionSpec {
-                                name = "FolderTraverseSpec"
-                            }
-                        }
-                    },
-                }
-            };
-
-            var props = new PropertySpec[]
-            {
-                new PropertySpec
-                {
-                    type = "DistributedVirtualSwitch",
-                    pathSet = new string[] { "name", "uuid", "config.uplinkPortgroup" }
-                },
-
-                new PropertySpec
-                {
-                    type = "DistributedVirtualPortgroup",
-                    pathSet = new string[] { "name", "host", "config.distributedVirtualSwitch" }
-                },
-
-                new PropertySpec
-                {
-                    type = "Network",
-                    pathSet = new string[] { "name", "host" }
-                },
-
-                new PropertySpec
-                {
-                    type = "VirtualMachine",
-                    pathSet = new string[] { "name", "config.uuid", "summary.runtime.powerState", "guest.net" }
-                },
-
-                new PropertySpec
-                {
-                    type = "Datastore",
-                    pathSet = new string[] { "name", "browser" }
-                }
-            };
-
-            ObjectSpec objectspec = new ObjectSpec();
-            objectspec.obj = _sic.rootFolder;
-            objectspec.selectSet = new SelectionSpec[] { plan };
-
-            PropertyFilterSpec filter = new PropertyFilterSpec();
-            filter.propSet = props;
-            filter.objectSet = new ObjectSpec[] { objectspec };
-
-            PropertyFilterSpec[] filters = new PropertyFilterSpec[] { filter };
-
-            _logger.LogInformation($"Starting RetrieveProperties at {DateTime.UtcNow}");
-            RetrievePropertiesResponse response = await _client.RetrievePropertiesAsync(_props, filters);
-            _logger.LogInformation($"Finished RetrieveProperties at {DateTime.UtcNow}");
-
-            _logger.LogInformation($"Starting LoadMachineCache at {DateTime.UtcNow}");
-            await LoadMachineCache(response.returnval.FindType("VirtualMachine"));
-            _logger.LogInformation($"Finished LoadMachineCache at {DateTime.UtcNow}");
-
-            _logger.LogInformation($"Starting LoadNetworkCache at {DateTime.UtcNow}");
-            LoadNetworkCache(
-                response.returnval.FindType("DistributedVirtualSwitch"),
-                response.returnval.Where(o => o.obj.type.EndsWith("Network") || o.obj.type.EndsWith("DistributedVirtualPortgroup")).ToArray());
-            _logger.LogInformation($"Finished LoadNetworkCache at {DateTime.UtcNow}");
-
-            _logger.LogInformation($"Starting LoadDatastoreCache at {DateTime.UtcNow}");
-            LoadDatastoreCache(response.returnval.FindType("Datastore"));
-            _logger.LogInformation($"Finished LoadDatastoreCache at {DateTime.UtcNow}");
-        }
-
-        private async Task LoadMachineCache(VimClient.ObjectContent[] virtualMachines)
-        {
-            IEnumerable<Guid> existingMachineIds = _machineCache.Keys;
-            List<Guid> currentMachineIds = new List<Guid>();
-            Dictionary<Guid, VsphereVirtualMachine> vsphereVirtualMachines = new Dictionary<Guid, VsphereVirtualMachine>();
-
-            foreach (var vm in virtualMachines)
-            {
-                string name = string.Empty;
-
-                try
-                {
-                    name = vm.GetProperty("name") as string;
-
-                    var idObj = vm.GetProperty("config.uuid");
-
-                    if (idObj == null)
-                    {
-                        _logger.LogError($"Unable to load machine {name} - {vm.obj.Value}. Invalid UUID");
-                        continue;
-                    }
-
-                    var toolsStatus = vm.GetProperty("summary.guest.toolsStatus") as Nullable<VirtualMachineToolsStatus>;
-                    VirtualMachineToolsStatus vmToolsStatus = VirtualMachineToolsStatus.toolsNotRunning;
-                    if (toolsStatus != null)
-                    {
-                        vmToolsStatus = toolsStatus.Value;
-                    }
-
-                    var guid = Guid.Parse(idObj as string);
-                    var virtualMachine = new VsphereVirtualMachine
-                    {
-                        //HostReference = ((ManagedObjectReference)vm.GetProperty("summary.runtime.host")).Value,
-                        Id = guid,
-                        Name = name,
-                        Reference = vm.obj,
-                        State = (VirtualMachinePowerState)vm.GetProperty("summary.runtime.powerState") == VirtualMachinePowerState.poweredOn ? "on" : "off",
-                        VmToolsStatus = vmToolsStatus,
-                        IpAddresses = ((GuestNicInfo[])vm.GetProperty("guest.net")).Where(x => x.ipAddress != null).SelectMany(x => x.ipAddress).ToArray()
-                    };
-
-                    vsphereVirtualMachines.Add(virtualMachine.Id, virtualMachine);
-
-                    _machineCache.AddOrUpdate(virtualMachine.Id, virtualMachine.Reference, (k, v) => (v = virtualMachine.Reference));
-                    currentMachineIds.Add(virtualMachine.Id);
-                    _vmGuids.AddOrUpdate(vm.obj.Value, guid, (k, v) => (v = guid));
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"Error refreshing Virtual Machine {name} - {vm.obj.Value}");
-                }
-            }
-
-            foreach (Guid existingId in existingMachineIds.Except(currentMachineIds))
-            {
-                if (_machineCache.TryRemove(existingId, out ManagedObjectReference stale))
-                {
-                    _logger.LogDebug($"removing stale cache entry {stale.Value}");
-                }
-            }
-
-            await UpdateVms(vsphereVirtualMachines);
-        }
-
-        private async Task UpdateVms(Dictionary<Guid, VsphereVirtualMachine> vsphereVirtualMachines)
-        {
-            using (var scope = _serviceProvider.CreateScope())
-            {
-                var dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
-                var vms = await dbContext.Vms.ToArrayAsync();
-
-                foreach (var vm in vms)
-                {
-                    VsphereVirtualMachine vsphereVirtualMachine;
-
-                    if (vsphereVirtualMachines.TryGetValue(vm.Id, out vsphereVirtualMachine))
-                    {
-                        var powerState = vsphereVirtualMachine.State == "on" ? PowerState.On : PowerState.Off;
-                        vm.PowerState = powerState;
-                        vm.IpAddresses = vsphereVirtualMachine.IpAddresses;
-                        vm.Type = VmType.Vsphere;
-                    }
-                }
-
-                var count = await dbContext.SaveChangesAsync();
-            }
-        }
-
-        private void LoadNetworkCache(VimClient.ObjectContent[] distributedSwitches, VimClient.ObjectContent[] networks)
-        {
-            Dictionary<string, List<Network>> networkCache = new Dictionary<string, List<Network>>();
-            IEnumerable<string> existingHosts = _networkCache.Keys;
-            List<string> currentHosts = new List<string>();
-
-            foreach (var net in networks)
-            {
-                string name = null;
-
-                try
-                {
-                    name = net.GetProperty("name") as string;
-                    Network network = null;
-
-                    if (net.obj.type == "Network")
-                    {
-                        network = new Network
-                        {
-                            IsDistributed = false,
-                            Name = name,
-                            SwitchId = null
-                        };
-                    }
-                    else if (net.obj.type == "DistributedVirtualPortgroup")
-                    {
-                        var dSwitchReference = net.GetProperty("config.distributedVirtualSwitch") as ManagedObjectReference;
-                        var dSwitch = distributedSwitches.Where(x => x.obj.Value == dSwitchReference.Value).FirstOrDefault();
-
-                        if (dSwitch != null)
-                        {
-                            var uplinkPortgroups = dSwitch.GetProperty("config.uplinkPortgroup") as ManagedObjectReference[];
-                            if (uplinkPortgroups.Select(x => x.Value).Contains(net.obj.Value))
-                            {
-                                // Skip uplink portgroups
-                                continue;
-                            }
-                            else
-                            {
-                                network = new Network
-                                {
-                                    IsDistributed = true,
-                                    Name = name,
-                                    SwitchId = dSwitch.GetProperty("uuid") as string,
-                                    Reference = net.obj.Value
-                                };
-                            }
-                        }
-                    }
-                    else
-                    {
-                        _logger.LogError($"Unexpected type for Network {name}: {net.obj.type}");
-                        continue;
-                    }
-
-                    if (network != null)
-                    {
-                        foreach (var host in net.GetProperty("host") as ManagedObjectReference[])
-                        {
-                            string hostReference = host.Value;
-
-                            if (!networkCache.ContainsKey(hostReference))
-                                networkCache.Add(hostReference, new List<Network>());
-
-                            networkCache[hostReference].Add(network);
-
-                            if (!currentHosts.Contains(hostReference))
-                            {
-                                currentHosts.Add(hostReference);
-                            }
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"Error refreshing Network {name} - {net.obj.Value}");
-                }
-            }
-
-            foreach (var kvp in networkCache)
-            {
-                _networkCache.AddOrUpdate(kvp.Key, kvp.Value, (k, v) => (v = kvp.Value));
-            }
-
-            foreach (string existingHost in existingHosts.Except(currentHosts))
-            {
-                if (_networkCache.TryRemove(existingHost, out List<Network> stale))
-                {
-                    _logger.LogDebug($"removing stale network cache entry for Host {existingHost}");
-                }
-            }
-        }
-
-        private void LoadDatastoreCache(VimClient.ObjectContent[] rawDatastores)
-        {
-            IEnumerable<string> cachedDatastoreNames = _datastoreCache.Keys;
-            List<string> activeDatastoreNames = new List<string>();
-            Dictionary<string, Datastore> datastores = new Dictionary<string, Datastore>();
-            foreach (var rawDatastore in rawDatastores)
-            {
-                try
-                {
-                    Datastore datastore = new Datastore
-                    {
-                        Name = rawDatastore.GetProperty("name").ToString(),
-                        Reference = rawDatastore.obj,
-                        Browser = rawDatastore.GetProperty("browser") as ManagedObjectReference
-                    };
-                    _datastoreCache.TryAdd(rawDatastore.GetProperty("name").ToString(), datastore);
-                    activeDatastoreNames.Add(datastore.Name);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, $"Error refreshing Datastore {rawDatastore.obj.Value}");
-                }
-            }
-
-            // clean cache of non-active datastores
-            foreach (var dsName in cachedDatastoreNames)
-            {
-                if (!activeDatastoreNames.Contains(dsName))
-                {
-                    _logger.LogDebug($"removing stale datastore cache entry {dsName}");
-                    _datastoreCache.Remove(dsName, out Datastore stale);
-                }
-            }
-        }
-
-        #endregion
-
-        #region Connection Handling
-
-        private async Task Connect()
-        {
-            // check whether session is expiring
-            if (_session != null && (DateTime.Compare(DateTime.UtcNow, _session.lastActiveTime.AddMinutes(_options.ConnectionRefreshIntervalMinutes)) >= 0))
-            {
-                _logger.LogDebug("Connect():  Session is more than 20 minutes old");
-
-                // renew session because it expires at 30 minutes (maybe 120 minutes on newer vc)
-                _logger.LogInformation($"Connect():  renewing connection to {_options.Host}...[{_options.Username}]");
-                try
-                {
-                    var client = new VimPortTypeClient(VimPortTypeClient.EndpointConfiguration.VimPort, $"https://{_options.Host}/sdk");
-                    var sic = await client.RetrieveServiceContentAsync(new ManagedObjectReference { type = "ServiceInstance", Value = "ServiceInstance" });
-                    var props = sic.propertyCollector;
-                    var session = await client.LoginAsync(sic.sessionManager, _options.Username, _options.Password, null);
-
-                    var oldClient = _client;
-                    _client = client;
-                    _sic = sic;
-                    _props = props;
-                    _session = session;
-
-                    await oldClient.CloseAsync();
-                    oldClient.Dispose();
-                }
-                catch (Exception ex)
-                {
-                    // no connection: Failed with Object reference not set to an instance of an object
-                    _logger.LogError(0, ex, $"Connect():  Failed with " + ex.Message);
-                    _logger.LogError(0, ex, $"Connect():  User: " + _options.Username);
-                    Disconnect();
-                }
-            }
-
-            if (_client != null && _client.State == CommunicationState.Opened)
-            {
-                _logger.LogDebug("Connect():  CommunicationState.Opened");
-                ServiceContent sic = _sic;
-                UserSession session = _session;
-                bool isNull = false;
-
-                if (_sic == null)
-                {
-                    sic = await ConnectToHost(_client);
-                    isNull = true;
-                }
-
-                if (_session == null)
-                {
-                    session = await ConnectToSession(_client, sic);
-                    isNull = true;
-                }
-
-                if (isNull)
-                {
-                    _session = session;
-                    _props = sic.propertyCollector;
-                    _sic = sic;
-                }
-
-                try
-                {
-                    var x = await _client.RetrieveServiceContentAsync(new ManagedObjectReference { type = "ServiceInstance", Value = "ServiceInstance" });
-                    return;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Error checking vcenter connection. Disconnecting.");
-                    Disconnect();
-                }
-            }
-
-            if (_client != null && _client.State == CommunicationState.Faulted)
-            {
-                _logger.LogDebug($"Connect():  https://{_options.Host}/sdk CommunicationState is Faulted.");
-                Disconnect();
-            }
-
-            if (_client == null)
-            {
-                try
-                {
-                    _logger.LogDebug($"Connect():  Instantiating client https://{_options.Host}/sdk");
-                    var client = new VimPortTypeClient(VimPortTypeClient.EndpointConfiguration.VimPort, $"https://{_options.Host}/sdk");
-                    _logger.LogDebug($"Connect():  client: [{_client}]");
-
-                    var sic = await ConnectToHost(client);
-                    var session = await ConnectToSession(client, sic);
-
-                    _session = session;
-                    _props = sic.propertyCollector;
-                    _sic = sic;
-                    _client = client;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(0, ex, $"Connect():  Failed with " + ex.Message);
-                }
-            }
-        }
-
-        private async Task<ServiceContent> ConnectToHost(VimPortTypeClient client)
-        {
-            _logger.LogInformation($"Connect():  Connecting to {_options.Host}...");
-            var sic = await client.RetrieveServiceContentAsync(new ManagedObjectReference { type = "ServiceInstance", Value = "ServiceInstance" });
-            return sic;
-        }
-
-        private async Task<UserSession> ConnectToSession(VimPortTypeClient client, ServiceContent sic)
-        {
-            _logger.LogInformation($"Connect():  logging into {_options.Host}...[{_options.Username}]");
-            var session = await client.LoginAsync(sic.sessionManager, _options.Username, _options.Password, null);
-            _logger.LogInformation($"Connect():  Session created.");
-            return session;
-        }
-
-        public void Disconnect()
-        {
-            _logger.LogInformation($"Disconnect()");
-            _client.Dispose();
-            _client = null;
-            _sic = null;
-            _session = null;
-        }
-
-        #endregion
+        return datastore;
     }
 }

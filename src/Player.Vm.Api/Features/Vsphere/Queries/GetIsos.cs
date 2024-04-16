@@ -75,7 +75,7 @@ namespace Player.Vm.Api.Features.Vsphere
 
                 foreach (var viewId in viewIds)
                 {
-                    isoTasks.Add(this.GetViewIsos(viewId, cancellationToken));
+                    isoTasks.Add(this.GetViewIsos(vm.Id, viewId, cancellationToken));
                 }
 
                 await Task.WhenAll(isoTasks);
@@ -91,14 +91,14 @@ namespace Player.Vm.Api.Features.Vsphere
                 return results.ToArray();
             }
 
-            private async Task<IsoResult> GetViewIsos(Guid viewId, CancellationToken cancellationToken)
+            private async Task<IsoResult> GetViewIsos(Guid vmId, Guid viewId, CancellationToken cancellationToken)
             {
                 var teams = await _playerService.GetTeamsByViewIdAsync(viewId, cancellationToken);
 
                 // User has access to this view
                 if (teams.Count() > 0)
                 {
-                    return await this.GetViewIsos(viewId, teams, cancellationToken);
+                    return await this.GetViewIsos(vmId, viewId, teams, cancellationToken);
                 }
                 else
                 {
@@ -106,16 +106,16 @@ namespace Player.Vm.Api.Features.Vsphere
                 }
             }
 
-            private async Task<IsoResult> GetViewIsos(Guid viewId, IEnumerable<Team> teams, CancellationToken cancellationToken)
+            private async Task<IsoResult> GetViewIsos(Guid vmId, Guid viewId, IEnumerable<Team> teams, CancellationToken cancellationToken)
             {
                 var viewTask = _playerService.GetViewByIdAsync(viewId, cancellationToken);
 
                 var isoTaskDict = new Dictionary<Guid, Task<IEnumerable<IsoFile>>>();
-                isoTaskDict.Add(viewId, _vsphereService.GetIsos(viewId.ToString(), viewId.ToString()));
+                isoTaskDict.Add(viewId, _vsphereService.GetIsos(vmId, viewId.ToString(), viewId.ToString()));
 
                 foreach (var team in teams)
                 {
-                    isoTaskDict.Add(team.Id, _vsphereService.GetIsos(viewId.ToString(), team.Id.ToString()));
+                    isoTaskDict.Add(team.Id, _vsphereService.GetIsos(vmId, viewId.ToString(), team.Id.ToString()));
                 }
 
                 var tasks = new List<Task>();
