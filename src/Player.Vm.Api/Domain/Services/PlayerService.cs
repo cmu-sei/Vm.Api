@@ -21,7 +21,7 @@ namespace Player.Vm.Api.Domain.Services
         Task<bool> CanAccessTeamsAsync(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<bool> CanAccessTeamAsync(Guid teamId, CancellationToken ct);
         Task<IEnumerable<Team>> GetTeamsByViewIdAsync(Guid viewId, CancellationToken ct);
-        Task<Guid> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct);
+        Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct);
         Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct);
         Task<Team> GetTeamById(Guid id);
@@ -169,7 +169,7 @@ namespace Player.Vm.Api.Domain.Services
             return teams.Where(t => t.IsPrimary || t.CanManage);
         }
 
-        public async Task<Guid> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct)
+        public async Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct)
         {
             var teams = await _playerApiClient.GetUserViewTeamsAsync(viewId, _userId, ct);
 
@@ -183,7 +183,6 @@ namespace Player.Vm.Api.Domain.Services
 
             return teams
                 .Where(t => t.IsPrimary)
-                .Select(t => t.Id)
                 .FirstOrDefault();
         }
 
