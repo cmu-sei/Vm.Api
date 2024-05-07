@@ -4,7 +4,11 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Drawing.Text;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Player.Vm.Api.Domain.Services
 {
@@ -14,14 +18,17 @@ namespace Player.Vm.Api.Domain.Services
         Guid SetActiveVirtualMachineForUser(Guid userId, string username, Guid vmId, string connectionId, IEnumerable<Guid> teamIds);
         ActiveVirtualMachine UnsetActiveVirtualMachineForUser(Guid userId, string username, string connectionId);
         string[] GetActiveVirtualMachineUsers(Guid vmId);
+        Task<Dictionary<Guid, IEnumerable<string>>> GetActiveVirtualMachineUsersByGroup(Guid vmId, ActiveVirtualMachine previousVm, CancellationToken ct);
     }
 
     public class ActiveVirtualMachineService : IActiveVirtualMachineService
     {
         private readonly ConcurrentDictionary<Guid, ActiveVirtualMachine> _activeVirtualMachines = new ConcurrentDictionary<Guid, ActiveVirtualMachine>();
+        private readonly IServiceScopeFactory _scopeFactory;
 
-        public ActiveVirtualMachineService()
+        public ActiveVirtualMachineService(IServiceScopeFactory scopeFactory)
         {
+            _scopeFactory = scopeFactory;
         }
 
         public ActiveVirtualMachine GetActiveVirtualMachineForUser(Guid userId)
@@ -65,17 +72,75 @@ namespace Player.Vm.Api.Domain.Services
             return null;
         }
 
-        public string[] GetActiveVirtualMachineUsers(Guid vmId) 
+        public string[] GetActiveVirtualMachineUsers(Guid vmId)
         {
             var users = _activeVirtualMachines.Where(kvp => kvp.Value.VmId == vmId).Select(kvp => kvp.Value.Username);
-            if (users.ToArray().Length > 0) 
+            if (users.ToArray().Length > 0)
             {
                 return users.ToArray();
-            } 
+            }
             else
             {
                 return null;
             }
+        }
+
+        public async Task<Dictionary<Guid, IEnumerable<string>>> GetActiveVirtualMachineUsersByGroup(Guid vmId, ActiveVirtualMachine previousVm, CancellationToken ct)
+        {
+            var dict = new Dictionary<Guid, List<string>>();
+            var activeVms = _activeVirtualMachines.Where(kvp => kvp.Value.VmId == vmId).Select(x => x.Value).ToList();
+
+            if (previousVm != null)
+            {
+                activeVms.Add(previousVm);
+            }
+
+            foreach (var activeVm in activeVms)
+            {
+                var groupIds = await GetGroupIds(activeVm, ct);
+
+                foreach (var groupId in groupIds)
+                {
+                    List<string> userNames;
+                    if (dict.ContainsKey(groupId))
+                    {
+                        userNames = dict[groupId];
+                    }
+                    else
+                    {
+                        userNames = new List<string>();
+                        dict.Add(groupId, userNames);
+                    }
+
+                    if (activeVm != previousVm)
+                    {
+                        userNames.Add(activeVm.Username);
+                    }
+                }
+            }
+
+            return dict.ToDictionary(x => x.Key, x => x.Value.AsEnumerable());
+        }
+
+        private async Task<IEnumerable<Guid>> GetGroupIds(ActiveVirtualMachine vm, CancellationToken ct)
+        {
+            using var scope = _scopeFactory.CreateScope();
+
+            var groups = new List<Guid>();
+
+            var viewIds = await scope.ServiceProvider.GetRequiredService<IViewService>().GetViewIdsForTeams(vm.TeamIds, ct);
+
+            foreach (var viewId in viewIds)
+            {
+                groups.Add(viewId);
+            }
+
+            foreach (var teamId in vm.TeamIds)
+            {
+                groups.Add(teamId);
+            }
+
+            return groups.AsEnumerable();
         }
     }
 

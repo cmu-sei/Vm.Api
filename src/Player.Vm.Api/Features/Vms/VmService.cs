@@ -403,7 +403,7 @@ namespace Player.Vm.Api.Features.Vms
             foreach (var m in maps)
             {
                 if ((await _playerService.CanAccessTeamsAsync(m.TeamIds, ct) ||
-                    (m.TeamIds.Count == 0 && await _playerService.CanManageTeamAsync(primTeam, ct))))
+                    (m.TeamIds.Count == 0 && await _playerService.CanManageTeamAsync(primTeam.Id, ct))))
                     accessableMaps.Add(m);
 
             }

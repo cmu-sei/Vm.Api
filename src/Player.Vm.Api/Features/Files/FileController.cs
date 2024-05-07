@@ -47,18 +47,18 @@ namespace Player.Vm.Api.Features.Files
                 throw new Exception($"File exceeds the {_isoUploadOptions.MaxFileSize} byte maximum size.");
             }
 
-            var teamId = await _playerService.GetPrimaryTeamByViewIdAsync(uuid, new System.Threading.CancellationToken());
+            var team = await _playerService.GetPrimaryTeamByViewIdAsync(uuid, new System.Threading.CancellationToken());
 
             if (scope == "view")
             {
-                if (!(await _playerService.CanManageTeamAsync(teamId, new System.Threading.CancellationToken())))
+                if (!(await _playerService.CanManageTeamAsync(team.Id, new System.Threading.CancellationToken())))
                     throw new InvalidOperationException("You do not have permission to upload public files for this View");
             }
 
             var destPath = Path.Combine(
                 _isoUploadOptions.BasePath,
                 uuid.ToString(),
-                (scope == "view") ? uuid.ToString() : teamId.ToString()
+                (scope == "view") ? uuid.ToString() : team.Id.ToString()
             );
 
             var destFile = Path.Combine(destPath, filename);

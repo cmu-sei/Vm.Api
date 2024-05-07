@@ -13,6 +13,7 @@ using System.Text;
 using Player.Api.Client;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Infrastructure.Options;
+using System.Threading;
 
 namespace Player.Vm.Api.Features.Vms.Hubs
 {
@@ -154,7 +155,66 @@ namespace Player.Vm.Api.Features.Vms.Hubs
         {
             var groupId = await _playerService.GetGroupIdForViewAsync(viewId, Context.ConnectionAborted);
             await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroup(groupId.Value, userId));
+        }
 
+        public async Task JoinVm(Guid vmId)
+        {
+            var vm = await _vmService.GetAsync(vmId, Context.ConnectionAborted);
+            var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, Context.ConnectionAborted);
+
+            var teams = new List<Team>();
+
+            foreach (var viewId in viewIds)
+            {
+                var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, Context.ConnectionAborted);
+                teams.Add(primaryTeam);
+            }
+
+            foreach (var team in teams)
+            {
+                Guid groupId;
+
+                if (team.CanManage)
+                {
+                    groupId = team.ViewId;
+                }
+                else
+                {
+                    groupId = team.Id;
+                }
+
+                await Groups.AddToGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId, vmId));
+            }
+        }
+
+        public async Task LeaveVm(Guid vmId)
+        {
+            var vm = await _vmService.GetAsync(vmId, Context.ConnectionAborted);
+            var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, Context.ConnectionAborted);
+
+            var teams = new List<Team>();
+
+            foreach (var viewId in viewIds)
+            {
+                var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, new System.Threading.CancellationToken());
+                teams.Add(primaryTeam);
+            }
+
+            foreach (var team in teams)
+            {
+                Guid groupId;
+
+                if (team.CanManage)
+                {
+                    groupId = team.ViewId;
+                }
+                else
+                {
+                    groupId = team.Id;
+                }
+
+                await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId, vmId));
+            }
         }
 
 
@@ -165,25 +225,28 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
             var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, Context.ConnectionAborted);
 
-            var teamIds = new List<Guid>();
+            var teams = new List<Team>();
 
             foreach (var viewId in viewIds)
             {
-                var primaryTeamId = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, Context.ConnectionAborted);
-                teamIds.Add(primaryTeamId);
+                var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, Context.ConnectionAborted);
+                teams.Add(primaryTeam);
             }
 
-            var groups = GetGroups(teamIds, viewIds, userId, vmId);
+            var teamIds = teams.Select(x => x.Id);
+            var groups = GetGroups(teams.Select(x => x.Id), viewIds, userId, vmId);
 
             var newVmId = _activeVirtualMachineService.SetActiveVirtualMachineForUser(userId, Context.User.GetName(), vmId, Context.ConnectionId, teamIds);
 
             await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, newVmId, userId);
 
             // Begin Handling of displaying current users connected to an individual VM
-            var usernames = _activeVirtualMachineService.GetActiveVirtualMachineUsers(vmId);
-            // Add the Group to the Signalr Hub only if this a new VM connection
-            await Groups.AddToGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(vmId));
-            await Clients.Groups(GetCurrentVmUsersChannelName(vmId)).SendAsync(VmHubMethods.CurrentVirtualMachineUsers, vmId, usernames);
+            var userNamesByGroup = await _activeVirtualMachineService.GetActiveVirtualMachineUsersByGroup(vmId, null, Context.ConnectionAborted);
+
+            foreach (var kvp in userNamesByGroup)
+            {
+                await Clients.Groups(GetCurrentVmUsersChannelName(kvp.Key, vmId)).SendAsync(VmHubMethods.CurrentVirtualMachineUsers, vmId, kvp.Value);
+            }
 
             await _vmUsageLoggingService.CreateVmLogEntry(userId, vmId, teamIds, Context.ConnectionAborted);
         }
@@ -201,21 +264,25 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
         private async Task UnsetActiveVirtualMachineInternal()
         {
+            var cancellationToken = new CancellationToken(); // This gets called on disconnect, so can't use Context.ConnectionAborted because it will always be true
             var userId = Context.User.GetId();
             var activeVirtualMachine = _activeVirtualMachineService.UnsetActiveVirtualMachineForUser(userId, Context.User.GetName(), Context.ConnectionId);
 
             if (activeVirtualMachine != null)
             {
-                var viewIds = await _viewService.GetViewIdsForTeams(activeVirtualMachine.TeamIds, Context.ConnectionAborted);
+                var viewIds = await _viewService.GetViewIdsForTeams(activeVirtualMachine.TeamIds, cancellationToken);
                 var groups = GetGroups(activeVirtualMachine.TeamIds, viewIds, userId, activeVirtualMachine.VmId);
                 await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, null, userId);
 
                 // Begin Handling of displaying current users connected to an individual VM
-                var usernames = _activeVirtualMachineService.GetActiveVirtualMachineUsers(activeVirtualMachine.VmId);
-                await Clients.Groups(GetCurrentVmUsersChannelName(activeVirtualMachine.VmId)).SendAsync(VmHubMethods.CurrentVirtualMachineUsers, activeVirtualMachine.VmId, usernames);
-                await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(activeVirtualMachine.VmId));
+                var userNamesByGroup = await _activeVirtualMachineService.GetActiveVirtualMachineUsersByGroup(activeVirtualMachine.VmId, activeVirtualMachine, cancellationToken);
 
-                await _vmUsageLoggingService.CloseVmLogEntry(userId, activeVirtualMachine.VmId, Context.ConnectionAborted);
+                foreach (var kvp in userNamesByGroup)
+                {
+                    await Clients.Groups(GetCurrentVmUsersChannelName(kvp.Key, activeVirtualMachine.VmId)).SendAsync(VmHubMethods.CurrentVirtualMachineUsers, activeVirtualMachine.VmId, kvp.Value);
+                }
+
+                await _vmUsageLoggingService.CloseVmLogEntry(userId, activeVirtualMachine.VmId, cancellationToken);
             }
         }
 
@@ -228,15 +295,11 @@ namespace Player.Vm.Api.Features.Vms.Hubs
                 // those following this user who have ViewAdmin
                 // those following this user who are on the same Team
                 groups.Add(GetGroup(id, userId));
+                groups.Add(GetCurrentVmUsersChannelName(id, vmId));
 
                 // those following the entire view who have ViewAdmin
                 // those following the entire view who are on the same Team
                 groups.Add(GetGroup(id));
-            }
-
-            if (vmId != null)
-            {
-                groups.Add(GetCurrentVmUsersChannelName(vmId));
             }
 
             return groups.ToArray();
@@ -270,16 +333,15 @@ namespace Player.Vm.Api.Features.Vms.Hubs
         /// <summary>
         /// Get the signalR channel name for the given vm user
         /// </summary>
+        /// <param name="groupId"></param>
         /// <param name="vmId"></param>
         /// <returns>a string in the form of {VmUserChannelPrefix}-{vmId}</returns>
-        private string GetCurrentVmUsersChannelName(Guid vmId)
+        private string GetCurrentVmUsersChannelName(Guid groupId, Guid vmId)
         {
             var channelName = new StringBuilder(VmHubMethods.CurrentVirtualMachineUsers);
 
-            if (vmId != null)
-            {
-                channelName.Append($"-{vmId.ToString()}");
-            }
+            channelName.Append($"-{groupId}");
+            channelName.Append($"-{vmId}");
 
             return channelName.ToString();
         }
