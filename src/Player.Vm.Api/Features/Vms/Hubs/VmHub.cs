@@ -176,8 +176,12 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
             foreach (var viewId in viewIds)
             {
-                var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, new System.Threading.CancellationToken());
-                teams.Add(primaryTeam);
+                var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, Context.ConnectionAborted);
+
+                if (primaryTeam != null)
+                {
+                    teams.Add(primaryTeam);
+                }
             }
 
             foreach (var team in teams)
@@ -217,7 +221,11 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             foreach (var viewId in viewIds)
             {
                 var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, Context.ConnectionAborted);
-                teams.Add(primaryTeam);
+
+                if (primaryTeam != null)
+                {
+                    teams.Add(primaryTeam);
+                }
             }
 
             var teamIds = teams.Select(x => x.Id);
@@ -228,14 +236,14 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, newVmId, userId);
 
             // Begin Handling of displaying current users connected to an individual VM
-            var userNamesByGroup = await _activeVirtualMachineService.GetActiveVirtualMachineUsersByGroup(vmId, null, Context.ConnectionAborted);
+            var userNamesByGroup = await _activeVirtualMachineService.GetActiveVirtualMachineUsersByGroup(vmId, null, CancellationToken.None);
 
             foreach (var kvp in userNamesByGroup)
             {
                 await Clients.Groups(GetCurrentVmUsersChannelName(kvp.Key, vmId)).SendAsync(VmHubMethods.CurrentVirtualMachineUsers, vmId, kvp.Value);
             }
 
-            await _vmUsageLoggingService.CreateVmLogEntry(userId, vmId, teamIds, Context.ConnectionAborted);
+            await _vmUsageLoggingService.CreateVmLogEntry(userId, vmId, teamIds, CancellationToken.None);
         }
 
         public async Task UnsetActiveVirtualMachine()
@@ -251,7 +259,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
         private async Task UnsetActiveVirtualMachineInternal()
         {
-            var cancellationToken = new CancellationToken(); // This gets called on disconnect, so can't use Context.ConnectionAborted because it will always be true
+            var cancellationToken = CancellationToken.None; // still update other users if this connection disconnects
             var userId = Context.User.GetId();
             var activeVirtualMachine = _activeVirtualMachineService.UnsetActiveVirtualMachineForUser(userId, Context.User.GetName(), Context.ConnectionId);
 
