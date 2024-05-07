@@ -67,7 +67,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
             if (!groupId.HasValue)
             {
-                return vmUserTeams.ToArray();
+                return vmUserTeams;
             }
 
             await Groups.AddToGroupAsync(Context.ConnectionId, GetGroup(groupId.Value));
@@ -159,35 +159,15 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
         public async Task JoinVm(Guid vmId)
         {
-            var vm = await _vmService.GetAsync(vmId, Context.ConnectionAborted);
-            var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, Context.ConnectionAborted);
-
-            var teams = new List<Team>();
-
-            foreach (var viewId in viewIds)
-            {
-                var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, Context.ConnectionAborted);
-                teams.Add(primaryTeam);
-            }
-
-            foreach (var team in teams)
-            {
-                Guid groupId;
-
-                if (team.CanManage)
-                {
-                    groupId = team.ViewId;
-                }
-                else
-                {
-                    groupId = team.Id;
-                }
-
-                await Groups.AddToGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId, vmId));
-            }
+            await SetVm(vmId, join: true);
         }
 
         public async Task LeaveVm(Guid vmId)
+        {
+            await SetVm(vmId, join: false);
+        }
+
+        private async Task SetVm(Guid vmId, bool join)
         {
             var vm = await _vmService.GetAsync(vmId, Context.ConnectionAborted);
             var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, Context.ConnectionAborted);
@@ -213,7 +193,14 @@ namespace Player.Vm.Api.Features.Vms.Hubs
                     groupId = team.Id;
                 }
 
-                await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId, vmId));
+                if (join)
+                {
+                    await Groups.AddToGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId, vmId));
+                }
+                else
+                {
+                    await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId, vmId));
+                }
             }
         }
 
