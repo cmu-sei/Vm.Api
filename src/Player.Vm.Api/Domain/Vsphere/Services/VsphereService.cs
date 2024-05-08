@@ -31,33 +31,27 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<TaskInfo> ReconfigureVm(Guid id, Feature feature, string label, string newvalue);
         Task<VirtualMachineToolsStatus> GetVmToolsStatus(Guid id);
         Task<string> UploadFileToVm(Guid id, string username, string password, string filepath, Stream fileStream);
-        Task<IEnumerable<IsoFile>> GetIsos(string viewId, string subFolder);
+        Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subFolder);
         Task<string> SetResolution(Guid id, int width, int height);
         Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation);
         Task<Dictionary<Guid, string>> BulkShutdown(Guid[] ids);
         Task<Dictionary<Guid, string>> BulkReboot(Guid[] ids);
         Task<Dictionary<Guid, PowerState>> GetPowerState(IEnumerable<Guid> machineIds);
-        Task<IEnumerable<Event>> GetEvents(EventFilterSpec filterSpec);
+        Task<IEnumerable<Event>> GetEvents(EventFilterSpec filterSpec, VsphereConnection connection);
     }
 
     public class VsphereService : IVsphereService
     {
-        private VsphereOptions _options;
         private RewriteHostOptions _rewriteHostOptions;
 
         private readonly ILogger<VsphereService> _logger;
         int _pollInterval = 1000;
-        List<NetworkMOR> _networks;
 
-        private VimPortTypeClient _client;
-        private ServiceContent _sic;
-        ManagedObjectReference _props;
         private readonly IConfiguration _configuration;
         private readonly IConnectionService _connectionService;
         private readonly IMapper _mapper;
 
         public VsphereService(
-                VsphereOptions options,
                 IOptions<RewriteHostOptions> rewriteHostOptions,
                 ILogger<VsphereService> logger,
                 IConfiguration configuration,
@@ -65,14 +59,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 IMapper mapper
             )
         {
-            _options = options;
             _rewriteHostOptions = rewriteHostOptions.Value;
-
             _logger = logger;
             _connectionService = connectionService;
-            _client = connectionService.GetClient();
-            _sic = connectionService.GetServiceContent();
-            _props = connectionService.GetProps();
             _configuration = configuration;
             _mapper = mapper;
         }
@@ -84,17 +73,19 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 return null;
             }
 
-            return await GetConsoleUrl(machine.Id, machine.Reference);
+            return await GetConsoleUrl(machine.Id);
         }
 
-        public async Task<string> GetConsoleUrl(Guid id, ManagedObjectReference vmReference)
+        public async Task<string> GetConsoleUrl(Guid id)
         {
+            var aggregate = await this.GetVm(id);
+
             VirtualMachineTicket ticket = null;
             string url = null;
 
             try
             {
-                ticket = await _client.AcquireTicketAsync(vmReference, "webmks");
+                ticket = await aggregate.Connection.Client.AcquireTicketAsync(aggregate.MachineReference, "webmks");
             }
             catch (Exception ex)
             {
@@ -108,7 +99,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             if (ticket.host != null)
                 host = ticket.host;
             else
-                host = _options.Host;
+                host = aggregate.Connection.Address;
 
             if (_rewriteHostOptions.RewriteHost)
             {
@@ -124,48 +115,46 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return url;
         }
 
-        //string uuid = "50303a87-2f5b-6d13-2211-a33556ba6e7f";
-        public async Task<string> GetConsoleUrl(Guid uuid)
+        public async Task<VsphereAggregate> GetVm(Guid id)
         {
-            ManagedObjectReference vmReference = null;
+            VsphereAggregate aggregate = _connectionService.GetAggregate(id);
 
-            _logger.LogDebug($"Aquiring webmks ticket for vm {uuid}");
-
-            vmReference = await GetVm(uuid);
-
-            if (vmReference == null)
-                return null;
-
-            return await GetConsoleUrl(uuid, vmReference);
-        }
-
-        public async Task<ManagedObjectReference> GetVm(Guid id)
-        {
-            ManagedObjectReference vmReference = _connectionService.GetMachineById(id);
-
-            if (vmReference == null && _client != null && _sic != null)
+            // Vm not found, check all connections for it
+            if (aggregate == null)
             {
-                try
+                List<Task<VsphereAggregate>> taskList = new List<Task<VsphereAggregate>>();
+
+                foreach (var connection in _connectionService.GetAllConnections())
                 {
-                    vmReference = await _client.FindByUuidAsync(_sic.searchIndex, null, id.ToString(), true, false);
+                    taskList.Add(this.FindVm(id, connection));
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogError(0, ex, $"Failed to get reference for " + id);
-                    if (_client == null)
-                    {
-                        _logger.LogError(0, ex, $"_client is null");
-                    }
-                    if (_sic == null)
-                    {
-                        _logger.LogError(0, ex, $"_sic is null");
-                    }
-                    _logger.LogError(0, ex, $"Failed with " + ex.Message);
-                    // should determine the cause
-                }
+
+                var results = await Task.WhenAll(taskList);
+                aggregate = results.Where(x => x != null).FirstOrDefault();
             }
 
-            return vmReference;
+            return aggregate;
+        }
+
+        private async Task<VsphereAggregate> FindVm(Guid id, VsphereConnection connection)
+        {
+            VsphereAggregate aggregate = null;
+
+            try
+            {
+                var vmReference = await connection.Client.FindByUuidAsync(connection.Sic.searchIndex, null, id.ToString(), true, false);
+
+                if (vmReference != null)
+                {
+                    aggregate = new VsphereAggregate(connection, vmReference);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, $"Did not find machine with id: {id} on connection to {connection.Address}");
+            }
+
+            return aggregate;
         }
 
         public async Task<string> PowerOnVm(Guid id)
@@ -176,7 +165,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             ManagedObjectReference task;
             string state = null;
 
-            vmReference = await GetVm(id);
+            var aggregate = await this.GetVm(id);
+            vmReference = aggregate.MachineReference;
 
             if (vmReference == null)
             {
@@ -194,7 +184,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             try
             {
-                task = await _client.PowerOnVM_TaskAsync(vmReference, null);
+                task = await aggregate.Connection.Client.PowerOnVM_TaskAsync(vmReference, null);
 
                 // TaskInfo info = await WaitForVimTask(task);
                 // if (info.state == TaskInfoState.success) {
@@ -226,7 +216,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             ManagedObjectReference task;
             string state = null;
 
-            vmReference = await GetVm(id);
+            var aggregate = await this.GetVm(id);
+            vmReference = aggregate.MachineReference;
 
             if (vmReference == null)
             {
@@ -247,7 +238,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             try
             {
-                task = await _client.PowerOffVM_TaskAsync(vmReference);
+                task = await aggregate.Connection.Client.PowerOffVM_TaskAsync(vmReference);
 
                 //TaskInfo info = await WaitForVimTask(task);
                 // if (info.state == TaskInfoState.success) {
@@ -277,7 +268,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             foreach (var id in ids)
             {
-                ManagedObjectReference vmReference = await GetVm(id);
+                var aggregate = await this.GetVm(id);
+                var vmReference = aggregate.MachineReference;
 
                 if (vmReference == null)
                 {
@@ -292,10 +284,10 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     switch (operation)
                     {
                         case PowerOperation.PowerOff:
-                            taskReference = _client.PowerOffVM_TaskAsync(vmReference);
+                            taskReference = aggregate.Connection.Client.PowerOffVM_TaskAsync(vmReference);
                             break;
                         case PowerOperation.PowerOn:
-                            taskReference = _client.PowerOnVM_TaskAsync(vmReference, null);
+                            taskReference = aggregate.Connection.Client.PowerOnVM_TaskAsync(vmReference, null);
                             break;
                     }
 
@@ -319,7 +311,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             ManagedObjectReference vmReference = null;
             ManagedObjectReference task;
 
-            vmReference = await GetVm(id);
+            var aggregate = await this.GetVm(id);
+            vmReference = aggregate.MachineReference;
 
             if (vmReference == null)
             {
@@ -334,9 +327,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             try
             {
-                task = await _client.PowerOffVM_TaskAsync(vmReference);
+                task = await aggregate.Connection.Client.PowerOffVM_TaskAsync(vmReference);
 
-                TaskInfo info = await WaitForVimTask(task);
+                TaskInfo info = await WaitForVimTask(task, aggregate.Connection);
                 if (info.state != TaskInfoState.success)
                 {
                     return "error";
@@ -356,7 +349,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             ManagedObjectReference vmReference = null;
             string state = null;
 
-            vmReference = await GetVm(id);
+            var aggregate = await this.GetVm(id);
+            vmReference = aggregate.MachineReference;
 
             if (vmReference == null)
             {
@@ -377,7 +371,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             try
             {
-                await _client.ShutdownGuestAsync(vmReference);
+                await aggregate.Connection.Client.ShutdownGuestAsync(vmReference);
                 state = "shutdown submitted";
             }
             catch (Exception ex)
@@ -396,7 +390,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             foreach (var id in ids)
             {
-                ManagedObjectReference vmReference = await GetVm(id);
+                var aggregate = await this.GetVm(id);
+                var vmReference = aggregate.MachineReference;
 
                 if (vmReference == null)
                 {
@@ -405,14 +400,14 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     continue;
                 }
 
-                taskDict.Add(id, _client.ShutdownGuestAsync(vmReference));
+                taskDict.Add(id, aggregate.Connection.Client.ShutdownGuestAsync(vmReference));
             }
 
             try
             {
                 await Task.WhenAll(taskDict.Values.Where(x => x != null)).ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 // Expected exception if shutdown failed, handled in finally
             }
@@ -441,7 +436,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             foreach (var id in ids)
             {
-                ManagedObjectReference vmReference = await GetVm(id);
+                var aggregate = await this.GetVm(id);
+                var vmReference = aggregate.MachineReference;
 
                 if (vmReference == null)
                 {
@@ -450,14 +446,14 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     continue;
                 }
 
-                taskDict.Add(id, _client.RebootGuestAsync(vmReference));
+                taskDict.Add(id, aggregate.Connection.Client.RebootGuestAsync(vmReference));
             }
 
             try
             {
                 await Task.WhenAll(taskDict.Values.Where(x => x != null)).ConfigureAwait(false);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 // Expected exception if reboot failed, handled in finally
             }
@@ -537,11 +533,13 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return state;
         }
 
-        public async Task<string> GetPowerState(Guid uuid)
+        public async Task<string> GetPowerState(Guid id)
         {
             _logger.LogDebug("GetPowerState called");
 
-            ManagedObjectReference vmReference = await GetVm(uuid);
+            var aggregate = await this.GetVm(id);
+            var vmReference = aggregate.MachineReference;
+
             if (vmReference == null)
             {
                 _logger.LogDebug($"could not get state, vmReference is null");
@@ -549,8 +547,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
 
             //retrieve the properties specified
-            RetrievePropertiesResponse response = await _client.RetrievePropertiesAsync(
-                _props,
+            RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
                 VmFilter(vmReference, "summary.runtime.powerState"));
 
             return GetPowerState(response);
@@ -558,24 +556,40 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public async Task<Dictionary<Guid, PowerState>> GetPowerState(IEnumerable<Guid> machineIds)
         {
-            var vmRefList = new List<ManagedObjectReference>();
+            var vmRefDict = new Dictionary<string, List<ManagedObjectReference>>();
 
             foreach (var id in machineIds)
             {
-                ManagedObjectReference vmReference = await GetVm(id);
+                var aggregate = await this.GetVm(id);
+                var vmReference = aggregate.MachineReference;
 
                 if (vmReference != null)
                 {
-                    vmRefList.Add(vmReference);
+                    if (!vmRefDict.ContainsKey(aggregate.Connection.Address))
+                    {
+                        vmRefDict.Add(aggregate.Connection.Address, new List<ManagedObjectReference>());
+                    }
+
+                    vmRefDict[aggregate.Connection.Address].Add(vmReference);
                 }
             }
 
-            // retrieve the properties specified
-            RetrievePropertiesResponse response = await _client.RetrievePropertiesAsync(
-                _props,
-                VmFilter(vmRefList, "summary.runtime.powerState config.uuid"));
+            var connections = _connectionService.GetAllConnections();
+            List<Dictionary<Guid, PowerState>> powerStates = new List<Dictionary<Guid, PowerState>>();
 
-            return GetPowerStateMultiple(response);
+            foreach (var kvp in vmRefDict)
+            {
+                var connection = connections.Where(x => x.Address == kvp.Key).FirstOrDefault();
+
+                // retrieve the properties specified
+                RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(
+                    connection.Props,
+                    VmFilter(kvp.Value, "summary.runtime.powerState config.uuid"));
+
+                powerStates.Add(GetPowerStateMultiple(response));
+            }
+
+            return powerStates.SelectMany(x => x).ToDictionary(x => x.Key, y => y.Value);
         }
 
         private Dictionary<Guid, PowerState> GetPowerStateMultiple(RetrievePropertiesResponse propertiesResponse)
@@ -637,10 +651,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public async Task<VirtualMachineToolsStatus> GetVmToolsStatus(Guid id)
         {
-            ManagedObjectReference vmReference = vmReference = await GetVm(id);
+            var aggregate = await GetVm(id);
+            var vmReference = aggregate.MachineReference;
+
             //retrieve the properties specificied
-            RetrievePropertiesResponse response = await _client.RetrievePropertiesAsync(
-                _props,
+            RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
                 VmFilter(vmReference));
 
             return GetVmToolsStatus(response);
@@ -650,7 +666,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         {
             _logger.LogDebug("UploadFileToVm called");
 
-            ManagedObjectReference vmReference = vmReference = await GetVm(id);
+            var aggregate = await GetVm(id);
+            var vmReference = aggregate.MachineReference;
 
             if (vmReference == null)
             {
@@ -659,8 +676,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 return errorMessage;
             }
             //retrieve the properties specificied
-            RetrievePropertiesResponse response = await _client.RetrievePropertiesAsync(
-                _props,
+            RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
                 VmFilter(vmReference));
 
             VimClient.ObjectContent[] oc = response.returnval;
@@ -694,10 +711,10 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     };
                     // upload the file
                     GuestFileAttributes fileAttributes = new GuestFileAttributes();
-                    var fileTransferUrl = _client.InitiateFileTransferToGuestAsync(fileManager, vmReference, credentialsAuth, filepath, fileAttributes, fileStream.Length, true).Result;
+                    var fileTransferUrl = aggregate.Connection.Client.InitiateFileTransferToGuestAsync(fileManager, vmReference, credentialsAuth, filepath, fileAttributes, fileStream.Length, true).Result;
 
                     // Replace IP address with hostname
-                    RetrievePropertiesResponse hostResponse = await _client.RetrievePropertiesAsync(_props, HostFilter(vmSummary.runtime.host, "name"));
+                    RetrievePropertiesResponse hostResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(aggregate.Connection.Props, HostFilter(vmSummary.runtime.host, "name"));
                     string hostName = hostResponse.returnval[0].propSet[0].val as string;
 
                     if (!fileTransferUrl.Contains(hostName))
@@ -729,7 +746,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return "";
         }
 
-        private async Task<TaskInfo> WaitForVimTask(ManagedObjectReference task)
+        private async Task<TaskInfo> WaitForVimTask(ManagedObjectReference task, VsphereConnection connection)
         {
             int i = 0;
             TaskInfo info = new TaskInfo();
@@ -739,7 +756,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             {
                 //check every so often
                 await Task.Delay(_pollInterval);
-                info = await GetVimTaskInfo(task);
+                info = await GetVimTaskInfo(task, connection);
                 i++;
                 //check for status updates until the task is complete
             } while ((info.state == TaskInfoState.running || info.state == TaskInfoState.queued));
@@ -748,11 +765,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return info;
         }
 
-        private async Task<TaskInfo> GetVimTaskInfo(ManagedObjectReference task)
+        private async Task<TaskInfo> GetVimTaskInfo(ManagedObjectReference task, VsphereConnection connection)
         {
             TaskInfo info = new TaskInfo();
-            RetrievePropertiesResponse response = await _client.RetrievePropertiesAsync(
-                _props,
+            RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(
+                connection.Props,
                 TaskFilter(task));
             VimClient.ObjectContent[] oc = response.returnval;
             info = (TaskInfo)oc[0].propSet[0].val;
@@ -770,7 +787,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public async Task<List<string>> GetVmNetworks(VsphereVirtualMachine machine, bool canManage, IEnumerable<string> allowedNetworks)
         {
-            List<Network> hostNetworks = _connectionService.GetNetworksByHost(machine.HostReference);
+            var aggregate = await this.GetVm(machine.Id);
+            List<Network> hostNetworks = _connectionService.GetNetworksByHost(machine.HostReference, aggregate.Connection.Address);
             List<string> networkNames = hostNetworks.Select(n => n.Name).ToList();
 
             // if a user can manage this VM, then they have access to all available NICs
@@ -793,6 +811,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public async Task<Dictionary<string, string>> GetVMConfiguration(VsphereVirtualMachine machine, Feature feature)
         {
+            var aggregate = await this.GetVm(machine.Id);
             VirtualDevice[] devices = machine.Devices;
 
             VirtualMachineConfigSpec vmcs = new VirtualMachineConfigSpec();
@@ -825,7 +844,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                                 if (!string.IsNullOrEmpty(portGroupKey))
                                 {
-                                    var network = _connectionService.GetNetworkByReference(portGroupKey);
+                                    var network = _connectionService.GetNetworkByReference(portGroupKey, aggregate.Connection.Address);
                                     string cardName = network?.Name;
 
                                     if (!string.IsNullOrEmpty(cardName))
@@ -850,26 +869,31 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return names;
         }
 
-        public async Task<IEnumerable<IsoFile>> GetIsos(string viewId, string subfolder)
+        public async Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subfolder)
         {
+            var aggregate = await this.GetVm(vmId);
+            var connection = aggregate.Connection;
+
             List<IsoFile> list = new List<IsoFile>();
-            var dsName = _options.DsName;
-            var baseFolder = _options.BaseFolder;
+            var dsName = connection.Host.DsName;
+            var baseFolder = connection.Host.BaseFolder;
             var filepath = $"[{dsName}] {baseFolder}/{viewId}/{subfolder}";
-            var datastore = await GetDatastoreByName(dsName);
+
+            var datastore = await GetDatastoreByName(dsName, connection);
             if (datastore == null)
             {
-                _logger.LogError($"Datastore {dsName} cannot be found.");
+                _logger.LogError($"Datastore {dsName} not found in {connection.Address}.");
                 return list;
             }
+
             var dsBrowser = datastore.Browser;
 
             ManagedObjectReference task = null;
             TaskInfo info = null;
             HostDatastoreBrowserSearchSpec spec = new HostDatastoreBrowserSearchSpec { };
             List<HostDatastoreBrowserSearchResults> results = new List<HostDatastoreBrowserSearchResults>();
-            task = await _client.SearchDatastore_TaskAsync(dsBrowser, filepath, spec);
-            info = await WaitForVimTask(task);
+            task = await connection.Client.SearchDatastore_TaskAsync(dsBrowser, filepath, spec);
+            info = await WaitForVimTask(task, connection);
             if (info.state == TaskInfoState.error)
             {
                 if (info.error.fault != null &&
@@ -901,6 +925,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public async Task<TaskInfo> ReconfigureVm(Guid id, Feature feature, string label, string newvalue)
         {
+            var aggregate = await this.GetVm(id);
             VsphereVirtualMachine machine = await GetMachineById(id);
             ManagedObjectReference vmReference = machine.Reference;
 
@@ -919,7 +944,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                         if (cdrom.backing.GetType() != typeof(VirtualCdromIsoBackingInfo))
                             cdrom.backing = new VirtualCdromIsoBackingInfo();
 
-                        ((VirtualCdromIsoBackingInfo)cdrom.backing).datastore = (await GetDatastoreByName(_options.DsName)).Reference;
+                        ((VirtualCdromIsoBackingInfo)cdrom.backing).datastore = (await GetDatastoreByName(aggregate.Connection.Host.DsName, aggregate.Connection)).Reference;
                         ((VirtualCdromIsoBackingInfo)cdrom.backing).fileName = newvalue;
                         cdrom.connectable = new VirtualDeviceConnectInfo
                         {
@@ -945,7 +970,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                     if (card != null)
                     {
-                        Network network = _connectionService.GetNetworkByName(newvalue);
+                        Network network = _connectionService.GetNetworkByName(newvalue, aggregate.Connection.Address);
 
                         if (network.IsDistributed)
                         {
@@ -1007,8 +1032,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     //break;
             }
 
-            ManagedObjectReference task = await _client.ReconfigVM_TaskAsync(vmReference, vmcs);
-            TaskInfo info = await WaitForVimTask(task);
+            ManagedObjectReference task = await aggregate.Connection.Client.ReconfigVM_TaskAsync(vmReference, vmcs);
+            TaskInfo info = await WaitForVimTask(task, aggregate.Connection);
             if (info.state == TaskInfoState.error)
                 throw new Exception(info.error.localizedMessage);
             return info;
@@ -1016,8 +1041,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public async Task<string> SetResolution(Guid id, int width, int height)
         {
-
-            ManagedObjectReference vmReference = await GetVm(id);
+            var aggregate = await this.GetVm(id);
+            var vmReference = aggregate.MachineReference;
             string state = await GetPowerState(id);
 
             if (vmReference == null)
@@ -1037,7 +1062,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             try
             {
-                await _client.SetScreenResolutionAsync(vmReference, width, height);
+                await aggregate.Connection.Client.SetScreenResolutionAsync(vmReference, width, height);
                 state = "set resolution submitted";
             }
             catch (Exception ex)
@@ -1049,68 +1074,28 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return state;
         }
 
-        public async Task<IEnumerable<Event>> GetEvents(EventFilterSpec filterSpec)
+        public async Task<IEnumerable<Event>> GetEvents(EventFilterSpec filterSpec, VsphereConnection connection)
         {
             var events = new List<Event>();
             const int maxCount = 1000; // maximum allowable by vsphere api
 
-            if (_client != null)
+            if (connection.Client != null)
             {
-                var collector = await _client.CreateCollectorForEventsAsync(_sic.eventManager, filterSpec);
+                var collector = await connection.Client.CreateCollectorForEventsAsync(connection.Sic.eventManager, filterSpec);
                 int resultCount;
 
                 do
                 {
-                    var response = await _client.ReadNextEventsAsync(collector, maxCount);
+                    var response = await connection.Client.ReadNextEventsAsync(collector, maxCount);
                     events.AddRange(response.returnval);
                     resultCount = response.returnval.Length;
                 }
                 while (resultCount != 0);
-                await _client.DestroyCollectorAsync(collector);
+                await connection.Client.DestroyCollectorAsync(collector);
             }
 
             return events;
         }
-
-        #region Helpers
-        private bool IsCardDistributed(string cardName)
-        {
-            if (_networks != null && !string.IsNullOrEmpty(cardName))
-            {
-                NetworkMOR card;
-                if ((card = _networks.Where(n => n.Name.Equals(cardName)).SingleOrDefault()) != null)
-                {
-                    return card.Type.Equals("DistributedVirtualPortgroup");
-                }
-            }
-            return false;
-        }
-        private string GetPortGroupId(string cardName)
-        {
-            if (_networks != null && !string.IsNullOrEmpty(cardName))
-            {
-                NetworkMOR card;
-                if ((card = _networks.Where(n => n.Name.Equals(cardName)).SingleOrDefault()) != null)
-                {
-                    return card.Value;
-                }
-            }
-            return string.Empty;
-        }
-        private string GetSwitchUuid(string cardName)
-        {
-            if (_networks != null && !string.IsNullOrEmpty(cardName))
-            {
-                NetworkMOR card;
-                if ((card = _networks.Where(n => n.Name.Equals(cardName)).SingleOrDefault()) != null)
-                {
-                    return card.Uuid;
-                }
-            }
-            return string.Empty;
-        }
-
-        #endregion
 
         #region Filters
 
@@ -1125,96 +1110,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             ObjectSpec objectspec = new ObjectSpec
             {
                 obj = mor,
-            };
-
-            return new PropertyFilterSpec[] {
-                new PropertyFilterSpec {
-                    propSet = new PropertySpec[] { prop },
-                    objectSet = new ObjectSpec[] { objectspec }
-                }
-            };
-        }
-
-        public PropertyFilterSpec[] NetworkSearchFilter()
-        {
-            PropertySpec prop;
-            List<PropertySpec> props = new List<PropertySpec>();
-
-            TraversalSpec trav = new TraversalSpec();
-            List<SelectionSpec> list = new List<SelectionSpec>();
-
-            SelectionSpec sel = new SelectionSpec();
-            List<SelectionSpec> selectset = new List<SelectionSpec>();
-
-            ObjectSpec objectspec = new ObjectSpec();
-            PropertyFilterSpec filter = new PropertyFilterSpec();
-
-            trav.name = "DatacenterTraversalSpec";
-            trav.type = "Datacenter";
-            trav.path = "networkFolder";
-
-            sel.name = "FolderTraversalSpec";
-            selectset.Add(sel);
-            trav.selectSet = selectset.ToArray();
-            list.Add(trav);
-
-            trav = new TraversalSpec();
-            trav.name = "FolderTraversalSpec";
-            trav.type = "Folder";
-            trav.path = "childEntity";
-            selectset.Clear();
-            sel = new SelectionSpec();
-            sel.name = "DatacenterTraversalSpec";
-            selectset.Add(sel);
-            trav.selectSet = selectset.ToArray();
-            list.Add(trav);
-
-            prop = new PropertySpec();
-            prop.type = "Datacenter";
-            prop.pathSet = new string[] { "networkFolder", "name" };
-            props.Add(prop);
-
-            prop = new PropertySpec();
-            prop.type = "Folder";
-            prop.pathSet = new string[] { "childEntity", "name" };
-            props.Add(prop);
-
-            prop = new PropertySpec();
-            prop.type = "VmwareDistributedVirtualSwitch";
-            prop.pathSet = new string[] { "portgroup", "name", "parent", "uuid" };
-            props.Add(prop);
-
-            prop = new PropertySpec();
-            prop.type = "DistributedVirtualPortgroup";
-            prop.pathSet = new string[] { "name", "key" };
-            props.Add(prop);
-
-            objectspec = new ObjectSpec();
-            objectspec.obj = _sic.rootFolder;
-            objectspec.selectSet = list.ToArray();
-
-            filter = new PropertyFilterSpec();
-            filter.propSet = props.ToArray();
-            filter.objectSet = new ObjectSpec[] { objectspec };
-            PropertyFilterSpec[] _dvNetworkSearchFilters = new PropertyFilterSpec[] { filter };
-            return _dvNetworkSearchFilters;
-        }
-
-        public static PropertyFilterSpec[] NetworkFilter(ManagedObjectReference mor)
-        {
-            return NetworkFilter(mor, "networkInfo.dnsConfig networkInfo.ipRouteConfig networkInfo.portgroup networkInfo.vnic networkInfo.vswitch");
-        }
-        public static PropertyFilterSpec[] NetworkFilter(ManagedObjectReference mor, string props)
-        {
-            PropertySpec prop = new PropertySpec
-            {
-                type = "HostNetworkSystem",
-                pathSet = props.Split(new char[] { ' ', ',' }, StringSplitOptions.RemoveEmptyEntries)
-            };
-
-            ObjectSpec objectspec = new ObjectSpec
-            {
-                obj = mor, //_net
             };
 
             return new PropertyFilterSpec[] {
@@ -1297,20 +1192,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             };
 
             return ret;
-        }
-
-        private async Task<string> GetDistributedSwitchUuid(ManagedObjectReference mor)
-        {
-            RetrievePropertiesResponse response = await _client.RetrievePropertiesAsync(_props, PortGroupFilter(mor));
-            ManagedObjectReference switchMOR = ((DVPortgroupConfigInfo)response.returnval[0].propSet[0].val).distributedVirtualSwitch;
-            response = await _client.RetrievePropertiesAsync(_props, SwitchFilter(switchMOR));
-
-            var config = ((VMwareDVSConfigInfo)response.returnval[0].GetProperty("config"));
-
-            // if this is an uplink switch, return null so that we don't use it as a NIC
-            if ((config.uplinkPortgroup[0].Value.Equals(mor.Value)))
-                return null;
-            return ((string)response.returnval[0].GetProperty("uuid"));
         }
 
         public static PropertyFilterSpec[] SwitchFilter(ManagedObjectReference mor)
@@ -1416,28 +1297,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public async Task<VsphereVirtualMachine> GetMachineById(Guid id)
         {
-            ManagedObjectReference machineReference = _connectionService.GetMachineById(id);
-
-            if (machineReference == null)
-            {
-                // lookup reference
-                machineReference = await GetVm(id);
-
-                // return null if not found
-                if (machineReference == null)
-                {
-                    return null;
-                }
-            }
-
-            if (_client == null)
-            {
-                return null;
-            }
+            var aggregate = await this.GetVm(id);
+            var machineReference = aggregate.MachineReference;
 
             // retrieve all machine properties we need
-            RetrievePropertiesResponse propertiesResponse = await _client.RetrievePropertiesAsync(
-                _props,
+            RetrievePropertiesResponse propertiesResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
                 VmFilter(machineReference, "name summary.guest.toolsStatus summary.runtime.host summary.runtime.powerState config.hardware.device"));
 
             VimClient.ObjectContent vm = propertiesResponse.returnval.FirstOrDefault();
@@ -1463,14 +1328,22 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return machine;
         }
 
-        private async Task<Datastore> GetDatastoreByName(string dsName)
+        private async Task<Datastore> GetDatastoreByName(string dsName, VsphereConnection connection)
         {
-            Datastore datastore = _connectionService.GetDatastoreByName(dsName);
+            Datastore datastore = _connectionService.GetDatastoreByName(dsName, connection.Address);
 
             if (datastore == null)
             {
-                // lookup reference
-                datastore = await GetNewDatastore(dsName);
+                try
+                {
+                    // lookup reference
+                    datastore = await GetNewDatastore(dsName, connection);
+                }
+                catch (Exception ex)
+                {
+                    datastore = null;
+                    _logger.LogError(ex, $"Datastore {dsName} not found in {connection.Address}");
+                }
 
                 // return null if not found
                 if (datastore == null)
@@ -1479,7 +1352,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
             }
 
-            if (_client == null)
+            if (connection.Client == null)
             {
                 return null;
             }
@@ -1487,9 +1360,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return datastore;
         }
 
-        private async Task<Datastore> GetNewDatastore(string dsName)
+        private async Task<Datastore> GetNewDatastore(string dsName, VsphereConnection connection)
         {
-            var clunkyTree = await LoadReferenceTree(_client);
+            var clunkyTree = await LoadReferenceTree(connection);
             if (clunkyTree.Length == 0)
             {
                 throw new InvalidOperationException();
@@ -1510,7 +1383,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return null;
         }
 
-        private async Task<VimClient.ObjectContent[]> LoadReferenceTree(VimPortTypeClient client)
+        private async Task<VimClient.ObjectContent[]> LoadReferenceTree(VsphereConnection connection)
         {
             var plan = new TraversalSpec
             {
@@ -1553,7 +1426,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             };
 
             ObjectSpec objectspec = new ObjectSpec();
-            objectspec.obj = _sic.rootFolder;
+            objectspec.obj = connection.Sic.rootFolder;
             objectspec.selectSet = new SelectionSpec[] { plan };
 
             PropertyFilterSpec filter = new PropertyFilterSpec();
@@ -1561,7 +1434,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             filter.objectSet = new ObjectSpec[] { objectspec };
 
             PropertyFilterSpec[] filters = new PropertyFilterSpec[] { filter };
-            RetrievePropertiesResponse response = await client.RetrievePropertiesAsync(_props, filters);
+            RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(connection.Props, filters);
 
             return response.returnval;
         }

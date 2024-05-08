@@ -22,7 +22,7 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                 await mEvent.WaitAsync(comp.Token).ConfigureAwait(false);
                 return true;
             }
-            catch (OperationCanceledException e)
+            catch (OperationCanceledException)
             {
                 if (token.IsCancellationRequested)
                     throw; //Forward OperationCanceledException from external Token

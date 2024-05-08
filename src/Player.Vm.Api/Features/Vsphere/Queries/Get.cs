@@ -18,6 +18,9 @@ using System.Security.Principal;
 using Player.Vm.Api.Infrastructure.Extensions;
 using Player.Vm.Api.Domain.Services;
 using Player.Api.Client;
+using System.Collections.Generic;
+using Microsoft.Extensions.Options;
+using System.Linq;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -38,8 +41,6 @@ namespace Player.Vm.Api.Features.Vsphere
             private readonly ILogger<Get> _logger;
             private readonly VsphereOptions _vsphereOptions;
             private readonly ClaimsPrincipal _user;
-            private readonly IPlayerApiClient _playerClient;
-            private readonly IPlayerService _playerService;
 
             public Handler(
                 IVmService vmService,
@@ -48,7 +49,6 @@ namespace Player.Vm.Api.Features.Vsphere
                 ILogger<Get> logger,
                 VsphereOptions vsphereOptions,
                 IPrincipal user,
-                IPlayerApiClient playerClient,
                 IPlayerService playerService,
                 IPermissionsService permissionsService) :
                 base(mapper, vsphereService, playerService, user, permissionsService, vmService)
@@ -59,7 +59,6 @@ namespace Player.Vm.Api.Features.Vsphere
                 _logger = logger;
                 _vsphereOptions = vsphereOptions;
                 _user = user as ClaimsPrincipal;
-                _playerClient = playerClient;
             }
 
             public async Task<VsphereVirtualMachine> Handle(Query request, CancellationToken cancellationToken)
