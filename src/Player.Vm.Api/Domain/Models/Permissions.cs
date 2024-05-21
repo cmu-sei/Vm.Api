@@ -5,6 +5,8 @@ namespace Player.Vm.Api.Domain.Models
 {
     public enum Permissions
     {
-        ReadOnly
+        ReadOnly,
+        ViewAdmin,
+        SystemAdmin
     }
 }

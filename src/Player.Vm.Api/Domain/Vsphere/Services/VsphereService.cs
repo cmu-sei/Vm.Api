@@ -16,6 +16,7 @@ using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Domain.Models;
+using System.Web;
 
 namespace Player.Vm.Api.Domain.Vsphere.Services
 {
@@ -31,6 +32,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<TaskInfo> ReconfigureVm(Guid id, Feature feature, string label, string newvalue);
         Task<VirtualMachineToolsStatus> GetVmToolsStatus(Guid id);
         Task<string> UploadFileToVm(Guid id, string username, string password, string filepath, Stream fileStream);
+        Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath);
         Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subFolder);
         Task<string> SetResolution(Guid id, int width, int height);
         Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation);
@@ -741,6 +743,87 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                             }
                         }
                     }
+                }
+            }
+            return "";
+        }
+
+        public async Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath)
+        {
+            var aggregate = await GetVm(id);
+            var vmReference = aggregate.MachineReference;
+
+            if (vmReference == null)
+            {
+                var errorMessage = $"could not get file url, vmReference is null";
+                _logger.LogDebug(errorMessage);
+                return errorMessage;
+            }
+
+            //retrieve the properties specificied
+            RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
+                VmFilter(vmReference));
+
+            VimClient.ObjectContent[] oc = response.returnval;
+            VimClient.ObjectContent obj = oc[0];
+
+            foreach (DynamicProperty dp in obj.propSet)
+            {
+                if (dp.val.GetType() == typeof(VirtualMachineSummary))
+                {
+                    VirtualMachineSummary vmSummary = (VirtualMachineSummary)dp.val;
+                    //check vmware tools status
+                    var tools_status = vmSummary.guest.toolsStatus;
+                    if (tools_status == VirtualMachineToolsStatus.toolsNotInstalled || tools_status == VirtualMachineToolsStatus.toolsNotRunning)
+                    {
+                        var errorMessage = $"could not get file url, VM Tools is not running";
+                        _logger.LogDebug(errorMessage);
+                        return errorMessage;
+                    }
+
+                    // user credentials on the VM
+                    NamePasswordAuthentication credentialsAuth = new NamePasswordAuthentication()
+                    {
+                        interactiveSession = false,
+                        username = username,
+                        password = password
+                    };
+                    ManagedObjectReference fileManager = new ManagedObjectReference()
+                    {
+                        type = "GuestFileManager",
+                        Value = "guestOperationsFileManager"
+                    };
+
+                    var fileTransferInfo = await aggregate.Connection.Client.InitiateFileTransferFromGuestAsync(fileManager, vmReference, credentialsAuth, filepath);
+                    var fileTransferUrl = fileTransferInfo.url;
+
+                    // Replace IP address with hostname
+                    RetrievePropertiesResponse hostResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(aggregate.Connection.Props, HostFilter(vmSummary.runtime.host, "name"));
+                    string hostName = hostResponse.returnval[0].propSet[0].val as string;
+
+                    if (!fileTransferUrl.Contains(hostName))
+                    {
+                        fileTransferUrl = fileTransferUrl.Replace("https://", "");
+                        var s = fileTransferUrl.IndexOf("/");
+                        fileTransferUrl = "https://" + hostName + fileTransferUrl.Substring(s);
+                    }
+
+                    if (_rewriteHostOptions.RewriteHost)
+                    {
+                        var builder = new UriBuilder(fileTransferUrl);
+
+                        var query = HttpUtility.ParseQueryString(builder.Query);
+                        query[_rewriteHostOptions.RewriteHostQueryParam] = builder.Host;
+                        var fileName = Path.GetFileName(filepath);
+                        query["fileName"] = fileName;
+                        builder.Query = query.ToString();
+
+                        builder.Host = _rewriteHostOptions.RewriteHostUrl;
+                        fileTransferUrl = builder.ToString();
+                    }
+
+                    return fileTransferUrl;
                 }
             }
             return "";
