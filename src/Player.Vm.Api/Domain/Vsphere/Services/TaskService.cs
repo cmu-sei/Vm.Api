@@ -229,14 +229,17 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
             }
 
-            var vmsToUpdate = await _dbContext.Vms
+            if (stillPendingVmIds.Any())
+            {
+                var vmsToUpdate = await _dbContext.Vms
                 .Include(x => x.VmTeams)
                 .Where(x => stillPendingVmIds.Contains(x.Id))
                 .ToArrayAsync();
 
-            foreach (var vm in vmsToUpdate)
-            {
-                vm.HasPendingTasks = true;
+                foreach (var vm in vmsToUpdate)
+                {
+                    vm.HasPendingTasks = true;
+                }
             }
 
             await _dbContext.SaveChangesAsync();

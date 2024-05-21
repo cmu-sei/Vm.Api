@@ -22,11 +22,16 @@ namespace Player.Vm.Api.Features.Vms
         /// </summary>
         public Guid? ActiveVmId { get; set; }
 
-        public VmUser(Guid userId, string username, Guid? activeVmId)
+        public Guid? LastVmId { get; set; }
+        public DateTimeOffset? LastSeen { get; set; }
+
+        public VmUser(Guid userId, string username, Guid? activeVmId, Guid? lastVmId, DateTimeOffset? lastSeen)
         {
             UserId = userId;
             Username = username;
             ActiveVmId = activeVmId;
+            LastVmId = lastVmId;
+            LastSeen = lastSeen;
         }
     }
 }
