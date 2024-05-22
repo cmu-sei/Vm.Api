@@ -143,6 +143,18 @@ namespace Player.Vm.Api.Features.Vsphere
         }
 
         /// <summary>
+        /// Get the url to download a file from a vsphere virtual machine
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/file-url")]
+        [ProducesResponseType(typeof(GetVmFileUrl.Response), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getFileUrlVsphereVirtualMachine")]
+        public async Task<IActionResult> GetFileUrl([FromRoute] Guid id, [FromBody] GetVmFileUrl.Command command)
+        {
+            command.Id = id;
+            return Ok(await _mediator.Send(command));
+        }
+
+        /// <summary>
         /// Get isos available to be mounted to a vsphere virtual machine
         /// </summary>
         [HttpGet("vms/vsphere/{id}/isos")]

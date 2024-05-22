@@ -25,7 +25,7 @@ namespace Player.Vm.Api.Features.Vsphere
     {
         private readonly IMapper _mapper;
         private readonly IVsphereService _vsphereService;
-        private readonly IPlayerService _playerService;
+        protected readonly IPlayerService _playerService;
         private readonly Guid _userId;
         private readonly IPermissionsService _permissionsService;
         private readonly IVmService _vmService;

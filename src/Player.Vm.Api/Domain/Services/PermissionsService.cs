@@ -35,20 +35,13 @@ namespace Player.Vm.Api.Domain.Services
 
         public async Task<IEnumerable<Permissions>> GetViewPermissions(Guid viewId, CancellationToken cancellationToken)
         {
-            var permissions = new List<Permissions>();
             var viewPermissions = await _playerService.GetPermissionsByViewIdAsync(viewId, cancellationToken);
-
-            if (viewPermissions.Any(x => x.Key.ToLower() == Permissions.ReadOnly.ToString().ToLower() && x.Value.ToLower() == "true"))
-            {
-                permissions.Add(Permissions.ReadOnly);
-            }
-
+            var permissions = this.ProcessPermissions(viewPermissions);
             return permissions;
         }
 
         public async Task<IEnumerable<Permissions>> GetPermissions(IEnumerable<Guid> teamIds, CancellationToken cancellationToken)
         {
-            var vmPermissions = new List<Permissions>();
             var viewPermissions = new List<Permission>();
             var viewIds = await _viewService.GetViewIdsForTeams(teamIds, cancellationToken);
             var taskDict = new Dictionary<Guid, Task<IEnumerable<Permission>>>();
@@ -80,12 +73,7 @@ namespace Player.Vm.Api.Domain.Services
                 });
             }
 
-            if (viewPermissions.Any(x => x.Key.ToLower() == Permissions.ReadOnly.ToString().ToLower() && x.Value.ToLower() == "true"))
-            {
-                vmPermissions.Add(Permissions.ReadOnly);
-            }
-
-            return vmPermissions;
+            return this.ProcessPermissions(viewPermissions);
         }
 
         public async Task<bool> CanWrite(IEnumerable<Guid> teamIds, CancellationToken cancellationToken)
@@ -100,6 +88,25 @@ namespace Player.Vm.Api.Domain.Services
             {
                 return true;
             }
+        }
+
+        private IEnumerable<Permissions> ProcessPermissions(IEnumerable<Permission> playerPermissions)
+        {
+            var permissionsList = new List<Permissions>();
+            this.ProcessPermission(playerPermissions, ref permissionsList, Permissions.ReadOnly);
+            this.ProcessPermission(playerPermissions, ref permissionsList, Permissions.ViewAdmin);
+            this.ProcessPermission(playerPermissions, ref permissionsList, Permissions.SystemAdmin);
+            return permissionsList;
+        }
+
+        private IList<Permissions> ProcessPermission(IEnumerable<Permission> playerPermissions, ref List<Permissions> permissionsList, Permissions permission)
+        {
+            if (playerPermissions.Any(x => x.Key.ToLower() == permission.ToString().ToLower() && x.Value.ToLower() == "true"))
+            {
+                permissionsList.Add(permission);
+            }
+
+            return permissionsList;
         }
     }
 }
