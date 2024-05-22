@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Player.Vm.Api.Data;
@@ -12,9 +13,10 @@ using Player.Vm.Api.Data;
 namespace Player.Vm.Api.Data.Migrations.Postgres
 {
     [DbContext(typeof(VmContext))]
-    partial class ContextModelSnapshot : ModelSnapshot
+    [Migration("20240522143235_added_teamId_to_vm_user")]
+    partial class added_teamId_to_vm_user
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -220,12 +222,10 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
             modelBuilder.Entity("Player.Vm.Api.Domain.Models.VmUser", b =>
                 {
                     b.Property<Guid>("UserId")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
-                        .HasColumnName("user_id");
-
-                    b.Property<Guid>("TeamId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("team_id");
+                        .HasColumnName("user_id")
+                        .HasDefaultValueSql("uuid_generate_v4()");
 
                     b.Property<DateTimeOffset>("LastSeen")
                         .HasColumnType("timestamp with time zone")
@@ -235,7 +235,11 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                         .HasColumnType("uuid")
                         .HasColumnName("last_vm_id");
 
-                    b.HasKey("UserId", "TeamId");
+                    b.Property<Guid>("TeamId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("team_id");
+
+                    b.HasKey("UserId");
 
                     b.HasIndex("LastVmId");
 
