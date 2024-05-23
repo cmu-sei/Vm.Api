@@ -86,7 +86,11 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
             await Task.WhenAll(teamTaskDict.Values);
 
-            var dbUsers = await _dbContext.VmUsers.ToListAsync();
+            var teamIds = teams.Select(x => x.Id);
+
+            var dbUsers = await _dbContext.VmUsers
+                .Where(x => teamIds.Contains(x.TeamId))
+                .ToListAsync();
 
             foreach (var kvp in teamTaskDict)
             {
@@ -105,9 +109,11 @@ namespace Player.Vm.Api.Features.Vms.Hubs
                         activeVmId = activeVm.VmId;
                     }
 
-                    var dbUser = dbUsers.Where(x => x.UserId == user.Id).FirstOrDefault();
+                    var dbUser = dbUsers
+                        .Where(x => x.UserId == user.Id && x.TeamId == teamId)
+                        .FirstOrDefault();
 
-                    vmUsers.Add(new VmUser(user.Id, user.Name, activeVmId, dbUser?.LastVmId, dbUser?.LastSeen));
+                    vmUsers.Add(new VmUser(user.Id, teamId, user.Name, activeVmId, dbUser?.LastVmId, dbUser?.LastSeen));
                 }
 
                 vmUserTeams.Add(new VmUserTeam(teamId, team.Name, vmUsers.ToArray()));
@@ -126,7 +132,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             }
         }
 
-        public async Task<VmUser> JoinUser(Guid userId, Guid viewId)
+        public async Task<VmUser> JoinUser(Guid userId, Guid viewId, Guid teamId)
         {
             var activeVm = _activeVirtualMachineService.GetActiveVirtualMachineForUser(userId);
             Guid? activeVmId = null;
@@ -153,9 +159,11 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             }
 
             var user = await _playerService.GetUserById(userId, Context.ConnectionAborted);
-            var dbUser = await _dbContext.VmUsers.FindAsync(userId);
+            var dbUser = await _dbContext.VmUsers
+                .Where(x => x.UserId == userId && x.TeamId == teamId)
+                .FirstOrDefaultAsync();
 
-            return new VmUser(userId, user.Name, activeVmId, dbUser?.LastVmId, dbUser?.LastSeen);
+            return new VmUser(userId, teamId, user.Name, activeVmId, dbUser?.LastVmId, dbUser?.LastSeen);
         }
 
         public async Task LeaveUser(Guid userId, Guid viewId)
@@ -240,7 +248,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
             var newVmId = _activeVirtualMachineService.SetActiveVirtualMachineForUser(userId, Context.User.GetName(), vmId, Context.ConnectionId, teamIds);
 
-            await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, newVmId, userId, DateTimeOffset.UtcNow);
+            await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, newVmId, userId, DateTimeOffset.UtcNow, teamIds);
 
             // Begin Handling of displaying current users connected to an individual VM
             var userNamesByGroup = await _activeVirtualMachineService.GetActiveVirtualMachineUsersByGroup(vmId, null, CancellationToken.None);
@@ -251,7 +259,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             }
 
             await _vmUsageLoggingService.CreateVmLogEntry(userId, vmId, teamIds, CancellationToken.None);
-            await UpdateVmUser(userId, vmId);
+            await UpdateVmUser(userId, vmId, teams.Select(x => x.Id));
         }
 
         public async Task UnsetActiveVirtualMachine()
@@ -274,8 +282,21 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             if (activeVirtualMachine != null)
             {
                 var viewIds = await _viewService.GetViewIdsForTeams(activeVirtualMachine.TeamIds, cancellationToken);
+
+                var teams = new List<Team>();
+
+                foreach (var viewId in viewIds)
+                {
+                    var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, Context.ConnectionAborted);
+
+                    if (primaryTeam != null)
+                    {
+                        teams.Add(primaryTeam);
+                    }
+                }
+
                 var groups = GetGroups(activeVirtualMachine.TeamIds, viewIds, userId, activeVirtualMachine.VmId);
-                await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, null, userId);
+                await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, null, userId, null, teams.Select(x => x.Id));
 
                 // Begin Handling of displaying current users connected to an individual VM
                 var userNamesByGroup = await _activeVirtualMachineService.GetActiveVirtualMachineUsersByGroup(activeVirtualMachine.VmId, activeVirtualMachine, cancellationToken);
@@ -289,22 +310,27 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             }
         }
 
-        private async Task UpdateVmUser(Guid userId, Guid vmId)
+        private async Task UpdateVmUser(Guid userId, Guid vmId, IEnumerable<Guid> teamIds)
         {
-            var vmUser = new Domain.Models.VmUser(userId, vmId);
+            var now = DateTimeOffset.UtcNow;
 
-            try
+            foreach (var teamId in teamIds)
             {
+                var vmUser = new Domain.Models.VmUser(userId, vmId, teamId, now);
                 _dbContext.Attach(vmUser);
                 _dbContext.Update(vmUser);
-                await _dbContext.SaveChangesAsync();
-            }
-            catch (Exception)
-            {
-                // If user doesn't exist, add them
-                // Only happens once ever per user in the system.
-                _dbContext.Add(vmUser);
-                await _dbContext.SaveChangesAsync();
+
+                try
+                {
+                    await _dbContext.SaveChangesAsync();
+                }
+                catch (Exception)
+                {
+                    // If user doesn't exist, add them
+                    // Only happens once per user per team in the system.
+                    _dbContext.Add(vmUser);
+                    await _dbContext.SaveChangesAsync();
+                }
             }
         }
 
