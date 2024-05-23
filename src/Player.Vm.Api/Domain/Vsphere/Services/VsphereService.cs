@@ -811,11 +811,14 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                     if (_rewriteHostOptions.RewriteHost)
                     {
-                        var builder = new UriBuilder(fileTransferUrl);
+                        var builder = new UriBuilder(fileTransferUrl)
+                        {
+                            Port = -1
+                        };
 
                         var query = HttpUtility.ParseQueryString(builder.Query);
                         query[_rewriteHostOptions.RewriteHostQueryParam] = builder.Host;
-                        var fileName = Path.GetFileName(filepath);
+                        var fileName = this.GetFileName(filepath);
                         query["fileName"] = fileName;
                         builder.Query = query.ToString();
 
@@ -827,6 +830,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
             }
             return "";
+        }
+
+        private string GetFileName(string filePath)
+        {
+            var fileUri = new Uri($"file://{filePath}");
+            return Path.GetFileName(fileUri.ToString());
         }
 
         private async Task<TaskInfo> WaitForVimTask(ManagedObjectReference task, VsphereConnection connection)
