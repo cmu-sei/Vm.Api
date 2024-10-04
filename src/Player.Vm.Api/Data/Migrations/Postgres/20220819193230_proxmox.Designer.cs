@@ -19,7 +19,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
 {
     [DbContext(typeof(VmContext))]
     [Migration("20220819193230_proxmox")]
-    partial class proxmox
+    partial class Proxmox
     {
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {

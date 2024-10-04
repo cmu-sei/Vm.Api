@@ -55,7 +55,7 @@ public class ProxmoxService : IProxmoxService
         if (!success)
         {
             // Check if vm exists on a different node and try again
-            var vm = await _pveClient.GetVm(info.Id);
+            var vm = await _pveClient.GetVmAsync(info.Id);
 
             if (vm != null)
             {
@@ -97,12 +97,12 @@ public class ProxmoxService : IProxmoxService
 
     public async Task<IEnumerable<IClusterResourceVm>> GetVms()
     {
-        return await _pveClient.GetResources(ClusterResourceType.Vm);
+        return await _pveClient.GetResourcesAsync(ClusterResourceType.Vm);
     }
 
     private async Task<IClusterResourceVm> RefreshVm(int id)
     {
-        var vm = await _pveClient.GetVm(id);
+        var vm = await _pveClient.GetVmAsync(id);
 
         return vm;
     }

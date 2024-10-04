@@ -11,7 +11,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
 namespace Player.Vm.Api.Data.Migrations.Postgres
 {
-    public partial class proxmox : Migration
+    public partial class Proxmox : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {

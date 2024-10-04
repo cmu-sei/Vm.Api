@@ -89,7 +89,7 @@ namespace Player.Vm.Api.Domain.Services
             }
             catch (Exception ex)
             {
-                _logger.LogError("Exception renewing auth token.", ex);
+                _logger.LogError(ex, "Exception renewing auth token.");
             }
 
             return null;

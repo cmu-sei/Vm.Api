@@ -34,7 +34,6 @@ namespace Player.Vm.Api.Features.Vsphere
             private readonly IVsphereService _vsphereService;
             private readonly IVmService _vmService;
             private readonly IMapper _mapper;
-            private readonly IPlayerService _playerService;
 
             public Handler(
                 IVsphereService vsphereService,
@@ -48,7 +47,6 @@ namespace Player.Vm.Api.Features.Vsphere
                 _vsphereService = vsphereService;
                 _vmService = vmService;
                 _mapper = mapper;
-                _playerService = playerService;
             }
 
             public async Task<VsphereVirtualMachine> Handle(Command request, CancellationToken cancellationToken)
