@@ -83,15 +83,15 @@ public class Startup
         switch (provider)
         {
             case "InMemory":
-                services.AddDbContextPool<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
-                    .AddInterceptors(serviceProvider.GetRequiredService<EventTransactionInterceptor>())
+                services.AddPooledDbContextFactory<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
+                    .AddInterceptors(serviceProvider.GetRequiredService<EventInterceptor>())
                     .UseInMemoryDatabase("vm"));
                 break;
             case "Sqlite":
             case "SqlServer":
             case "PostgreSQL":
-                services.AddDbContextPool<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
-                    .AddInterceptors(serviceProvider.GetRequiredService<EventTransactionInterceptor>())
+                services.AddPooledDbContextFactory<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
+                    .AddInterceptors(serviceProvider.GetRequiredService<EventInterceptor>())
                     .UseConfiguredDatabase(Configuration));
 
                 if (vmLoggingEnabled)
@@ -113,6 +113,9 @@ public class Startup
 
                 break;
         }
+
+        services.AddScoped<VmContextFactory>();
+        services.AddScoped(sp => sp.GetRequiredService<VmContextFactory>().CreateDbContext());
 
         var connectionString = Configuration.GetConnectionString(Configuration.GetValue<string>("Database:Provider", "Sqlite").Trim());
         switch (provider)
@@ -293,7 +296,7 @@ public class Startup
         services.AddSingleton<IHostedService>(x => x.GetService<ProxmoxStateService>());
         services.AddSingleton<IProxmoxStateService>(x => x.GetService<ProxmoxStateService>());
 
-        services.AddTransient<EventTransactionInterceptor>();
+        services.AddTransient<EventInterceptor>();
 
         services.AddAutoMapper(typeof(Startup));
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(typeof(Startup).Assembly));

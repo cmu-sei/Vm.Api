@@ -24,14 +24,14 @@ public interface IVmUsageLoggingService
 
 public class DisabledVmUsageLoggingService : IVmUsageLoggingService
 {
-    public Task CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds, CancellationToken ct)
+    public async Task CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds, CancellationToken ct)
     {
-        return Task.CompletedTask;
+        await Task.CompletedTask;
     }
 
-    public Task CloseVmLogEntry(Guid userId, Guid vmId, CancellationToken ct)
+    public async Task CloseVmLogEntry(Guid userId, Guid vmId, CancellationToken ct)
     {
-        return Task.CompletedTask;
+        await Task.CompletedTask;
     }
 }
 

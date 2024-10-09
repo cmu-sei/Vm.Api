@@ -10,10 +10,10 @@ namespace Player.Vm.Api.Infrastructure.ClaimsTransformers
 {
     class ClaimsTransformer : IClaimsTransformation
     {
-        public Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
+        public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
         {
             var user = principal.NormalizeScopeClaims();
-            return Task.FromResult(user);
+            return await Task.FromResult(user);
         }
     }
 }
