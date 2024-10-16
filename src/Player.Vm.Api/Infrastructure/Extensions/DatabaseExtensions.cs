@@ -9,12 +9,13 @@ using System;
 using Microsoft.AspNetCore.Hosting;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Infrastructure.Options;
+using Microsoft.Extensions.Hosting;
 
 namespace Player.Vm.Api.Infrastructure.Extensions
 {
     public static class DatabaseExtensions
     {
-        public static IWebHost InitializeDatabase(this IWebHost webHost)
+        public static IHost InitializeDatabase(this IHost webHost)
         {
             using (var scope = webHost.Services.CreateScope())
             {

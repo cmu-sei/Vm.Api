@@ -8,7 +8,7 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace Player.Vm.Api.Data.Migrations.Postgres
 {
-    public partial class urlarray : Migration
+    public partial class UrlArray : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {

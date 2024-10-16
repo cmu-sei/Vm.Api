@@ -13,7 +13,7 @@ namespace Player.Vm.Api.Infrastructure.ClaimsTransformers
         public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
         {
             var user = principal.NormalizeScopeClaims();
-            return user;
+            return await Task.FromResult(user);
         }
     }
 }

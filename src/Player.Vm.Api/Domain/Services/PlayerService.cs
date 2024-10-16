@@ -106,7 +106,7 @@ namespace Player.Vm.Api.Domain.Services
                             return true;
                     }
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
 
                 }
@@ -141,7 +141,7 @@ namespace Player.Vm.Api.Domain.Services
                     if (team.CanManage || team.IsPrimary)
                         return true;
                 }
-                catch (Exception ex)
+                catch (Exception)
                 {
                 }
             }
@@ -192,7 +192,7 @@ namespace Player.Vm.Api.Domain.Services
             {
                 return await _playerApiClient.GetTeamAsync(id);
             }
-            catch (Exception ex)
+            catch (Exception)
             {
                 return null;
             }

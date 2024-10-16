@@ -17,7 +17,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
 {
     [DbContext(typeof(VmContext))]
     [Migration("20210218180204_url-array")]
-    partial class urlarray
+    partial class UrlArray
     {
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
