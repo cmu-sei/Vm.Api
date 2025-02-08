@@ -39,9 +39,8 @@ namespace Player.Vm.Api.Features.Vsphere
                 IVmService vmService,
                 IMapper mapper,
                 IPlayerService playerService,
-                IPrincipal principal,
-                IPermissionsService permissionsService) :
-                base(mapper, vsphereService, playerService, principal, permissionsService, vmService)
+                IPrincipal principal) :
+                base(mapper, vsphereService, playerService, principal, vmService)
             {
                 _vsphereService = vsphereService;
                 _vmService = vmService;
@@ -50,7 +49,7 @@ namespace Player.Vm.Api.Features.Vsphere
 
             public async Task<VsphereVirtualMachine> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await base.GetVm(request.Id, Permissions.ReadOnly, cancellationToken);
+                var vm = await base.GetVmForEditing(request.Id, cancellationToken);
                 await _vsphereService.ReconfigureVm(request.Id, Feature.iso, "", request.Iso);
 
                 return await base.GetVsphereVirtualMachine(vm, cancellationToken);

@@ -4,9 +4,6 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
-using MediatR;
-using System.Runtime.Serialization;
-using System.Text.Json.Serialization;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Services;
@@ -15,9 +12,8 @@ using Player.Vm.Api.Domain.Services;
 using System.Security.Principal;
 using System.Security.Claims;
 using Player.Vm.Api.Infrastructure.Extensions;
-using System.Collections.Generic;
-using Player.Vm.Api.Domain.Models;
 using System.Linq;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -27,7 +23,6 @@ namespace Player.Vm.Api.Features.Vsphere
         private readonly IVsphereService _vsphereService;
         protected readonly IPlayerService _playerService;
         private readonly Guid _userId;
-        private readonly IPermissionsService _permissionsService;
         private readonly IVmService _vmService;
 
 
@@ -36,14 +31,12 @@ namespace Player.Vm.Api.Features.Vsphere
             IVsphereService vsphereService,
             IPlayerService playerService,
             IPrincipal principal,
-            IPermissionsService permissionsService,
             IVmService vmService)
         {
             _mapper = mapper;
             _vsphereService = vsphereService;
             _playerService = playerService;
             _userId = (principal as ClaimsPrincipal).GetId();
-            _permissionsService = permissionsService;
             _vmService = vmService;
         }
 
@@ -55,7 +48,7 @@ namespace Player.Vm.Api.Features.Vsphere
                 throw new EntityNotFoundException<VsphereVirtualMachine>();
 
             var vsphereVirtualMachine = _mapper.Map<VsphereVirtualMachine>(domainMachine);
-            var canManage = await _playerService.CanManageTeamsAsync(vm.TeamIds, false, cancellationToken);
+            var canManage = await _playerService.CanManageTeams(vm.TeamIds, cancellationToken);
 
             vsphereVirtualMachine.Ticket = await _vsphereService.GetConsoleUrl(domainMachine); ;
             vsphereVirtualMachine.NetworkCards = await _vsphereService.GetNicOptions(
@@ -72,38 +65,36 @@ namespace Player.Vm.Api.Features.Vsphere
             return vsphereVirtualMachine;
         }
 
+        protected async Task<Vms.Vm> GetVmForEditing(Guid id, CancellationToken cancellationToken)
+        {
+            return await this.GetVm(id,
+                                    [AppSystemPermission.EditViews],
+                                    [AppViewPermission.EditView],
+                                    [AppTeamPermission.EditTeam],
+                                    cancellationToken,
+                                    "You do not have permission to edit this Vm");
+        }
+
         /// <summary>
         /// Get a Vm and check for appropriate access.
         /// </summary>
-        /// <param name="id"></param>
-        /// <param name="blockingPermission">A permission that should block the operation from completing, if present</param>
-        /// <param name="cancellationToken"></param>
         /// <returns></returns>
-        protected async Task<Vms.Vm> GetVm(Guid id, Permissions? blockingPermission = null,
-                                           CancellationToken cancellationToken = default)
-        {
-            var blockingPermissions = new List<Permissions>();
-
-            if (blockingPermission.HasValue)
-            {
-                blockingPermissions.Add(blockingPermission.Value);
-            }
-
-            return await this.GetVm(id, blockingPermissions, cancellationToken);
-        }
-
-        protected async Task<Vms.Vm> GetVm(Guid id, IEnumerable<Permissions> blockingPermissions,
-                                       CancellationToken cancellationToken)
+        protected async Task<Vms.Vm> GetVm(Guid id,
+                                           AppSystemPermission[] requiredSystemPermissions,
+                                           AppViewPermission[] requiredViewPermissions,
+                                           AppTeamPermission[] requiredTeamPermissions,
+                                           CancellationToken cancellationToken,
+                                           string errorMessage = "You do not have permission to perform this action")
         {
             var vm = await _vmService.GetAsync(id, cancellationToken);
 
             if (vm == null)
                 throw new EntityNotFoundException<VsphereVirtualMachine>();
 
-            if (blockingPermissions.Any() &&
-                (await _permissionsService.GetPermissions(vm.TeamIds, cancellationToken)).Any(x => blockingPermissions.Contains(x)))
+            if (requiredSystemPermissions.Any() || requiredViewPermissions.Any() || requiredTeamPermissions.Any())
             {
-                throw new ForbiddenException();
+                if (!await _playerService.Can(vm.TeamIds, [], requiredSystemPermissions, requiredViewPermissions, requiredTeamPermissions, cancellationToken))
+                    throw new ForbiddenException(errorMessage);
             }
 
             return vm;

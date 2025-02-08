@@ -6,7 +6,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using System.Runtime.Serialization;
-using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Data;
 using System.Linq;
@@ -46,18 +45,18 @@ namespace Player.Vm.Api.Features.Vms
             private readonly IVsphereService _vsphereService;
             private readonly IPlayerService _playerService;
             private readonly VmContext _dbContext;
-            private readonly IPermissionsService _permissionsService;
+            private readonly IVmService _vmService;
 
             public Handler(
                 IVsphereService vsphereService,
                 IPlayerService playerService,
                 VmContext dbContext,
-                IPermissionsService permissionsService)
+                IVmService vmService)
             {
                 _vsphereService = vsphereService;
                 _playerService = playerService;
                 _dbContext = dbContext;
-                _permissionsService = permissionsService;
+                _vmService = vmService;
             }
 
             public async Task<Response> Handle(Command request, CancellationToken cancellationToken)
@@ -82,11 +81,11 @@ namespace Player.Vm.Api.Features.Vms
                     {
                         errorsDict.Add(id, "Unsupported Operation");
                     }
-                    else if (!await _playerService.CanAccessTeamsAsync(vm.VmTeams.Select(x => x.TeamId), cancellationToken))
+                    else if (!await _vmService.CanAccessVm(vm, cancellationToken))
                     {
                         errorsDict.Add(id, "Unauthorized");
                     }
-                    else if (!await _permissionsService.CanWrite(vm.VmTeams.Select(x => x.TeamId), cancellationToken))
+                    else if (!await _playerService.CanEditTeams(vm.VmTeams.Select(x => x.TeamId), cancellationToken))
                     {
                         errorsDict.Add(id, "Insufficient Permissions");
                     }

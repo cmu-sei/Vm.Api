@@ -15,6 +15,7 @@ using AutoMapper;
 using Player.Vm.Api.Domain.Services;
 using System.Security.Principal;
 using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -46,19 +47,15 @@ namespace Player.Vm.Api.Features.Vsphere
                 IVmService vmService,
                 IMapper mapper,
                 IPlayerService playerService,
-                IPrincipal principal,
-                IPermissionsService permissionsService) :
-                base(mapper, vsphereService, playerService, principal, permissionsService, vmService)
+                IPrincipal principal) :
+                base(mapper, vsphereService, playerService, principal, vmService)
             {
                 _vsphereService = vsphereService;
             }
 
             public async Task<Response> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await base.GetVm(request.Id, Permissions.ReadOnly, cancellationToken);
-
-                if (!await _playerService.CanManageTeamsAsync(vm.TeamIds, false, cancellationToken))
-                    throw new ForbiddenException("You do not have permission to download files from this vm.");
+                var vm = await base.GetVm(request.Id, [], [AppViewPermission.DownloadVmFiles], [], cancellationToken, "You do not have permission to download files from this vm.");
 
                 var url = await _vsphereService.GetVmFileUrl(
                     request.Id,

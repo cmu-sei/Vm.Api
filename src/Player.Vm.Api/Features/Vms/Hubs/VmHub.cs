@@ -201,24 +201,15 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
             foreach (var team in teams)
             {
-                Guid groupId;
-
-                if (team.CanManage)
-                {
-                    groupId = team.ViewId;
-                }
-                else
-                {
-                    groupId = team.Id;
-                }
+                var groupId = await _playerService.GetGroupIdForViewAsync(team.ViewId, Context.ConnectionAborted);
 
                 if (join)
                 {
-                    await Groups.AddToGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId, vmId));
+                    await Groups.AddToGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId.Value, vmId));
                 }
                 else
                 {
-                    await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId, vmId));
+                    await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId.Value, vmId));
                 }
             }
         }

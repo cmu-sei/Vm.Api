@@ -23,12 +23,13 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using AutoMapper.QueryableExtensions;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
     public class Delete
     {
-        [DataContract(Name="DeleteVmUsageLoggingSessionCommand")]
+        [DataContract(Name = "DeleteVmUsageLoggingSessionCommand")]
         public class Command : IRequest
         {
             public Guid Id { get; set; }
@@ -60,8 +61,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 if (entry == null)
                     throw new EntityNotFoundException<VmUsageLoggingSession>();
 
-                if (!(await _playerService.IsSystemAdmin(cancellationToken) ||
-                      await _playerService.IsViewAdmin(entry.ViewId, cancellationToken)))
+                if (!await _playerService.Can([], [entry.ViewId], [AppSystemPermission.ManageViews], [AppViewPermission.ManageView], [], cancellationToken))
                     throw new ForbiddenException("You do not have permission to delete the specified Vm Usage Log");
 
                 _db.VmUsageLoggingSessions.Remove(entry);

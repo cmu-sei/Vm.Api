@@ -16,6 +16,7 @@ using AutoMapper;
 using Player.Vm.Api.Domain.Services;
 using System.Security.Principal;
 using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -41,16 +42,15 @@ namespace Player.Vm.Api.Features.Vsphere
                 IVmService vmService,
                 IMapper mapper,
                 IPlayerService playerService,
-                IPrincipal principal,
-                IPermissionsService permissionsService) :
-                base(mapper, vsphereService, playerService, principal, permissionsService, vmService)
+                IPrincipal principal) :
+                base(mapper, vsphereService, playerService, principal, vmService)
             {
                 _vsphereService = vsphereService;
             }
 
             public async Task<string> Handle(Command request, CancellationToken cancellationToken)
             {
-                await base.GetVm(request.Id, Permissions.ReadOnly, cancellationToken);
+                await base.GetVm(request.Id, [], [AppViewPermission.UploadVmFiles], [], cancellationToken, "You do not have permission to upload files to this vm.");
 
                 foreach (var formFile in request.Files)
                 {

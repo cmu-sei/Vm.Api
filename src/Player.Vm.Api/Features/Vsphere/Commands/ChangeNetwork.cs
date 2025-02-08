@@ -15,6 +15,7 @@ using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Domain.Services;
 using System.Security.Principal;
 using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -40,9 +41,8 @@ namespace Player.Vm.Api.Features.Vsphere
                 IVmService vmService,
                 IMapper mapper,
                 IPlayerService playerService,
-                IPrincipal principal,
-                IPermissionsService permissionsService) :
-                base(mapper, vsphereService, playerService, principal, permissionsService, vmService)
+                IPrincipal principal) :
+                base(mapper, vsphereService, playerService, principal, vmService)
             {
                 _vsphereService = vsphereService;
                 _vmService = vmService;
@@ -51,10 +51,7 @@ namespace Player.Vm.Api.Features.Vsphere
 
             public async Task<VsphereVirtualMachine> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await base.GetVm(request.Id, Permissions.ReadOnly, cancellationToken);
-
-                if (!(await _playerService.CanManageTeamsAsync(vm.TeamIds, false, cancellationToken)))
-                    throw new ForbiddenException("You do not have permission to change networks on this vm.");
+                var vm = await base.GetVm(request.Id, [AppSystemPermission.ManageViews], [AppViewPermission.ManageView], [], cancellationToken);
 
                 await _vsphereService.ReconfigureVm(request.Id, Feature.net, request.Adapter, request.Network);
 

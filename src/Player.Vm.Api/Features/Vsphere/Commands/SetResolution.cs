@@ -37,16 +37,15 @@ namespace Player.Vm.Api.Features.Vsphere
                 IVmService vmService,
                 IMapper mapper,
                 IPlayerService playerService,
-                IPrincipal principal,
-                IPermissionsService permissionsService) :
-                base(mapper, vsphereService, playerService, principal, permissionsService, vmService)
+                IPrincipal principal) :
+                base(mapper, vsphereService, playerService, principal, vmService)
             {
                 _vsphereService = vsphereService;
             }
 
             public async Task<string> Handle(Command request, CancellationToken cancellationToken)
             {
-                await base.GetVm(request.Id, Permissions.ReadOnly, cancellationToken);
+                await base.GetVmForEditing(request.Id, cancellationToken);
 
                 return await _vsphereService.SetResolution(
                     id: request.Id,

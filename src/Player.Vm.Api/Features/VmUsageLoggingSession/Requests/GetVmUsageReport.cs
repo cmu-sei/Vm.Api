@@ -23,13 +23,14 @@ using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vsphere;
+using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Extensions;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
     public class GetVmUsageReport
     {
-        [DataContract(Name="GetVmUsageReportQuery")]
+        [DataContract(Name = "GetVmUsageReportQuery")]
         public class Query : IRequest<List<VmUsageReport>>
         {
             /// <summary>
@@ -73,7 +74,8 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 List<VmUsageReport> vmUsageReportList;
                 var flatVmUsageLogEntryList = await _db.VmUsageLogEntries
                     .Where(e => sessionIdList.Contains(e.SessionId) && e.VmInactiveDT > e.VmActiveDT)
-                    .Select(e => new {
+                    .Select(e => new
+                    {
                         SessionId = e.SessionId,
                         SessionName = e.Session.SessionName,
                         SessionStart = e.Session.SessionStart,
@@ -88,18 +90,21 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                     })
                     .ToListAsync();
                 // non-system admins can only get a report of their own activity
-                if (!await _playerService.IsSystemAdmin(cancellationToken))
+                if (!await _playerService.Can([], [], [AppSystemPermission.ViewViews], [], [], cancellationToken))
                 {
                     flatVmUsageLogEntryList = flatVmUsageLogEntryList
                         .Where(f => f.UserId == _userId)
                         .ToList();
                 }
                 vmUsageReportList = flatVmUsageLogEntryList
-                    .GroupBy(e => new {
-                                e.SessionId,
-                                e.VmId,
-                                e.UserId})
-                    .Select(g => new VmUsageReport {
+                    .GroupBy(e => new
+                    {
+                        e.SessionId,
+                        e.VmId,
+                        e.UserId
+                    })
+                    .Select(g => new VmUsageReport
+                    {
                         SessionId = g.Key.SessionId,
                         SessionName = g.FirstOrDefault().SessionName,
                         SessionStart = g.FirstOrDefault().SessionStart,
@@ -109,7 +114,8 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                         IpAddress = g.FirstOrDefault().IpAddress,
                         UserId = g.Key.UserId,
                         UserName = g.FirstOrDefault().UserName,
-                        MinutesActive = (int)g.Sum(x => x.VmInactiveDT.Subtract(x.VmActiveDT).TotalMinutes) })
+                        MinutesActive = (int)g.Sum(x => x.VmInactiveDT.Subtract(x.VmActiveDT).TotalMinutes)
+                    })
                     .OrderBy(r => r.UserName)
                     .ThenBy(r => r.SessionName)
                     .ThenBy(r => r.VmName)
