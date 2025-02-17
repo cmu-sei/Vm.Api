@@ -354,16 +354,6 @@ namespace Player.Vm.Api.Features.Vms
             var existing = await _context.Maps
                 .ToListAsync(ct);
 
-            if (form.TeamIds != null)
-            {
-                foreach (var m in existing)
-                {
-                    foreach (var id in form.TeamIds)
-                        if (m.TeamIds.Contains(id))
-                            throw new ForbiddenException("Cannot assign multiple maps to a single team");
-                }
-            }
-
             var mapIntermediate = _mapper.Map<VmMap>(form);
             mapIntermediate.ViewId = viewId;
 
