@@ -10,6 +10,7 @@ using DiscUtils.Iso9660;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Options;
 using Swashbuckle.AspNetCore.Annotations;
 
@@ -51,8 +52,13 @@ namespace Player.Vm.Api.Features.Files
 
             if (scope == "view")
             {
-                if (!(await _playerService.CanManageTeamAsync(team.Id, new System.Threading.CancellationToken())))
+                if (!await _playerService.Can([team.Id], [], [], [AppViewPermission.UploadViewIsos], [], new System.Threading.CancellationToken()))
                     throw new InvalidOperationException("You do not have permission to upload public files for this View");
+            }
+            else
+            {
+                if (!await _playerService.Can([team.Id], [], [], [AppViewPermission.UploadViewIsos], [AppTeamPermission.UploadTeamIsos], new System.Threading.CancellationToken()))
+                    throw new InvalidOperationException("You do not have permission to upload files for this Team");
             }
 
             var destPath = Path.Combine(

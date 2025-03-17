@@ -6,54 +6,64 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using System.Runtime.Serialization;
-using Player.Vm.Api.Data;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
-using Player.Vm.Api.Domain.Services;
 using System.Collections.Generic;
 using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Infrastructure.Authorization;
+using Player.Vm.Api.Data;
+using Player.Vm.Api.Domain.Services;
+using Player.Api.Client;
 
-namespace Player.Vm.Api.Features.Vms
+namespace Player.Vm.Api.Features.Vms;
+
+public class GetVmPermissions
 {
-    public class GetVmPermissions
+    [DataContract(Name = "GetVmPermissions")]
+    public class Query : IRequest<VmPermissionResult>
     {
-        [DataContract(Name = "GetVmPermissions")]
-        public class Query : IRequest<IEnumerable<Permissions>>
-        {
-            public Guid Id { get; set; }
-        }
+        public Guid Id { get; set; }
+    }
 
-        public class Handler : IRequestHandler<Query, IEnumerable<Permissions>>
+    public class Handler(VmContext db, IViewService viewService, IPlayerApiClient playerApiClient) : IRequestHandler<Query, VmPermissionResult>
+    {
+        public async Task<VmPermissionResult> Handle(Query request, CancellationToken cancellationToken)
         {
-            private readonly IVmService _vmService;
-            private readonly VmContext _dbContext;
-            private readonly IPermissionsService _permissionsService;
+            var teamIds = await db.VmTeams
+                .Where(x => x.VmId == request.Id)
+                .Select(x => x.TeamId)
+                .ToArrayAsync(cancellationToken);
 
-            public Handler(
-                IVmService vmService,
-                VmContext dbContext,
-                IPermissionsService permissionsService)
+            var viewIds = await viewService.GetViewIdsForTeams(teamIds, cancellationToken);
+
+            var tasks = new List<Task<ICollection<TeamPermissionsClaim>>>();
+
+            foreach (var viewId in viewIds)
             {
-                _vmService = vmService;
-                _dbContext = dbContext;
-                _permissionsService = permissionsService;
+                tasks.Add(playerApiClient.GetMyTeamPermissionsAsync(viewId, null, true));
             }
 
-            public async Task<IEnumerable<Permissions>> Handle(Query request, CancellationToken cancellationToken)
+            await Task.WhenAll(tasks);
+
+            var primaryPermissions = tasks
+                .SelectMany(x => x.Result.Where(y => y.IsPrimary))
+                .SelectMany(x => x.PermissionValues);
+
+            var appViewPermissions = primaryPermissions
+                .Select(x => Enum.TryParse<AppViewPermission>(x, out var p) ? p : (AppViewPermission?)null)
+                .Where(p => p.HasValue)
+                .Select(p => p.Value);
+
+            var appTeamPermissions = primaryPermissions
+                .Select(x => Enum.TryParse<AppTeamPermission>(x, out var p) ? p : (AppTeamPermission?)null)
+                .Where(p => p.HasValue)
+                .Select(p => p.Value);
+
+            return new VmPermissionResult
             {
-                var permissionList = new List<Permissions>();
-
-                var vm = await _dbContext.Vms
-                    .Include(x => x.VmTeams)
-                    .SingleOrDefaultAsync(x => request.Id == x.Id);
-
-                if (await _vmService.CanAccessVm(vm, cancellationToken))
-                {
-                    permissionList.AddRange(await _permissionsService.GetPermissions(vm.VmTeams.Select(x => x.TeamId), cancellationToken));
-                }
-
-                return permissionList;
-            }
+                TeamPermissions = appTeamPermissions.ToArray(),
+                ViewPermissions = appViewPermissions.ToArray()
+            };
         }
     }
 }

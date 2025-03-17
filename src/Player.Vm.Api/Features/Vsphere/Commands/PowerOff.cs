@@ -7,14 +7,12 @@ using System.Threading.Tasks;
 using MediatR;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
-using Player.Vm.Api.Infrastructure.Exceptions;
 using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Features.Shared.Interfaces;
 using Player.Vm.Api.Domain.Services;
 using System.Security.Principal;
-using Player.Vm.Api.Domain.Models;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -36,16 +34,15 @@ namespace Player.Vm.Api.Features.Vsphere
                 IVmService vmService,
                 IMapper mapper,
                 IPlayerService playerService,
-                IPrincipal principal,
-                IPermissionsService permissionsService) :
-                base(mapper, vsphereService, playerService, principal, permissionsService, vmService)
+                IPrincipal principal) :
+                base(mapper, vsphereService, playerService, principal, vmService)
             {
                 _vsphereService = vsphereService;
             }
 
             public async Task<string> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await base.GetVm(request.Id, Permissions.ReadOnly, cancellationToken);
+                var vm = await base.GetVmForEditing(request.Id, cancellationToken);
 
                 return await _vsphereService.PowerOffVm(vm.Id);
             }

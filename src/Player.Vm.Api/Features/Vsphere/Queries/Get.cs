@@ -49,9 +49,8 @@ namespace Player.Vm.Api.Features.Vsphere
                 ILogger<Get> logger,
                 VsphereOptions vsphereOptions,
                 IPrincipal user,
-                IPlayerService playerService,
-                IPermissionsService permissionsService) :
-                base(mapper, vsphereService, playerService, user, permissionsService, vmService)
+                IPlayerService playerService) :
+                base(mapper, vsphereService, playerService, user, vmService)
             {
                 _vmService = vmService;
                 _mapper = mapper;

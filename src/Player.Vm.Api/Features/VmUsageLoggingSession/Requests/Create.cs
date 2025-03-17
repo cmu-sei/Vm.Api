@@ -21,6 +21,7 @@ using Player.Vm.Api.Data;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using System.Collections.Generic;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
@@ -66,8 +67,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
 
             public async Task<VmUsageLoggingSession> Handle(Command request, CancellationToken cancellationToken)
             {
-                if (!(await _playerService.IsSystemAdmin(cancellationToken) ||
-                      await _playerService.IsViewAdmin(request.ViewId, cancellationToken)))
+                if (!await _playerService.Can([], request.ViewId.HasValue ? [request.ViewId.Value] : [], [AppSystemPermission.ManageViews], [AppViewPermission.ManageView], [], cancellationToken))
                     throw new ForbiddenException("You do not have permission to create a Vm Usage Log");
 
                 var loggingSession = _mapper.Map<Domain.Models.VmUsageLoggingSession>(request);

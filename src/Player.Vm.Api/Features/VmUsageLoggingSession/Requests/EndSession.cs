@@ -24,12 +24,13 @@ using Microsoft.EntityFrameworkCore;
 using AutoMapper.QueryableExtensions;
 using System.Text.Json.Serialization;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
     public class EndSession
     {
-        [DataContract(Name="EndVmUsageLoggingSessionCommand")]
+        [DataContract(Name = "EndVmUsageLoggingSessionCommand")]
         public class Command : IRequest<VmUsageLoggingSession>
         {
             /// <summary>
@@ -63,10 +64,9 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 var entry = _db.VmUsageLoggingSessions.FirstOrDefault(e => e.Id == request.Id);
 
                 if (entry == null)
-                    throw new EntityNotFoundException<VmUsageLoggingSession>();                
+                    throw new EntityNotFoundException<VmUsageLoggingSession>();
 
-                if (!(await _playerService.IsSystemAdmin(cancellationToken) ||
-                      await _playerService.IsViewAdmin(entry.ViewId, cancellationToken)))
+                if (!await _playerService.Can([], [entry.ViewId], [AppSystemPermission.ManageViews], [AppViewPermission.ManageView], [], cancellationToken))
                     throw new ForbiddenException("You do not have permission to end the specified Vm Usage Log");
 
                 entry.SessionEnd = DateTimeOffset.UtcNow;

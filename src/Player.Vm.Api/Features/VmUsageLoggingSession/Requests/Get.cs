@@ -23,12 +23,13 @@ using System.Security.Claims;
 using System.Security.Principal;
 using Microsoft.AspNetCore.Authorization;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
     public class Get
     {
-        [DataContract(Name="GetVmUsageLoggingSessionQuery")]
+        [DataContract(Name = "GetVmUsageLoggingSessionQuery")]
         public class Query : IRequest<VmUsageLoggingSession>
         {
             /// <summary>
@@ -62,13 +63,12 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 var entry = _db.VmUsageLoggingSessions.FirstOrDefault(e => e.Id == request.Id);
 
                 if (entry == null)
-                    throw new EntityNotFoundException<VmUsageLoggingSession>();                
+                    throw new EntityNotFoundException<VmUsageLoggingSession>();
 
-                if (!(await _playerService.IsSystemAdmin(cancellationToken) ||
-                      await _playerService.IsViewAdmin(entry.ViewId, cancellationToken)))
+                if (!await _playerService.Can([], [entry.ViewId], [AppSystemPermission.ViewViews], [AppViewPermission.ViewView], [], cancellationToken))
                     throw new ForbiddenException("You do not have permission to view the specified Vm Usage Log");
 
-                return _mapper.Map<VmUsageLoggingSession>(entry);;
+                return _mapper.Map<VmUsageLoggingSession>(entry); ;
             }
         }
     }

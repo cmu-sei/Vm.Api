@@ -2,7 +2,9 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Caching.Memory;
 using Player.Api.Client;
+using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Extensions;
 using System;
 using System.Collections.Generic;
@@ -14,31 +16,36 @@ namespace Player.Vm.Api.Domain.Services
 {
     public interface IPlayerService
     {
-        Task<bool> IsSystemAdmin(CancellationToken ct);
-        Task<bool> IsViewAdmin(Nullable<Guid> viewId, CancellationToken ct);
-        Task<bool> CanManageTeamsAsync(IEnumerable<Guid> teamIds, bool all, CancellationToken ct);
-        Task<bool> CanManageTeamAsync(Guid teamId, CancellationToken ct);
-        Task<bool> CanAccessTeamsAsync(IEnumerable<Guid> teamIds, CancellationToken ct);
-        Task<bool> CanAccessTeamAsync(Guid teamId, CancellationToken ct);
         Task<IEnumerable<Team>> GetTeamsByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct);
         Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct);
         Task<Team> GetTeamById(Guid id);
-        Task<IEnumerable<Permission>> GetPermissionsByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<User> GetUserById(Guid id, CancellationToken ct);
         Task<IEnumerable<User>> GetUsersByTeamId(Guid teamId, CancellationToken ct);
+
+        Task<bool> CanManageTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<bool> CanViewTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<bool> CanEditTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
+
+        Task<bool> Can(IEnumerable<Guid> teamIds,
+                       IEnumerable<Guid> viewIds,
+                       AppSystemPermission[] requiredSystemPermissions,
+                       AppViewPermission[] requiredViewPermissions,
+                       AppTeamPermission[] requiredTeamPermissions,
+                       CancellationToken ct);
     }
 
     public class PlayerService : IPlayerService
     {
         private readonly IPlayerApiClient _playerApiClient;
         private readonly Guid _userId;
-        private Dictionary<Guid, Team> _teamCache;
+        private readonly IViewService _viewService;
+        private readonly IMemoryCache _cache;
+        private Dictionary<Guid, ICollection<TeamPermissionsClaim>> _teamPermissionsCache = new();
 
-        public PlayerService(IHttpContextAccessor httpContextAccessor, IPlayerApiClient playerApiClient)
+        public PlayerService(IHttpContextAccessor httpContextAccessor, IPlayerApiClient playerApiClient, IViewService viewService, IMemoryCache cache)
         {
-            _teamCache = new Dictionary<Guid, Team>();
             try
             {
                 _userId = httpContextAccessor.HttpContext.User.GetId();
@@ -48,138 +55,112 @@ namespace Player.Vm.Api.Domain.Services
                 _userId = Guid.Empty;
             }
             _playerApiClient = playerApiClient;
+            _viewService = viewService;
+            _cache = cache;
         }
 
-        public async Task<bool> IsSystemAdmin(CancellationToken ct)
+        public async Task<bool> CanManageTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
         {
-            var user = await _playerApiClient.GetUserAsync(_userId);
-
-            return user.IsSystemAdmin;
+            return await Can(teamIds, null, [AppSystemPermission.ManageViews], [AppViewPermission.ManageView], [], ct);
         }
 
-        public async Task<bool> IsViewAdmin(Nullable<Guid> viewId, CancellationToken ct)
+        public async Task<bool> CanViewTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
         {
-            if (viewId == null)
+            return await Can(teamIds, null, [AppSystemPermission.ViewViews], [AppViewPermission.ViewView], [AppTeamPermission.ViewTeam], ct);
+        }
+
+        public async Task<bool> CanEditTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
+        {
+            return await Can(teamIds, null, [AppSystemPermission.EditViews], [AppViewPermission.EditView], [AppTeamPermission.EditTeam], ct);
+        }
+
+        public async Task<bool> Can(IEnumerable<Guid> teamIds,
+                       IEnumerable<Guid> viewIds,
+                       AppSystemPermission[] requiredSystemPermissions,
+                       AppViewPermission[] requiredViewPermissions,
+                       AppTeamPermission[] requiredTeamPermissions,
+                       CancellationToken ct)
+        {
+            ICollection<string> systemPermissions;
+
+            if (!_cache.TryGetValue(_userId, out systemPermissions))
             {
-                return false;
+                systemPermissions = await _playerApiClient.GetMyPermissionsAsync(ct);
+                _cache.Set(_userId, systemPermissions, new MemoryCacheEntryOptions().SetAbsoluteExpiration(TimeSpan.FromMinutes(1)));
             }
 
-            var permissions = await _playerApiClient.GetUserViewPermissionsAsync((Guid)viewId, _userId, ct);
+            var appSystemPermissions = systemPermissions
+                .Select(x => Enum.TryParse<AppSystemPermission>(x, out var p) ? p : (AppSystemPermission?)null)
+                .Where(p => p.HasValue)
+                .Select(p => p.Value);
 
-            if (permissions.Any(p => p.Key == "ViewAdmin" && p.Value == "true"))
-            {
+            if (appSystemPermissions.Intersect(requiredSystemPermissions).Any())
                 return true;
-            }
-            else
+
+            List<Guid> allViewIds = new(viewIds ?? []);
+
+            if (teamIds.Any())
             {
-                return false;
+                allViewIds.AddRange(await _viewService.GetViewIdsForTeams(teamIds, ct));
             }
-        }
 
-        public async Task<bool> CanManageTeamsAsync(IEnumerable<Guid> teamIds, bool all, CancellationToken ct)
-        {
-            var teamDict = new Dictionary<Guid, bool>();
-
-            foreach (var teamId in teamIds)
+            foreach (var viewId in allViewIds)
             {
-                teamDict.Add(teamId, false);
+                ICollection<TeamPermissionsClaim> teamPermissionsClaims;
 
-                try
+                if (!_teamPermissionsCache.TryGetValue(viewId, out teamPermissionsClaims))
                 {
-                    Team team;
-
-                    if (!_teamCache.TryGetValue(teamId, out team))
-                    {
-                        team = await GetTeamById(teamId);
-
-                        if (team == null)
-                            continue;
-
-                        _teamCache.Add(teamId, team);
-                    }
-
-                    if (team.CanManage)
-                    {
-                        teamDict[teamId] = true;
-
-                        if (!all)
-                            return true;
-                    }
+                    teamPermissionsClaims = await _playerApiClient.GetMyTeamPermissionsAsync(viewId, null, true);
+                    _teamPermissionsCache.Add(viewId, teamPermissionsClaims);
                 }
-                catch (Exception)
+
+                if (teamPermissionsClaims != null)
                 {
+                    // Check View Permissions of all Teams in the View
+                    var appViewPermissions = teamPermissionsClaims
+                        .SelectMany(x => x.PermissionValues)
+                        .Select(x => Enum.TryParse<AppViewPermission>(x, out var p) ? p : (AppViewPermission?)null)
+                        .Where(p => p.HasValue)
+                        .Select(p => p.Value);
 
-                }
-            }
-
-            return !teamDict.Values.Any(v => v == false);
-        }
-
-        public async Task<bool> CanManageTeamAsync(Guid teamId, CancellationToken ct)
-        {
-            return await CanManageTeamsAsync(new List<Guid> { teamId }, true, ct);
-        }
-
-        public async Task<bool> CanAccessTeamsAsync(IEnumerable<Guid> teamIds, CancellationToken ct)
-        {
-            foreach (var teamId in teamIds)
-            {
-                try
-                {
-                    Team team;
-
-                    if (!_teamCache.TryGetValue(teamId, out team))
+                    if (appViewPermissions.Intersect(requiredViewPermissions).Any())
                     {
-                        team = await GetTeamById(teamId);
-
-                        if (team == null)
-                            continue;
-
-                        _teamCache.Add(teamId, team);
-                    }
-
-                    if (team.CanManage || team.IsPrimary)
                         return true;
+                    }
                 }
-                catch (Exception)
+            }
+
+            foreach (var teamId in teamIds)
+            {
+                var viewId = await _viewService.GetViewIdForTeam(teamId, ct);
+                var viewPermissions = _teamPermissionsCache.Where(x => x.Key == viewId).FirstOrDefault().Value;
+                var teamPermissionClaim = viewPermissions.Where(x => x.TeamId == teamId).FirstOrDefault();
+
+                if (teamPermissionClaim != null)
                 {
+                    // Check Team Permissions of just the specified Team
+                    var appTeamPermissions = teamPermissionClaim?.PermissionValues
+                        .Select(x => Enum.TryParse<AppTeamPermission>(x, out var p) ? p : (AppTeamPermission?)null)
+                        .Where(p => p.HasValue)
+                        .Select(p => p.Value) ?? [];
+
+                    if (appTeamPermissions.Intersect(requiredTeamPermissions).Any())
+                        return true;
                 }
             }
 
             return false;
         }
 
-        public async Task<bool> CanAccessTeamAsync(Guid teamId, CancellationToken ct)
-        {
-            return await CanAccessTeamsAsync(new List<Guid> { teamId }, ct);
-        }
-
         public async Task<IEnumerable<Team>> GetTeamsByViewIdAsync(Guid viewId, CancellationToken ct)
         {
             var teams = await _playerApiClient.GetUserViewTeamsAsync(viewId, _userId, ct);
-
-            foreach (Team team in teams)
-            {
-                if (!_teamCache.ContainsKey(team.Id))
-                {
-                    _teamCache.Add(team.Id, team);
-                }
-            }
-
-            return teams.Where(t => t.IsPrimary || t.CanManage);
+            return teams;
         }
 
         public async Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct)
         {
             var teams = await _playerApiClient.GetUserViewTeamsAsync(viewId, _userId, ct);
-
-            foreach (Team team in teams)
-            {
-                if (!_teamCache.ContainsKey(team.Id))
-                {
-                    _teamCache.Add(team.Id, team);
-                }
-            }
 
             return teams
                 .Where(t => t.IsPrimary)
@@ -200,36 +181,38 @@ namespace Player.Vm.Api.Domain.Services
 
         public async Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct)
         {
-            var permissions = await _playerApiClient.GetUserViewPermissionsAsync(viewId, _userId, ct);
+            Guid? groupId = null;
+            var permissions = await _playerApiClient.GetMyTeamPermissionsAsync(viewId, null, null, ct);
 
-            if (permissions.Any(p => p.Key == "ViewAdmin" && p.Value == "true"))
+            if (permissions != null)
             {
-                return viewId;
-            }
+                var appViewPermissions = permissions
+                    .SelectMany(x => x.PermissionValues)
+                    .Select(x => Enum.TryParse<AppViewPermission>(x, out var p) ? p : (AppViewPermission?)null)
+                    .Where(p => p.HasValue)
+                    .Select(p => p.Value);
 
-            var teamMembership = permissions.Where(p => p.Key == "TeamMember").FirstOrDefault();
-            Guid teamId;
-
-            if (teamMembership != null)
-            {
-                if (Guid.TryParse(teamMembership.Value, out teamId))
+                if (appViewPermissions.Contains(AppViewPermission.ViewView))
                 {
-                    return teamId;
+                    groupId = viewId;
+                }
+                else
+                {
+                    var primaryTeamPermissions = permissions.Where(x => x.IsPrimary).FirstOrDefault();
+
+                    if (primaryTeamPermissions != null)
+                    {
+                        groupId = primaryTeamPermissions.TeamId;
+                    }
                 }
             }
 
-            return null;
+            return groupId;
         }
 
         public async Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct)
         {
             return await _playerApiClient.GetViewAsync(viewId, ct);
-        }
-
-        public async Task<IEnumerable<Permission>> GetPermissionsByViewIdAsync(Guid viewId, CancellationToken ct)
-        {
-            var permissions = await _playerApiClient.GetUserViewPermissionsAsync(viewId, _userId, ct);
-            return permissions;
         }
 
         public async Task<User> GetUserById(Guid id, CancellationToken ct)

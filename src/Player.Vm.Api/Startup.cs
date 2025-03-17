@@ -39,6 +39,7 @@ using Player.Vm.Api.Infrastructure.ClaimsTransformers;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Proxmox.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api;
 
@@ -270,13 +271,13 @@ public class Startup
         services.AddScoped<IVmService, VmService>();
         services.AddScoped<IPlayerService, PlayerService>();
         services.AddScoped<IViewService, ViewService>();
-        services.AddScoped<IPermissionsService, PermissionsService>();
         services.AddSingleton<CallbackBackgroundService>();
         services.AddSingleton<IHostedService>(x => x.GetService<CallbackBackgroundService>());
         services.AddSingleton<ICallbackBackgroundService>(x => x.GetService<CallbackBackgroundService>());
         services.AddSingleton<IAuthenticationService, AuthenticationService>();
         services.AddSingleton<IActiveVirtualMachineService, ActiveVirtualMachineService>();
         services.AddScoped<Microsoft.AspNetCore.Authentication.IClaimsTransformation, ClaimsTransformer>();
+        services.AddScoped<IIdentityResolver, IdentityResolver>();
 
         // Vsphere Services
         services.AddSingleton<ConnectionService>();

@@ -26,12 +26,13 @@ using System.Security.Claims;
 using System.Security.Principal;
 using Microsoft.AspNetCore.Authorization;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
     public class GetVmUsageCsvFile
     {
-        [DataContract(Name="GetVmUsageCsvFileQuery")]
+        [DataContract(Name = "GetVmUsageCsvFileQuery")]
         public class Query : IRequest<FileResult>
         {
             /// <summary>
@@ -67,11 +68,10 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 if (entry == null)
                     throw new EntityNotFoundException<VmUsageLoggingSession>();
 
-                if (!(await _playerService.IsSystemAdmin(cancellationToken) ||
-                      await _playerService.IsViewAdmin(entry.ViewId, cancellationToken)))
+                if (!await _playerService.Can([], [entry.ViewId], [AppSystemPermission.ViewViews], [AppViewPermission.ViewView], [], cancellationToken))
                     throw new ForbiddenException("You do not have permission to view the specified Vm Usage Log");
 
-                var vmUsageLogEntries =  await _db.VmUsageLogEntries
+                var vmUsageLogEntries = await _db.VmUsageLogEntries
                     .ProjectTo<VmUsageLogEntry>(_mapper.ConfigurationProvider)
                     .Where(e => e.SessionId == request.SessionId)
                     .OrderByDescending(e => e.VmActiveDT)
@@ -87,10 +87,11 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                     fileName = entry.Id + ".csv";
                 }
 
-                string data = string.Join("\r\n", Array.ConvertAll(vmUsageLogEntries, s => {
+                string data = string.Join("\r\n", Array.ConvertAll(vmUsageLogEntries, s =>
+                {
                     return s.SessionId + ", " +
                         s.Id + ", " +
-                        s.VmId  + ", " +
+                        s.VmId + ", " +
                         s.VmName + ", " +
                         s.IpAddress.Replace(", ", " ") + ", " +
                         s.UserId + ", " +

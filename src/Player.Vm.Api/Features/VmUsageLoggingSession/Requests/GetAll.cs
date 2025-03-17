@@ -23,12 +23,13 @@ using Player.Vm.Api.Data;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Domain.Services;
 using System.Linq;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.VmUsageLoggingSession
 {
     public class GetAll
     {
-        [DataContract(Name="GetVmUsageLoggingSessionsQuery")]
+        [DataContract(Name = "GetVmUsageLoggingSessionsQuery")]
         public class Query : IRequest<VmUsageLoggingSession[]>
         {
             /// <summary>
@@ -61,11 +62,9 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
 
             public async Task<VmUsageLoggingSession[]> Handle(Query request, CancellationToken cancellationToken)
             {
-                var isSystemAdmin = await _playerService.IsSystemAdmin(cancellationToken);
-                if (!((request.ViewId == null && isSystemAdmin) ||
-                     (request.ViewId != null && (isSystemAdmin || await _playerService.IsViewAdmin(request.ViewId, cancellationToken)))))
+                if (!await _playerService.Can([], request.ViewId.HasValue ? [request.ViewId.Value] : [], [AppSystemPermission.ViewViews], [AppViewPermission.ViewView], [], cancellationToken))
                     throw new ForbiddenException("You do not have permission to view Vm Usage Logs.");
-                
+
                 if (request.OnlyActive == true)
                 {
                     if (request.ViewId == null)
@@ -80,10 +79,10 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                     {
                         return await _db.VmUsageLoggingSessions
                             .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
-                            .Where(s => s.ViewId == request.ViewId && 
+                            .Where(s => s.ViewId == request.ViewId &&
                                         (s.SessionEnd <= DateTimeOffset.MinValue || s.SessionEnd > DateTimeOffset.UtcNow))
                             .OrderByDescending(s => s.CreatedDt)
-                            .ToArrayAsync();                        
+                            .ToArrayAsync();
                     }
 
                 }

@@ -12,6 +12,8 @@ using Swashbuckle.AspNetCore.Annotations;
 using Player.Vm.Api.Domain.Vsphere.Models;
 using MediatR;
 using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Infrastructure.Authorization;
+using Player.Vm.Api.Infrastructure.Exceptions;
 
 namespace Player.Vm.Api.Features.Vms
 {
@@ -64,28 +66,13 @@ namespace Player.Vm.Api.Features.Vms
         }
 
         /// <summary>
-        /// Retrieve vm permissions by view
-        /// </summary>
-        /// <param name="id">The Id of the View</param>
-        /// <param name="ct"></param>
-        /// <returns></returns>
-        [HttpGet("views/{id}/permissions")]
-        [ProducesResponseType(typeof(IEnumerable<Permissions>), (int)HttpStatusCode.OK)]
-        [SwaggerOperation(OperationId = "getViewPermissions")]
-        public async Task<IActionResult> GetViewPermissions(Guid id, CancellationToken ct)
-        {
-            var result = await _mediator.Send(new GetViewPermissions.Query { Id = id }, ct);
-            return Ok(result);
-        }
-
-        /// <summary>
         /// Retrieve permissions of a single Vm by Id
         /// </summary>
         /// <param name="id">The Id of the Vm</param>
         /// <param name="ct"></param>
         /// <returns></returns>
         [HttpGet("vms/{id}/permissions")]
-        [ProducesResponseType(typeof(IEnumerable<Permissions>), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(VmPermissionResult), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "getVmPermissions")]
         public async Task<IActionResult> GetVmPermissions(Guid id, CancellationToken ct)
         {
