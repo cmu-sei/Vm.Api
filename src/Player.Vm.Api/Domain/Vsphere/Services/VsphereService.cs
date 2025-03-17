@@ -40,6 +40,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<Dictionary<Guid, string>> BulkReboot(Guid[] ids);
         Task<Dictionary<Guid, PowerState>> GetPowerState(IEnumerable<Guid> machineIds);
         Task<IEnumerable<Event>> GetEvents(EventFilterSpec filterSpec, VsphereConnection connection);
+        Task RevertToCurrentSnapshot(Guid vmId);
     }
 
     public class VsphereService : IVsphereService
@@ -290,6 +291,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                             break;
                         case PowerOperation.PowerOn:
                             taskReference = aggregate.Connection.Client.PowerOnVM_TaskAsync(vmReference, null);
+                            break;
+                        case PowerOperation.Revert:
+                            taskReference = aggregate.Connection.Client.RevertToCurrentSnapshot_TaskAsync(vmReference, null, false);
                             break;
                     }
 
@@ -1189,6 +1193,16 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return events;
         }
 
+        public async Task RevertToCurrentSnapshot(Guid vmId)
+        {
+            var aggregate = await this.GetVm(vmId);
+            var task = await aggregate.Connection.Client.RevertToCurrentSnapshot_TaskAsync(aggregate.MachineReference, null, false);
+            var taskInfo = await WaitForVimTask(task, aggregate.Connection);
+
+            if (taskInfo.state == TaskInfoState.error)
+                throw new Exception(taskInfo.error.localizedMessage);
+        }
+
         #region Filters
 
         public static PropertyFilterSpec[] TaskFilter(ManagedObjectReference mor)
@@ -1395,9 +1409,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             // retrieve all machine properties we need
             RetrievePropertiesResponse propertiesResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(
                 aggregate.Connection.Props,
-                VmFilter(machineReference, "name summary.guest.toolsStatus summary.runtime.host summary.runtime.powerState config.hardware.device"));
+                VmFilter(machineReference, "name summary.guest.toolsStatus summary.runtime.host summary.runtime.powerState config.hardware.device snapshot"));
 
             VimClient.ObjectContent vm = propertiesResponse.returnval.FirstOrDefault();
+
+            var snapshots = vm.GetProperty("snapshot") as VirtualMachineSnapshotInfo;
 
             var toolsStatus = vm.GetProperty("summary.guest.toolsStatus") as Nullable<VirtualMachineToolsStatus>;
             VirtualMachineToolsStatus vmToolsStatus = VirtualMachineToolsStatus.toolsNotRunning;
@@ -1415,6 +1431,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 Reference = vm.obj,
                 State = (VirtualMachinePowerState)vm.GetProperty("summary.runtime.powerState") == VirtualMachinePowerState.poweredOn ? "on" : "off",
                 VmToolsStatus = vmToolsStatus,
+                HasSnapshot = snapshots == null ? false : snapshots.rootSnapshotList.Any()
             };
 
             return machine;

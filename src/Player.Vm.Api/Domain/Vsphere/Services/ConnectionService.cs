@@ -132,6 +132,7 @@ public class ConnectionService : BackgroundService, IConnectionService
                     vm.PowerState = powerState;
                     vm.IpAddresses = vsphereVirtualMachine.IpAddresses;
                     vm.Type = VmType.Vsphere;
+                    vm.HasSnapshot = vsphereVirtualMachine.HasSnapshot;
                 }
             }
 

@@ -14,7 +14,6 @@ using Microsoft.EntityFrameworkCore;
 using System.Linq;
 using VimClient;
 using System.Collections.Generic;
-using Microsoft.Extensions.Caching.Memory;
 using Player.Vm.Api.Domain.Models;
 using Nito.AsyncEx;
 using Player.Vm.Api.Infrastructure.Extensions;

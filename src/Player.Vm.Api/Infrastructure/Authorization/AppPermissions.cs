@@ -17,7 +17,8 @@ public enum AppViewPermission
     EditView,
     UploadViewIsos,
     DownloadVmFiles,
-    UploadVmFiles
+    UploadVmFiles,
+    RevertVms
 }
 
 public enum AppTeamPermission
@@ -25,5 +26,5 @@ public enum AppTeamPermission
     ViewTeam,
     ManageTeam,
     EditTeam,
-    UploadTeamIsos,
+    UploadTeamIsos
 }

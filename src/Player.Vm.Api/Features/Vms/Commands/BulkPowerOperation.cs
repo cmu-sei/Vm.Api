@@ -16,6 +16,7 @@ using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Services;
 using System.Collections.Generic;
 using Player.Vm.Api.Features.Shared.Interfaces;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.Vms
 {
@@ -85,9 +86,13 @@ namespace Player.Vm.Api.Features.Vms
                     {
                         errorsDict.Add(id, "Unauthorized");
                     }
-                    else if (!await _playerService.CanEditTeams(vm.VmTeams.Select(x => x.TeamId), cancellationToken))
+                    else if (!await CanPerformOperation(vm, request.Operation, cancellationToken))
                     {
                         errorsDict.Add(id, "Insufficient Permissions");
+                    }
+                    else if (request.Operation == PowerOperation.Revert && !vm.HasSnapshot)
+                    {
+                        errorsDict.Add(id, "Virtual Machine does not have a snapshot");
                     }
                     else
                     {
@@ -108,8 +113,8 @@ namespace Player.Vm.Api.Features.Vms
 
                     errorsDict = errorsDict
                         .Concat(results)
-                        .ToLookup(x => x.Key, x => x.Value)
-                        .ToDictionary(x => x.Key, g => g.First());
+                                    .ToLookup(x => x.Key, x => x.Value)
+                                    .ToDictionary(x => x.Key, g => g.First());
                 }
                 else if (request.Operation == PowerOperation.Reboot)
                 {
@@ -117,8 +122,8 @@ namespace Player.Vm.Api.Features.Vms
 
                     errorsDict = errorsDict
                         .Concat(results)
-                        .ToLookup(x => x.Key, x => x.Value)
-                        .ToDictionary(x => x.Key, g => g.First());
+                                        .ToLookup(x => x.Key, x => x.Value)
+                                        .ToDictionary(x => x.Key, g => g.First());
                 }
                 else
                 {
@@ -130,6 +135,18 @@ namespace Player.Vm.Api.Features.Vms
                     Accepted = acceptedList.ToArray(),
                     Errors = errorsDict.Where(x => !string.IsNullOrEmpty(x.Value)).ToDictionary(x => x.Key.ToString(), y => y.Value)
                 };
+            }
+
+            private async Task<bool> CanPerformOperation(Domain.Models.Vm vm, PowerOperation operation, CancellationToken cancellationToken)
+            {
+                if (operation == PowerOperation.Revert)
+                {
+                    return await _playerService.Can(vm.VmTeams.Select(x => x.TeamId), [], [], [AppViewPermission.RevertVms], [], cancellationToken);
+                }
+                else
+                {
+                    return await _playerService.CanEditTeams(vm.VmTeams.Select(x => x.TeamId), cancellationToken);
+                }
             }
         }
     }

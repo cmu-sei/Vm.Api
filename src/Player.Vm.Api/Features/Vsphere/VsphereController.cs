@@ -86,6 +86,18 @@ namespace Player.Vm.Api.Features.Vsphere
         }
 
         /// <summary>
+        /// Revert to the current snapshot of a vsphere virtual machine
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/revert")]
+        [ProducesResponseType((int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "revertVsphereVirtualMachine")]
+        public async Task<IActionResult> Revert([FromRoute] Guid id)
+        {
+            await _mediator.Send(new Revert.Command { Id = id });
+            return Ok();
+        }
+
+        /// <summary>
         /// Get tools status of a vsphere virtual machine
         /// </summary>
         [HttpGet("vms/vsphere/{id}/tools")]
