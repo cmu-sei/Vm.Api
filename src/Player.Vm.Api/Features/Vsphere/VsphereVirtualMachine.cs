@@ -31,5 +31,6 @@ namespace Player.Vm.Api.Features.Vsphere
         public List<string> AllowedNetworks { get; set; }
 
         public VirtualMachineToolsStatus VmToolsStatus { get; set; }
+        public bool HasSnapshot { get; set; }
     }
 }

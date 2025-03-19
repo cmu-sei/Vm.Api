@@ -281,6 +281,19 @@ namespace Player.Vm.Api.Features.Vms
         }
 
         /// <summary>
+        /// Revert multiple Virtual Machines
+        /// </summary>
+        [HttpPost("vms/actions/revert")]
+        [ProducesResponseType(typeof(BulkPowerOperation.Response), (int)HttpStatusCode.Accepted)]
+        [SwaggerOperation(OperationId = "bulkRevert")]
+        public async Task<IActionResult> BulkRevert(BulkPowerOperation.Command command)
+        {
+            command.Operation = PowerOperation.Revert;
+            var result = await _mediator.Send(command);
+            return Accepted(result);
+        }
+
+        /// <summary>
         /// Add a new map to a view
         /// </summary>
         /// <param name="viewId">The guid of the view to add the map to</param>

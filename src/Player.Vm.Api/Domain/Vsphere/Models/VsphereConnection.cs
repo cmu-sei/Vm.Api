@@ -308,7 +308,7 @@ public class VsphereConnection
                 new PropertySpec
                 {
                     type = "VirtualMachine",
-                    pathSet = new string[] { "name", "config.uuid", "summary.runtime.powerState", "guest.net" }
+                    pathSet = new string[] { "name", "config.uuid", "summary.runtime.powerState", "guest.net", "snapshot" }
                 },
 
                 new PropertySpec
@@ -375,6 +375,8 @@ public class VsphereConnection
                     continue;
                 }
 
+                var snapshots = vm.GetProperty("snapshot") as VirtualMachineSnapshotInfo;
+
                 var toolsStatus = vm.GetProperty("summary.guest.toolsStatus") as Nullable<VirtualMachineToolsStatus>;
                 VirtualMachineToolsStatus vmToolsStatus = VirtualMachineToolsStatus.toolsNotRunning;
                 if (toolsStatus != null)
@@ -391,7 +393,8 @@ public class VsphereConnection
                     Reference = vm.obj,
                     State = (VirtualMachinePowerState)vm.GetProperty("summary.runtime.powerState") == VirtualMachinePowerState.poweredOn ? "on" : "off",
                     VmToolsStatus = vmToolsStatus,
-                    IpAddresses = ((GuestNicInfo[])vm.GetProperty("guest.net")).Where(x => x.ipAddress != null).SelectMany(x => x.ipAddress).ToArray()
+                    IpAddresses = ((GuestNicInfo[])vm.GetProperty("guest.net")).Where(x => x.ipAddress != null).SelectMany(x => x.ipAddress).ToArray(),
+                    HasSnapshot = snapshots == null ? false : snapshots.rootSnapshotList.Any()
                 };
 
                 vsphereVirtualMachines.Add(virtualMachine);

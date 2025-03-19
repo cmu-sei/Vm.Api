@@ -38,6 +38,7 @@ namespace Player.Vm.Api.Domain.Models
         public VmType Type { get; set; }
 
         public bool Embeddable { get; set; } = true;
+        public bool HasSnapshot { get; set; }
 
         public ConsoleConnectionInfo ConsoleConnectionInfo { get; set; }
 

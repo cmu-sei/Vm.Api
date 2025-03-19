@@ -81,5 +81,10 @@ namespace Player.Vm.Api.Features.Vms
         /// If false, only allow opening this VM in a new tab
         /// </summary>
         public bool Embeddable { get; set; }
+
+        /// <summary>
+        /// True if this VM has at least one snapshot. Currently Supported for Vsphere only.
+        /// </summary>
+        public bool HasSnapshot { get; set; }
     }
 }

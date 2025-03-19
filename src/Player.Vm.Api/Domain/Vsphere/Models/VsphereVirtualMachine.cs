@@ -24,5 +24,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Models
         public VirtualDevice[] Devices { get; set; }
 
         public string[] IpAddresses { get; set; }
+        public bool HasSnapshot { get; set; }
     }
 }
