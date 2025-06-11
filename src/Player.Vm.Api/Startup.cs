@@ -310,8 +310,7 @@ public class Startup
         services.AddMemoryCache();
 
         services.AddApiClients(identityClientOptions: _identityClientOptions, clientOptions: _clientOptions);
-        var telemetryInstance = new TelemetryService();
-        services.AddSingleton(telemetryInstance);
+        services.AddSingleton<TelemetryService>();
         var metricsBuilder = services.AddOpenTelemetry()
             .WithMetrics(builder =>
             {
@@ -319,7 +318,7 @@ public class Startup
                     .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService("TelemetryService"))
                     .AddMeter
                     (
-                        telemetryInstance.VmConsolesMeter.Name
+                        TelemetryService.VmConsolesMeterName
                     )
                     .AddPrometheusExporter();
                 if (_telemetryOptions.AddAspNetCoreInstrumentation)

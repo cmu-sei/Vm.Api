@@ -11,7 +11,8 @@ namespace Player.Vm.Api.Domain.Services
 
     public class TelemetryService : ITelemetryService
     {
-        public  readonly Meter VmConsolesMeter = new Meter("cmu_sei_player_vm_consoles", "1.0");
+        public const string VmConsolesMeterName = "cmu_sei_player_vm_consoles";
+        public  readonly Meter VmConsolesMeter = new Meter(VmConsolesMeterName, "1.0");
         public  Gauge<int> PlayerViewActiveConsoles;
         public Counter<int> ConsoleAccessCounter;
 

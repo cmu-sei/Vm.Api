@@ -91,7 +91,7 @@ namespace Player.Vm.Api.Domain.Services
             if (!_cache.TryGetValue(viewId, out teamIds))
             {
                 teamIds = (await _playerApiClient.GetViewTeamsAsync(viewId, ct)).Select(x => x.Id).ToList();
-                _cache.Set(viewId, teamIds, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromHours(12)));
+                _cache.Set(viewId, teamIds, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromMinutes(15)));
             }
 
             return teamIds;
@@ -104,7 +104,7 @@ namespace Player.Vm.Api.Domain.Services
             if (!_cache.TryGetValue(teamId, out teamInfo))
             {
                 teamInfo = await GetTeamInfoFromPlayer(teamId, ct);
-                _cache.Set(teamId, teamInfo, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromHours(12)));
+                _cache.Set(teamId, teamInfo, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromMinutes(15)));
             }
 
             return teamInfo;
