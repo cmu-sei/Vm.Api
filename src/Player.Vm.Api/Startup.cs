@@ -40,6 +40,8 @@ using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Proxmox.Options;
 using Microsoft.IdentityModel.JsonWebTokens;
 using Player.Vm.Api.Infrastructure.Authorization;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
 
 namespace Player.Vm.Api;
 
@@ -51,6 +53,7 @@ public class Startup
     private readonly IdentityClientOptions _identityClientOptions = new();
     private const string _routePrefix = "api";
     private string _pathbase;
+    private readonly TelemetryOptions _telemetryOptions = new();
 
     public IConfiguration Configuration { get; }
 
@@ -61,6 +64,7 @@ public class Startup
         Configuration.Bind("IdentityClient", _identityClientOptions);
         Configuration.Bind("Authorization", _authOptions);
         Configuration.GetSection("SignalR").Bind(_signalROptions);
+        Configuration.GetSection("Telemetry").Bind(_telemetryOptions);
         _pathbase = Configuration["PathBase"];
     }
 
@@ -306,6 +310,43 @@ public class Startup
         services.AddMemoryCache();
 
         services.AddApiClients(identityClientOptions: _identityClientOptions, clientOptions: _clientOptions);
+        services.AddSingleton<TelemetryService>();
+        var metricsBuilder = services.AddOpenTelemetry()
+            .WithMetrics(builder =>
+            {
+                builder
+                    .SetResourceBuilder(ResourceBuilder.CreateDefault().AddService("TelemetryService"))
+                    .AddMeter
+                    (
+                        TelemetryService.VmConsolesMeterName
+                    )
+                    .AddPrometheusExporter();
+                if (_telemetryOptions.AddAspNetCoreInstrumentation)
+                {
+                    builder.AddAspNetCoreInstrumentation();
+                }
+                if (_telemetryOptions.AddHttpClientInstrumentation)
+                {
+                    builder.AddHttpClientInstrumentation();
+                }
+                if (_telemetryOptions.UseMeterMicrosoftAspNetCoreHosting)
+                {
+                    builder.AddMeter("Microsoft.AspNetCore.Hosting");
+                }
+                if (_telemetryOptions.UseMeterMicrosoftAspNetCoreServerKestrel)
+                {
+                    builder.AddMeter("Microsoft.AspNetCore.Server.Kestrel");
+                }
+                if (_telemetryOptions.UseMeterSystemNetHttp)
+                {
+                    builder.AddMeter("System.Net.Http");
+                }
+                if (_telemetryOptions.UseMeterSystemNetNameResolution)
+                {
+                    builder.AddMeter("System.Net.NameResolution");
+                }
+            }
+        );
     }
 
     // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
@@ -343,10 +384,10 @@ public class Startup
             {
                 Predicate = (check) => check.Tags.Contains("live"),
             });
+            endpoints.MapPrometheusScrapingEndpoint().RequireAuthorization();
         });
 
         app.UseSwagger();
-
         // Enable middleware to serve swagger-ui (HTML, JS, CSS, etc.), specifying the Swagger JSON endpoint.
         app.UseSwaggerUI(c =>
         {

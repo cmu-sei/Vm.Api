@@ -237,7 +237,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             var teamIds = teams.Select(x => x.Id);
             var groups = GetGroups(teams.Select(x => x.Id), viewIds, userId, vmId);
 
-            var newVmId = _activeVirtualMachineService.SetActiveVirtualMachineForUser(userId, Context.User.GetName(), vmId, Context.ConnectionId, teamIds);
+            var newVmId = await _activeVirtualMachineService.SetActiveVirtualMachineForUser(userId, Context.User.GetName(), vm, Context.ConnectionId, teamIds, Context.ConnectionAborted);
 
             await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, newVmId, userId, DateTimeOffset.UtcNow, teamIds);
 
@@ -268,7 +268,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
         {
             var cancellationToken = CancellationToken.None; // still update other users if this connection disconnects
             var userId = Context.User.GetId();
-            var activeVirtualMachine = _activeVirtualMachineService.UnsetActiveVirtualMachineForUser(userId, Context.User.GetName(), Context.ConnectionId);
+            var activeVirtualMachine = await _activeVirtualMachineService.UnsetActiveVirtualMachineForUser(userId, Context.User.GetName(), Context.ConnectionId, Context.ConnectionAborted);
 
             if (activeVirtualMachine != null)
             {
