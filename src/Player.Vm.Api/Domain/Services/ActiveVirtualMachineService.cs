@@ -9,14 +9,15 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
+using Player.Vm.Api.Features.Vms;
 
 namespace Player.Vm.Api.Domain.Services
 {
     public interface IActiveVirtualMachineService
     {
         ActiveVirtualMachine GetActiveVirtualMachineForUser(Guid userId);
-        Guid SetActiveVirtualMachineForUser(Guid userId, string username, Guid vmId, string connectionId, IEnumerable<Guid> teamIds);
-        ActiveVirtualMachine UnsetActiveVirtualMachineForUser(Guid userId, string username, string connectionId);
+        Task<Guid> SetActiveVirtualMachineForUser(Guid userId, string username, Features.Vms.Vm vm, string connectionId, IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<ActiveVirtualMachine> UnsetActiveVirtualMachineForUser(Guid userId, string username, string connectionId, CancellationToken ct);
         string[] GetActiveVirtualMachineUsers(Guid vmId);
         Task<Dictionary<Guid, IEnumerable<string>>> GetActiveVirtualMachineUsersByGroup(Guid vmId, ActiveVirtualMachine previousVm, CancellationToken ct);
     }
@@ -25,10 +26,13 @@ namespace Player.Vm.Api.Domain.Services
     {
         private readonly ConcurrentDictionary<Guid, ActiveVirtualMachine> _activeVirtualMachines = new ConcurrentDictionary<Guid, ActiveVirtualMachine>();
         private readonly IServiceScopeFactory _scopeFactory;
+        private readonly TelemetryService _telemetryService;
+        private Dictionary<Guid, string> _vmNames = new Dictionary<Guid, string>();
 
-        public ActiveVirtualMachineService(IServiceScopeFactory scopeFactory)
+        public ActiveVirtualMachineService(IServiceScopeFactory scopeFactory, TelemetryService telemetryService)
         {
             _scopeFactory = scopeFactory;
+            _telemetryService = telemetryService;
         }
 
         public ActiveVirtualMachine GetActiveVirtualMachineForUser(Guid userId)
@@ -43,17 +47,22 @@ namespace Player.Vm.Api.Domain.Services
             }
         }
 
-        public Guid SetActiveVirtualMachineForUser(Guid userId, string username, Guid vmId, string connectionId, IEnumerable<Guid> teamIds)
+        public async Task<Guid> SetActiveVirtualMachineForUser(Guid userId, string username, Features.Vms.Vm vm, string connectionId, IEnumerable<Guid> teamIds, CancellationToken ct)
         {
-            var activeVm = new ActiveVirtualMachine(vmId, connectionId, teamIds, username);
+            _vmNames[vm.Id] = vm.Name;
+            var activeVm = new ActiveVirtualMachine(vm.Id, connectionId, teamIds, username);
 
-            return _activeVirtualMachines.AddOrUpdate(userId, activeVm, (userId, v) =>
+            var activeVmId = _activeVirtualMachines.AddOrUpdate(userId, activeVm, (userId, v) =>
             {
                 return activeVm;
             }).VmId;
+
+            await SetViewActiveConsolesTelemetry(teamIds, vm, ct);
+
+            return activeVmId;
         }
 
-        public ActiveVirtualMachine UnsetActiveVirtualMachineForUser(Guid userId, string username, string connectionId)
+        public async Task<ActiveVirtualMachine> UnsetActiveVirtualMachineForUser(Guid userId, string username, string connectionId, CancellationToken ct)
         {
             // Only remove if connectionId matches previous
             // This avoids unsetting when a background tab gets closed/disconnected
@@ -65,6 +74,8 @@ namespace Player.Vm.Api.Domain.Services
 
                 if (collection.Remove(entry))
                 {
+                    await SetViewActiveConsolesTelemetry(currentVm.TeamIds, null, ct);
+
                     return activeVm;
                 }
             }
@@ -142,6 +153,44 @@ namespace Player.Vm.Api.Domain.Services
 
             return groups.AsEnumerable();
         }
+
+        private async Task SetViewActiveConsolesTelemetry(IEnumerable<Guid> teamIds, Features.Vms.Vm vm, CancellationToken ct)
+        {
+            using var scope = _scopeFactory.CreateScope();
+            var viewService = scope.ServiceProvider.GetRequiredService<IViewService>();
+            var teamInfoList = await viewService.GetInfoForTeams(teamIds, ct);
+            foreach (var teamInfo in teamInfoList)
+            {
+                var activeViewConsoles = await GetActiveConsoleCount((Guid)teamInfo.ViewId, viewService, ct);
+                _telemetryService.PlayerViewActiveConsoles.Record(activeViewConsoles.Count,
+                    new KeyValuePair<string, object>("id", teamInfo.ViewId.ToString()),
+                    new KeyValuePair<string, object>("name", teamInfo.ViewName)
+                // new KeyValuePair<string, object>("console_ids", string.Join(",", activeViewConsoles.Ids)),
+                // new KeyValuePair<string, object>("console_names", string.Join(",", activeViewConsoles.Names))
+                );
+                if (vm != null)
+                {
+                    _telemetryService.ConsoleAccessCounter.Add(1,
+                        new KeyValuePair<string, object>("id", vm.Id.ToString()),
+                        new KeyValuePair<string, object>("name", vm.Name.ToString()),
+                        new KeyValuePair<string, object>("view_id", teamInfo.ViewId.ToString()),
+                        new KeyValuePair<string, object>("view_name", teamInfo.ViewName)
+                    );
+                }
+            }
+        }
+
+        private async Task<ActiveViewConsoles> GetActiveConsoleCount(Guid viewId, IViewService viewService, CancellationToken ct)
+        {
+            var activeViewConsoles = new ActiveViewConsoles();
+            var teamIds = await viewService.GetTeamsForView(viewId, ct);
+            var consoles = _activeVirtualMachines.Where(x => x.Value.TeamIds.Any(y => teamIds.Contains(y))).ToList();
+            activeViewConsoles.Count = consoles.Count();
+            activeViewConsoles.Names = consoles.Select(x => _vmNames[x.Value.VmId]).ToList();
+            activeViewConsoles.Ids = consoles.Select(x => x.Value.VmId.ToString()).ToList();
+
+            return activeViewConsoles;
+        }
     }
 
     public class ActiveVirtualMachine : IEquatable<ActiveVirtualMachine>
@@ -170,5 +219,12 @@ namespace Player.Vm.Api.Domain.Services
         {
             return other.VmId.Equals(VmId) && other.ConnectionId.Equals(ConnectionId);
         }
+    }
+
+    public class ActiveViewConsoles
+    {
+        public int Count { get; set; }
+        public List<string> Names { get; set; }
+        public List<string> Ids { get; set; }
     }
 }

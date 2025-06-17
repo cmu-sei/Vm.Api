@@ -11,6 +11,7 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Player.Api.Client;
+using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace Player.Vm.Api.Domain.Services
 {
@@ -18,6 +19,8 @@ namespace Player.Vm.Api.Domain.Services
     {
         Task<Guid?> GetViewIdForTeam(Guid teamId, CancellationToken ct);
         Task<Guid[]> GetViewIdsForTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<TeamInfo[]> GetInfoForTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<List<Guid>> GetTeamsForView(Guid viewId, CancellationToken ct);
     }
 
     public class ViewService : IViewService
@@ -45,34 +48,88 @@ namespace Player.Vm.Api.Domain.Services
 
         public async Task<Guid?> GetViewIdForTeam(Guid teamId, CancellationToken ct)
         {
-            Guid? viewId;
+            var teamInfo = await GetInfoForTeam(teamId, ct);
 
-            if (!_cache.TryGetValue(teamId, out viewId))
-            {
-                var team = await _playerApiClient.GetTeamAsync(teamId, ct);
-                viewId = team.ViewId;
-
-                _cache.Set(teamId, viewId, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromHours(12)));
-            }
-
-            return viewId;
+            return teamInfo.ViewId;
         }
 
         public async Task<Guid[]> GetViewIdsForTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
         {
+            var teamInfoList = await GetInfoForTeams(teamIds, ct);
             var viewIds = new List<Guid>();
-
-            foreach (var teamId in teamIds)
+            foreach (var teamInfo in teamInfoList)
             {
-                var viewId = await this.GetViewIdForTeam(teamId, ct);
-
-                if (viewId.HasValue && !viewIds.Any(x => x == viewId.Value))
+                if (teamInfo.ViewId != null && !viewIds.Any(x => x == teamInfo.ViewId))
                 {
-                    viewIds.Add(viewId.Value);
+                    viewIds.Add((Guid)teamInfo.ViewId);
                 }
             }
 
             return viewIds.ToArray();
         }
+
+        public async Task<TeamInfo[]> GetInfoForTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
+        {
+            var teamInfoList = new List<TeamInfo>();
+
+            foreach (var teamId in teamIds)
+            {
+                var teamInfo = await this.GetInfoForTeam(teamId, ct);
+
+                if (!teamInfoList.Any(x => x.ViewId == teamInfo.ViewId))
+                {
+                    teamInfoList.Add(teamInfo);
+                }
+            }
+
+            return teamInfoList.ToArray();
+        }
+
+        public async Task<List<Guid>> GetTeamsForView(Guid viewId, CancellationToken ct)
+        {
+            var teamIds = new List<Guid>();
+            if (!_cache.TryGetValue(viewId, out teamIds))
+            {
+                teamIds = (await _playerApiClient.GetViewTeamsAsync(viewId, ct)).Select(x => x.Id).ToList();
+                _cache.Set(viewId, teamIds, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromMinutes(15)));
+            }
+
+            return teamIds;
+        }
+
+        private async Task<TeamInfo> GetInfoForTeam(Guid teamId, CancellationToken ct)
+        {
+            TeamInfo teamInfo;
+
+            if (!_cache.TryGetValue(teamId, out teamInfo))
+            {
+                teamInfo = await GetTeamInfoFromPlayer(teamId, ct);
+                _cache.Set(teamId, teamInfo, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromMinutes(15)));
+            }
+
+            return teamInfo;
+        }
+
+        private async Task<TeamInfo> GetTeamInfoFromPlayer(Guid teamId, CancellationToken ct)
+        {
+            var teamInfo = new TeamInfo();
+            var team = await _playerApiClient.GetTeamAsync(teamId, ct);
+            if (team != null)
+            {
+                teamInfo.ViewId = team.ViewId;
+                teamInfo.TeamName = team.Name;
+                var view = await _playerApiClient.GetViewAsync(team.ViewId, ct);
+                teamInfo.ViewName = view.Name;
+            }
+
+            return teamInfo;
+        }
+    }
+
+    public class TeamInfo
+    {
+        public string TeamName { get; set; }
+        public Guid? ViewId { get; set; }
+        public string ViewName { get; set; }
     }
 }
