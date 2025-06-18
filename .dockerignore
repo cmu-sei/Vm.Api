@@ -1,0 +1,10 @@
+# directories
+**/bin/
+**/obj/
+**/out/
+
+# files
+Dockerfile*
+**/*.md
+appsettings.*.json
+**/appsettings.*.json
