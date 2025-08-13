@@ -321,6 +321,14 @@ public class Startup
                         TelemetryService.VmConsolesMeterName
                     )
                     .AddPrometheusExporter();
+                if (_telemetryOptions.AddRuntimeInstrumentation)
+                {
+                    builder.AddRuntimeInstrumentation();
+                }
+                if (_telemetryOptions.AddProcessInstrumentation)
+                {
+                    builder.AddProcessInstrumentation();
+                }
                 if (_telemetryOptions.AddAspNetCoreInstrumentation)
                 {
                     builder.AddAspNetCoreInstrumentation();
