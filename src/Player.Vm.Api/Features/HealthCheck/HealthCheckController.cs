@@ -10,6 +10,7 @@ using Swashbuckle.AspNetCore.Annotations;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using System.Threading;
 using Microsoft.AspNetCore.Authorization;
+using HealthChecks.UI.Client;
 
 namespace Player.Vm.Api.Features.HealthCheck
 {
@@ -35,10 +36,10 @@ namespace Player.Vm.Api.Features.HealthCheck
         [HttpGet("health/live")]
         [ProducesResponseType(typeof(HealthStatus), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "Health_GetLiveliness")]
-        public async Task<IActionResult> GetLiveliness(CancellationToken ct)
+        public async Task GetLiveliness(CancellationToken ct)
         {
-            HealthReport report = await this.healthCheckService.CheckHealthAsync((check) => check.Tags.Contains("live"));
-            return report.Status == HealthStatus.Healthy ? this.Ok(report.Status) : this.StatusCode((int)HttpStatusCode.ServiceUnavailable, report.Status);
+            var report = await this.healthCheckService.CheckHealthAsync((check) => check.Tags.Contains("live"), ct);
+            await UIResponseWriter.WriteHealthCheckUIResponse(HttpContext, report);
         }
 
         /// <summary>
@@ -51,10 +52,10 @@ namespace Player.Vm.Api.Features.HealthCheck
         [HttpGet("health/ready")]
         [ProducesResponseType(typeof(HealthStatus), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "Health_GetReadiness")]
-        public async Task<IActionResult> GetReadiness(CancellationToken ct)
+        public async Task GetReadiness(CancellationToken ct)
         {
-            HealthReport report = await this.healthCheckService.CheckHealthAsync((check) => check.Tags.Contains("ready"));
-            return report.Status == HealthStatus.Healthy ? this.Ok(report.Status) : this.StatusCode((int)HttpStatusCode.ServiceUnavailable, report.Status);
+            HealthReport report = await this.healthCheckService.CheckHealthAsync((check) => check.Tags.Contains("ready"), ct);
+            await UIResponseWriter.WriteHealthCheckUIResponse(HttpContext, report);
         }
     }
 }

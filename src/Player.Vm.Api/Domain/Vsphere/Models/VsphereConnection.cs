@@ -35,12 +35,13 @@ public class VsphereConnection
         }
     }
 
+    public bool Connected { get; private set; }
+
     public VsphereHost Host;
     public VsphereOptions Options;
     private ILogger _logger;
-    private int _count = 0;
     private bool _forceReload = false;
-    private object _lock = new object();
+    private DateTime? LastCacheUpdate;
 
     public ConcurrentDictionary<Guid, ManagedObjectReference> MachineCache = new ConcurrentDictionary<Guid, ManagedObjectReference>();
     public ConcurrentDictionary<string, List<Network>> NetworkCache = new ConcurrentDictionary<string, List<Network>>();
@@ -60,7 +61,7 @@ public class VsphereConnection
 
         try
         {
-            _logger.LogInformation($"Starting Connect Loop for {Host.Address} at {DateTime.UtcNow}");
+            _logger.LogInformation("Starting Connect Loop for {Host} at {Time}", Host.Address, DateTime.UtcNow);
 
             if (!Host.Enabled)
             {
@@ -68,32 +69,31 @@ public class VsphereConnection
             }
             else
             {
-                await Connect();
+                var connected = await Connect();
+                this.Connected = connected;
 
-                if (_count == Options.LoadCacheAfterIterations)
+                if (connected && LastCacheUpdate == null || (DateTime.UtcNow - LastCacheUpdate.Value).TotalMinutes >= Options.LoadCacheAfterMinutes || _forceReload)
                 {
-                    _count = 0;
-                }
-
-                if (_count == 0 || _forceReload)
-                {
-                    lock (_lock)
+                    try
                     {
-                        _forceReload = false;
-                        _count = 0;
+                        machineCache = await LoadCache();
+                        LastCacheUpdate = DateTime.UtcNow;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Exception loading cache for {Host}", Host.Address);
                     }
 
-                    machineCache = await LoadCache();
+                    _forceReload = false;
                 }
 
                 _logger.LogInformation($"Finished Connect Loop for {Host.Address} at {DateTime.UtcNow} with {MachineCache.Count()} Machines");
-                _count++;
             }
         }
         catch (Exception ex)
         {
+            this.Connected = false;
             _logger.LogError(ex, "Exception encountered in ConnectionService loop");
-            _count = 0;
         }
 
         return machineCache;
@@ -101,12 +101,12 @@ public class VsphereConnection
 
     #region Connection Handling
 
-    private async Task Connect()
+    private async Task<bool> Connect()
     {
         // check whether session is expiring
         if (Session != null && (DateTime.Compare(DateTime.UtcNow, Session.lastActiveTime.AddMinutes(Options.ConnectionRefreshIntervalMinutes)) >= 0))
         {
-            _logger.LogDebug("Connect():  Session is more than 20 minutes old");
+            _logger.LogDebug("Connect():  Session is more than {ConnectionRefreshIntervalMinutes} minutes old", Options.ConnectionRefreshIntervalMinutes);
 
             // renew session because it expires at 30 minutes (maybe 120 minutes on newer vc)
             _logger.LogInformation($"Connect():  renewing connection to {Host.Address}...[{Host.Username}]");
@@ -164,7 +164,7 @@ public class VsphereConnection
             try
             {
                 var x = await Client.RetrieveServiceContentAsync(new ManagedObjectReference { type = "ServiceInstance", Value = "ServiceInstance" });
-                return;
+                return true;
             }
             catch (Exception ex)
             {
@@ -200,6 +200,8 @@ public class VsphereConnection
                 _logger.LogError(0, ex, $"Connect():  Failed with " + ex.Message);
             }
         }
+
+        return Client != null;
     }
 
     private async Task<ServiceContent> ConnectToHost(VimPortTypeClient client)

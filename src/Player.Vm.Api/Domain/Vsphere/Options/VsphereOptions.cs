@@ -8,6 +8,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
         public int ConnectionRetryIntervalSeconds { get; set; }
         public int ConnectionRefreshIntervalMinutes { get; set; }
         public int LoadCacheAfterIterations { get; set; }
+        public int LoadCacheAfterMinutes { get; set; }
+        public int ConnectionTimeoutSeconds { get; set; }
         public bool LogConsoleAccess { get; set; }
         public int CheckTaskProgressIntervalMilliseconds { get; set; }
         public int ReCheckTaskProgressIntervalMilliseconds { get; set; }
