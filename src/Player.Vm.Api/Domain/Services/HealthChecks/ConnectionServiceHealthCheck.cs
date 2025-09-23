@@ -3,46 +3,35 @@ Copyright 2022 Carnegie Mellon University. All Rights Reserved.
  Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 */
 
-using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Player.Vm.Api.Domain.Vsphere.Models;
 
 
 namespace Player.Vm.Api.Domain.Services.HealthChecks
 {
     public class ConnectionServiceHealthCheck : IHealthCheck
     {
-        private int _healthAllowance = 90;
-        private DateTime _lastRun = DateTime.Now;
-
-        public int HealthAllowance
-        {
-            get => _healthAllowance;
-            set => _healthAllowance = value;
-        }
-        public DateTime LastRun
-        {
-            get => _lastRun;
-            set => _lastRun = value;
-        }
-        public void CompletedRun()
-        {
-            LastRun = DateTime.Now;
-        }
+        public VsphereConnection[] Connections { get; set; }
+        public bool StartupCheckComplete { get; set; }
 
         public Task<HealthCheckResult> CheckHealthAsync(
             HealthCheckContext context,
             CancellationToken cancellationToken = default(CancellationToken))
         {
-            if ((DateTime.Now - LastRun).TotalSeconds < HealthAllowance)
+            if (!StartupCheckComplete)
             {
-                return Task.FromResult(
-                    HealthCheckResult.Healthy("The Connection Service is responsive."));
+                return Task.FromResult(HealthCheckResult.Unhealthy("Initial connections attempts have not yet been completed."));
             }
 
-            return Task.FromResult(
-                HealthCheckResult.Unhealthy("The Connection Service is not responsive."));
+            if (Connections.Any(x => x.Enabled && !x.Connected))
+            {
+                return Task.FromResult(HealthCheckResult.Degraded("One or more enabled hosts are not connected."));
+            }
+
+            return Task.FromResult(HealthCheckResult.Healthy());
         }
     }
 }
