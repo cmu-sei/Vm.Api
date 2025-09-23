@@ -3,7 +3,7 @@ name: Header Check
 on:
   pull_request:
     branches:
-      - development
+      - main
 
 jobs:
   header-check:
