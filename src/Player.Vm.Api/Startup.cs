@@ -11,7 +11,6 @@ using MediatR;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Builder;
-using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Features;
@@ -41,6 +40,7 @@ using System.Collections.Generic;
 using Player.Vm.Api.Infrastructure.ClaimsTransformers;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Proxmox.Options;
+using Player.Vm.Api.Infrastructure.HttpHandlers;
 
 namespace Player.Vm.Api
 {
@@ -51,6 +51,7 @@ namespace Player.Vm.Api
         private readonly IdentityClientOptions _identityClientOptions = new IdentityClientOptions();
         private const string _routePrefix = "api";
         private string _pathbase;
+        private readonly HealthChecksUIOptions _healthChecksUIOptions = new();
 
         public IConfiguration Configuration { get; }
 
@@ -60,6 +61,7 @@ namespace Player.Vm.Api
             Configuration.Bind("ClientSettings", _clientOptions);
             Configuration.Bind("IdentityClient", _identityClientOptions);
             Configuration.Bind("Authorization", _authOptions);
+            Configuration.GetSection("HealthChecksUI").Bind(_healthChecksUIOptions);
             _pathbase = Configuration["PathBase"];
         }
 
@@ -70,13 +72,23 @@ namespace Player.Vm.Api
             services.AddSingleton<ConnectionServiceHealthCheck>();
             services.AddHealthChecks()
                 .AddCheck<TaskServiceHealthCheck>(
-                    "task_service_responsive",
+                    "task_service",
                     failureStatus: HealthStatus.Unhealthy,
                     tags: new[] { "live" })
                 .AddCheck<ConnectionServiceHealthCheck>(
-                    "connection_service_responsive",
+                    "connection_service",
                     failureStatus: HealthStatus.Unhealthy,
-                    tags: new[] { "live" });
+                    tags: new[] { "ready" });
+
+            if (_healthChecksUIOptions.Enabled)
+            {
+                services
+                    .AddHealthChecksUI(options =>
+                    {
+                        options.UseApiEndpointDelegatingHandler<LocalhostRedirectHandler>();
+                    })
+                    .AddInMemoryStorage();
+            }
 
             var provider = Configuration["Database:Provider"];
             var vmLoggingEnabled = bool.Parse((Configuration["VmUsageLogging:Enabled"]));
@@ -115,16 +127,18 @@ namespace Player.Vm.Api
             }
 
             var connectionString = Configuration.GetConnectionString(Configuration.GetValue<string>("Database:Provider", "Sqlite").Trim());
+            const string dbHealthCheckName = "database";
+            string[] dbHealthCheckTags = new string[] { "ready" };
             switch (provider)
             {
                 case "Sqlite":
-                    services.AddHealthChecks().AddSqlite(connectionString, tags: new[] { "ready", "live" });
+                    services.AddHealthChecks().AddSqlite(connectionString, name: dbHealthCheckName, tags: dbHealthCheckTags);
                     break;
                 case "SqlServer":
-                    services.AddHealthChecks().AddSqlServer(connectionString, tags: new[] { "ready", "live" });
+                    services.AddHealthChecks().AddSqlServer(connectionString, name: dbHealthCheckName, tags: dbHealthCheckTags);
                     break;
                 case "PostgreSQL":
-                    services.AddHealthChecks().AddNpgSql(connectionString, tags: new[] { "ready", "live" });
+                    services.AddHealthChecks().AddNpgSql(connectionString, name: dbHealthCheckName, tags: dbHealthCheckTags);
                     break;
             }
 
@@ -167,6 +181,10 @@ namespace Player.Vm.Api
             services
                 .Configure<ProxmoxOptions>(Configuration.GetSection("Proxmox"))
                 .AddScoped(config => config.GetService<IOptionsSnapshot<ProxmoxOptions>>().Value);
+
+            services.AddOptions()
+                .Configure<HealthChecksUIOptions>(Configuration.GetSection("HealthChecksUI"))
+                .AddScoped(config => config.GetService<IOptionsMonitor<HealthChecksUIOptions>>().CurrentValue);
 
             services.AddCors(options => options.UseConfiguredCors(Configuration.GetSection("CorsPolicy")));
             services.AddMvc()
@@ -274,6 +292,7 @@ namespace Player.Vm.Api
             services.AddSingleton<IAuthenticationService, AuthenticationService>();
             services.AddSingleton<IActiveVirtualMachineService, ActiveVirtualMachineService>();
             services.AddScoped<Microsoft.AspNetCore.Authentication.IClaimsTransformation, ClaimsTransformer>();
+            services.AddTransient<LocalhostRedirectHandler>();
 
             // Vsphere Services
             services.AddSingleton<ConnectionService>();
@@ -325,15 +344,18 @@ namespace Player.Vm.Api
                 endpoints.MapHub<ProgressHub>("/hubs/progress").RequireAuthorization();
                 endpoints.MapHub<VmHub>("/hubs/vm").RequireAuthorization();
 
-                endpoints.MapHealthChecks($"/{_routePrefix}/health/ready", new HealthCheckOptions()
+                if (_healthChecksUIOptions.Enabled)
                 {
-                    Predicate = (check) => check.Tags.Contains("ready"),
-                });
-
-                endpoints.MapHealthChecks($"/{_routePrefix}/health/live", new HealthCheckOptions()
-                {
-                    Predicate = (check) => check.Tags.Contains("live"),
-                });
+                    endpoints.MapHealthChecksUI(options =>
+                    {
+                        options.UIPath = _healthChecksUIOptions.Path;
+                        options.UseRelativeApiPath = false;
+                        options.UseRelativeResourcesPath = false;
+                        options.UseRelativeWebhookPath = false;
+                        options.AddCustomStylesheet("wwwroot/css/healthchecks.css");
+                        options.AsideMenuOpened = false;
+                    });
+                }
             });
 
             app.UseSwagger();

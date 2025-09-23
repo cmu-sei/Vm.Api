@@ -41,12 +41,14 @@ public class ConnectionService : BackgroundService, IConnectionService
     private readonly ILogger<ConnectionService> _logger;
     private readonly IOptionsMonitor<VsphereOptions> _optionsMonitor;
     private readonly IServiceProvider _serviceProvider;
+    private AsyncAutoResetEvent _resetEvent = new(false);
 
-    private AsyncAutoResetEvent _resetEvent = new AsyncAutoResetEvent(false);
     private readonly ConnectionServiceHealthCheck _connectionServiceHealthCheck;
 
-    public ConcurrentDictionary<string, VsphereConnection> _connections = new ConcurrentDictionary<string, VsphereConnection>(); // address to connection
-    public ConcurrentDictionary<Guid, string> _machines = new ConcurrentDictionary<Guid, string>(); // machine to vsphere address
+    public ConcurrentDictionary<string, VsphereConnection> _connections = new(); // address to connection
+    public ConcurrentDictionary<Guid, string> _machines = new(); // machine to vsphere address
+
+    private Dictionary<string, Task<IEnumerable<VsphereVirtualMachine>>> _taskDict = new();
 
     public ConnectionService(
             IOptionsMonitor<VsphereOptions> vsphereOptionsMonitor,
@@ -64,30 +66,71 @@ public class ConnectionService : BackgroundService, IConnectionService
     protected override async Task ExecuteAsync(CancellationToken cancellationToken)
     {
         await Task.Yield();
-
         while (!cancellationToken.IsCancellationRequested)
         {
-            var taskDict = new Dictionary<string, Task<IEnumerable<VsphereVirtualMachine>>>();
-
-            foreach (var host in _optionsMonitor.CurrentValue.Hosts)
+            try
             {
-                // Create or update Host
-                var connection = _connections.GetOrAdd(host.Address, x => new VsphereConnection(host, _optionsMonitor.CurrentValue, _logger));
-                connection.Options = _optionsMonitor.CurrentValue;
-                connection.Host = host;
+                await DoWork(cancellationToken);
+                await _resetEvent.WaitAsync(TimeSpan.FromSeconds(_optionsMonitor.CurrentValue.ConnectionRetryIntervalSeconds), cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Exception in ConnectionService");
+            }
+        }
+    }
 
-                taskDict.Add(connection.Address, connection.Load());
+    private async Task DoWork(CancellationToken cancellationToken)
+    {
+        var options = _optionsMonitor.CurrentValue;
+
+        foreach (var host in options.Hosts)
+        {
+            var connection = _connections.GetOrAdd(host.Address, x => new VsphereConnection(host, options, _logger));
+            connection.Options = options;
+            connection.Host = host;
+
+            if (!_taskDict.ContainsKey(connection.Address))
+            {
+                _taskDict.Add(connection.Address, connection.Load());
+            }
+        }
+
+        var timeout = Task.Delay(TimeSpan.FromSeconds(options.ConnectionTimeoutSeconds), cancellationToken);
+        var allTasks = Task.WhenAll(_taskDict.Values);
+        var completed = await Task.WhenAny(allTasks, timeout);
+        var completedTasks = _taskDict.Where(x => x.Value.IsCompletedSuccessfully).ToDictionary(x => x.Key, x => x.Value);
+        _connectionServiceHealthCheck.StartupCheckComplete = true;
+        _connectionServiceHealthCheck.Connections = _connections.Select(x => x.Value).ToArray();
+
+        var results = new List<VsphereVirtualMachine>();
+
+        foreach (var (key, task) in _taskDict.ToList())
+        {
+            if (!task.IsCompleted)
+            {
+                _logger.LogWarning(task.Exception, "Loading connection for {Host} did not complete in time. It will be checked again in the next loop.", key);
+                continue;
             }
 
-            var result = await Task.WhenAll(taskDict.Values);
-            this.ProcessTasks(taskDict);
+            if (task.IsCompletedSuccessfully)
+            {
+                results.AddRange(task.Result);
+            }
+            else if (task.IsFaulted)
+            {
+                _logger.LogWarning(task.Exception, "Loading connection for {Host} failed", key);
+            }
+            else if (task.IsCanceled)
+            {
+                _logger.LogInformation("Loading connection for {Host} was canceled", key);
+            }
 
-            await this.UpdateVms(result.SelectMany(x => x));
-
-            _connectionServiceHealthCheck.HealthAllowance = _optionsMonitor.CurrentValue.HealthAllowanceSeconds;
-            _connectionServiceHealthCheck.CompletedRun();
-            await _resetEvent.WaitAsync(new TimeSpan(0, 0, _optionsMonitor.CurrentValue.ConnectionRetryIntervalSeconds));
+            _taskDict.Remove(key);
         }
+
+        this.ProcessTasks(completedTasks);
+        await this.UpdateVms(results);
     }
 
     private void ProcessTasks(Dictionary<string, Task<IEnumerable<VsphereVirtualMachine>>> taskDict)
