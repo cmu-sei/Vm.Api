@@ -11,7 +11,7 @@
     "IIS Express": {
       "commandName": "IISExpress",
       "launchBrowser": false,
-      "launchUrl": "swagger",
+      "launchUrl": "api",
       "applicationUrl": "http://localhost:4302/",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
@@ -20,7 +20,7 @@
     "Player.Vm.Api": {
       "commandName": "Project",
       "launchBrowser": false,
-      "launchUrl": "swagger",
+      "launchUrl": "api",
       "environmentVariables": {
         "ASPNETCORE_ENVIRONMENT": "Development"
       },
