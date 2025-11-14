@@ -1,7 +1,7 @@
 # Adapted from https://github.com/dotnet/dotnet-docker/blob/main/samples/aspnetapp/Dockerfile.chiseled
 
 # Build stage
-FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM --platform=$BUILDPLATFORM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 ARG TARGETARCH
 WORKDIR /source
 
@@ -17,7 +17,7 @@ WORKDIR /source/Player.Vm.Api
 RUN dotnet publish -a $TARGETARCH --no-restore -o /app
 
 # Debug Stage
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS debug
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS debug
 ENV DOTNET_HOSTBUILDER__RELOADCONFIGCHANGE=false
 EXPOSE 8080
 WORKDIR /app
@@ -26,7 +26,7 @@ USER $APP_UID
 ENTRYPOINT ["dotnet", "Player.Vm.Api.dll"]
 
 # Production stage
-FROM mcr.microsoft.com/dotnet/aspnet:8.0-noble-chiseled AS prod
+FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS prod
 ARG commit
 ENV COMMIT=$commit
 ENV DOTNET_HOSTBUILDER__RELOADCONFIGCHANGE=false

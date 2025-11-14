@@ -3,7 +3,7 @@
 
 using System.Collections.Generic;
 using Microsoft.AspNetCore.Mvc;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using Swashbuckle.AspNetCore.SwaggerGen;
 
 namespace Player.Vm.Api.Infrastructure.OperationFilters
@@ -15,7 +15,7 @@ namespace Player.Vm.Api.Infrastructure.OperationFilters
             operation.Responses.Add("default", new OpenApiResponse
             {
                 Description = "Problem response",
-                Content = new Dictionary<string, OpenApiMediaType>
+                Content = new Dictionary<string, IOpenApiMediaType>
                 {
                     ["application/json"] = new OpenApiMediaType
                     {

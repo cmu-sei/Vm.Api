@@ -4,11 +4,12 @@
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
-using Microsoft.OpenApi.Models;
+using Microsoft.OpenApi;
 using Player.Api.Client;
 using Player.Vm.Api.Infrastructure.HttpHandlers;
 using Player.Vm.Api.Infrastructure.OperationFilters;
 using Player.Vm.Api.Infrastructure.Options;
+using Swashbuckle.AspNetCore.SwaggerGen;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -52,20 +53,9 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                     }
                 });
 
-                c.AddSecurityRequirement(new OpenApiSecurityRequirement()
+                c.AddSecurityRequirement((document) => new OpenApiSecurityRequirement
                 {
-                    {
-                        new OpenApiSecurityScheme
-                        {
-                            Reference = new OpenApiReference
-                            {
-                                Type = ReferenceType.SecurityScheme,
-                                Id = "oauth2"
-                            },
-                            Scheme = "oauth2"
-                        },
-                        new[] {authOptions.AuthorizationScope}
-                    }
+                    { new OpenApiSecuritySchemeReference("oauth2", document), [authOptions.AuthorizationScope] }
                 });
 
                 c.EnableAnnotations();
