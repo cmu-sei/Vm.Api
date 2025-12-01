@@ -1,0 +1,18 @@
+name: Update Helm Chart
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update Helm chart
+        uses: cmu-sei/Crucible-Github-Actions/actions/update-helm-chart@update-helm-chart-v2
+        with:
+          app_name: Player VM API
+          github_app_id: ${{ secrets.CRUCIBLE_HELM_UPDATE_APP_ID }}
+          github_app_private_key: ${{ secrets.CRUCIBLE_HELM_UPDATE_PRIVATE_KEY }}
+          chart_file: charts/player/charts/vm-api/Chart.yaml
+          parent_chart_file: charts/player/Chart.yaml
