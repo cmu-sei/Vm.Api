@@ -48,8 +48,7 @@ public class ProxmoxService : IProxmoxService
 
     public async Task<ProxmoxConsole> GetConsole(ProxmoxVmInfo info)
     {
-        var vmRef = _pveClient.Nodes[info.Node].Qemu[info.Id];
-        var result = await vmRef.Vncproxy.Vncproxy(websocket: true);
+        var result = await VncProxyCall(info.Node, info.Id, info.Type);
         var success = result.IsSuccessStatusCode;
 
         if (!success)
@@ -64,8 +63,7 @@ public class ProxmoxService : IProxmoxService
                 if (vm.IsRunning)
                 {
                     info.Node = vm.Node;
-                    vmRef = _pveClient.Nodes[vm.Node].Qemu[info.Id];
-                    result = await vmRef.Vncproxy.Vncproxy(websocket: true);
+                    result = await VncProxyCall(info.Node, info.Id, info.Type);
                     success = result.IsSuccessStatusCode;
                 }
             }
@@ -93,6 +91,18 @@ public class ProxmoxService : IProxmoxService
             Ticket = result.Response.data.ticket,
             Url = url
         };
+    }
+
+    private async Task<Result> VncProxyCall(string node, int id, ProxmoxVmType type)
+    {
+        if (type == ProxmoxVmType.LXC)
+        {
+            return await _pveClient.Nodes[node].Lxc[id].Vncproxy.Vncproxy(websocket: true);
+        }
+        else
+        {
+            return await _pveClient.Nodes[node].Qemu[id].Vncproxy.Vncproxy(websocket: true);
+        }
     }
 
     public async Task<IEnumerable<IClusterResourceVm>> GetVms()
