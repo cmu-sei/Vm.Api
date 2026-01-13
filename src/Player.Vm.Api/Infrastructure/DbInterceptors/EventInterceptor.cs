@@ -7,11 +7,9 @@ using System.Data.Common;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using DiscUtils;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
-using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Events;
@@ -27,36 +25,34 @@ namespace Player.Vm.Api.Infrastructure.DbInterceptors;
 /// </summary>
 public class EventInterceptor : DbTransactionInterceptor, ISaveChangesInterceptor
 {
-    private readonly IServiceProvider _serviceProvider;
     private readonly ILogger<EventInterceptor> _logger;
 
     private List<Entry> Entries { get; set; } = new List<Entry>();
 
-    public EventInterceptor(
-        IServiceProvider serviceProvider,
-        ILogger<EventInterceptor> logger)
+    public EventInterceptor(ILogger<EventInterceptor> logger)
     {
-        _serviceProvider = serviceProvider;
         _logger = logger;
     }
 
     public override async Task TransactionCommittedAsync(DbTransaction transaction, TransactionEndEventData eventData, CancellationToken cancellationToken = default)
     {
-        await TransactionCommittedInternal(eventData);
+        TransactionCommittedInternal(eventData);
         await base.TransactionCommittedAsync(transaction, eventData, cancellationToken);
     }
 
     public override void TransactionCommitted(DbTransaction transaction, TransactionEndEventData eventData)
     {
-        TransactionCommittedInternal(eventData).Wait();
+        TransactionCommittedInternal(eventData);
         base.TransactionCommitted(transaction, eventData);
     }
 
-    private async Task TransactionCommittedInternal(TransactionEndEventData eventData)
+    private void TransactionCommittedInternal(TransactionEndEventData eventData)
     {
         try
         {
-            await PublishEvents(eventData.Context);
+            // Store events in the context to be published after SaveChangesAsync completes
+            // This avoids the Npgsql 10+ "Transaction is already completed" error
+            SaveEvents(eventData.Context);
         }
         catch (Exception ex)
         {
@@ -66,30 +62,23 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
 
     public int SavedChanges(SaveChangesCompletedEventData eventData, int result)
     {
-        SavedChangesInternal(eventData, false).Wait();
+        SavedChangesInternal(eventData);
         return result;
     }
 
-    public async ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
+    public ValueTask<int> SavedChangesAsync(SaveChangesCompletedEventData eventData, int result, CancellationToken cancellationToken = default)
     {
-        await SavedChangesInternal(eventData, true);
-        return result;
+        SavedChangesInternal(eventData);
+        return new(result);
     }
 
-    private async Task SavedChangesInternal(SaveChangesCompletedEventData eventData, bool async)
+    private void SavedChangesInternal(SaveChangesCompletedEventData eventData)
     {
         try
         {
             if (eventData.Context.Database.CurrentTransaction == null)
             {
-                if (async)
-                {
-                    await PublishEvents(eventData.Context);
-                }
-                else
-                {
-                    PublishEvents(eventData.Context).Wait();
-                }
+                SaveEvents(eventData.Context);
             }
         }
         catch (Exception ex)
@@ -113,56 +102,31 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
     public ValueTask<InterceptionResult<int>> SavingChangesAsync(DbContextEventData eventData, InterceptionResult<int> result, CancellationToken cancellationToken = default(CancellationToken))
     {
         SaveEntries(eventData.Context);
-        return new ValueTask<InterceptionResult<int>>(result);
+        return new(result);
     }
 
     /// <summary>
-    /// Creates and publishes events from the current set of entity changes.
+    /// Creates and stores events in the context to be published after transaction cleanup
     /// </summary>
     /// <param name="dbContext">The DbContext used for this transaction</param>
     /// <returns></returns>
-    private async Task PublishEvents(DbContext dbContext)
+    private void SaveEvents(DbContext dbContext)
     {
-        IServiceScope scope = null;
-
         try
         {
-            // Try to get required services from the current scope that has been injected into the
-            // dbContext from the ContextFactory. This allows us to use the same scope in the event handlers.
-            // If no ServiceProvider exists on the context, create a new scope with the root ServiceProvider.
-            IMediator mediator = null;
-
-            if (dbContext is VmContext)
+            if (dbContext is VmContext context)
             {
-                var context = dbContext as VmContext;
-                if (context.ServiceProvider != null)
-                {
-                    mediator = context.ServiceProvider.GetRequiredService<IMediator>();
-                }
+                var events = CreateEvents();
+                context.Events.AddRange(events);
             }
-
-            if (mediator == null)
-            {
-                scope = _serviceProvider.CreateScope();
-                mediator = scope.ServiceProvider.GetRequiredService<IMediator>();
-            }
-
-            await PublishEventsInternal(mediator);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error in PublishEvents");
-        }
-        finally
-        {
-            if (scope != null)
-            {
-                scope.Dispose();
-            }
+            _logger.LogError(ex, "Error in SaveEvents");
         }
     }
 
-    private async Task PublishEventsInternal(IMediator mediator)
+    private List<INotification> CreateEvents()
     {
         var events = new List<INotification>();
         var entries = GetEntries();
@@ -220,10 +184,7 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
             }
         }
 
-        foreach (var evt in events)
-        {
-            await mediator.Publish(evt);
-        }
+        return events;
     }
 
     private Entry[] GetEntries()
