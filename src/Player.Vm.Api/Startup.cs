@@ -288,7 +288,7 @@ public class Startup
         });
 
         services.AddSingleton<IHttpContextAccessor, HttpContextAccessor>();
-        services.AddScoped<IPrincipal>(p => p.GetService<IHttpContextAccessor>().HttpContext.User);
+        services.AddScoped<IPrincipal>(p => p.GetService<IHttpContextAccessor>()?.HttpContext?.User);
 
         services.AddScoped<IVmService, VmService>();
         services.AddScoped<IPlayerService, PlayerService>();
