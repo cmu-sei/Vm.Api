@@ -21,7 +21,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "8.0.8")
+                .HasAnnotation("ProductVersion", "10.0.0")
                 .HasAnnotation("Relational:MaxIdentifierLength", 63);
 
             NpgsqlModelBuilderExtensions.HasPostgresExtension(modelBuilder, "uuid-ossp");
@@ -34,26 +34,26 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                         .HasColumnType("uuid")
                         .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()")
-                        .HasAnnotation("Relational:JsonPropertyName", "id");
+                        .HasJsonPropertyName("id");
 
                     b.Property<string>("Payload")
                         .HasColumnType("text")
                         .HasColumnName("payload")
-                        .HasAnnotation("Relational:JsonPropertyName", "payload");
+                        .HasJsonPropertyName("payload");
 
                     b.Property<DateTimeOffset>("Timestamp")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("timestamp")
-                        .HasAnnotation("Relational:JsonPropertyName", "timestamp");
+                        .HasJsonPropertyName("timestamp");
 
                     b.Property<int>("Type")
                         .HasColumnType("integer")
                         .HasColumnName("type")
-                        .HasAnnotation("Relational:JsonPropertyName", "type");
+                        .HasJsonPropertyName("type");
 
                     b.HasKey("Id");
 
-                    b.ToTable("webhook_events");
+                    b.ToTable("webhook_events", (string)null);
                 });
 
             modelBuilder.Entity("Player.Vm.Api.Domain.Models.Coordinate", b =>
@@ -92,7 +92,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
 
                     b.HasIndex("VmMapId");
 
-                    b.ToTable("coordinate");
+                    b.ToTable("coordinate", (string)null);
                 });
 
             modelBuilder.Entity("Player.Vm.Api.Domain.Models.ProxmoxVmInfo", b =>
@@ -121,7 +121,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                     b.HasIndex("VmId")
                         .IsUnique();
 
-                    b.ToTable("proxmox_vm_info");
+                    b.ToTable("proxmox_vm_info", (string)null);
                 });
 
             modelBuilder.Entity("Player.Vm.Api.Domain.Models.Vm", b =>
@@ -179,7 +179,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
 
                     b.HasKey("Id");
 
-                    b.ToTable("vms");
+                    b.ToTable("vms", (string)null);
                 });
 
             modelBuilder.Entity("Player.Vm.Api.Domain.Models.VmMap", b =>
@@ -208,7 +208,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
 
                     b.HasKey("Id");
 
-                    b.ToTable("maps");
+                    b.ToTable("maps", (string)null);
                 });
 
             modelBuilder.Entity("Player.Vm.Api.Domain.Models.VmTeam", b =>
@@ -225,7 +225,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
 
                     b.HasIndex("VmId");
 
-                    b.ToTable("vm_teams");
+                    b.ToTable("vm_teams", (string)null);
                 });
 
             modelBuilder.Entity("Player.Vm.Api.Domain.Models.VmUser", b =>
@@ -250,7 +250,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
 
                     b.HasIndex("LastVmId");
 
-                    b.ToTable("vm_users");
+                    b.ToTable("vm_users", (string)null);
                 });
 
             modelBuilder.Entity("Player.Vm.Api.Domain.Models.Coordinate", b =>

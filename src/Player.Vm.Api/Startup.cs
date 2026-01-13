@@ -111,16 +111,16 @@ public class Startup
                     .AddInterceptors(serviceProvider.GetRequiredService<EventInterceptor>())
                     .UseConfiguredDatabase(Configuration));
 
+                var vmLoggingConnectionString = Configuration["VmUsageLogging:PostgreSql"].Trim();
+
+                /* Note:  When using multiple DB contexts, dotnet ef migrations must specify which context:  ie:
+                dotnet ef migrations add "VmLoggingDb Initial" --context VmLoggingContext -o Data/Migrations/Postgres/VmLogging
+                */
+                services.AddDbContextPool<VmLoggingContext>(
+                    options => options.UseNpgsql(vmLoggingConnectionString));
+
                 if (vmLoggingEnabled)
                 {
-                    var vmLoggingConnectionString = Configuration["VmUsageLogging:PostgreSql"].Trim();
-
-                    /* Note:  When using multiple DB contexts, dotnet ef migrations must specify which context:  ie:
-                    dotnet ef migrations add "VmLoggingDb Initial" --context VmLoggingContext -o Data/Migrations/Postgres/VmLogging
-                    */
-                    services.AddDbContextPool<VmLoggingContext>(
-                        options => options.UseNpgsql(vmLoggingConnectionString));
-
                     services.AddScoped<IVmUsageLoggingService, VmUsageLoggingService>();
                 }
                 else
