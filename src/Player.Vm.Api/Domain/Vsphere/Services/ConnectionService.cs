@@ -71,12 +71,13 @@ public class ConnectionService : BackgroundService, IConnectionService
             try
             {
                 await DoWork(cancellationToken);
-                await _resetEvent.WaitAsync(TimeSpan.FromSeconds(_optionsMonitor.CurrentValue.ConnectionRetryIntervalSeconds), cancellationToken);
             }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Exception in ConnectionService");
             }
+
+            await _resetEvent.WaitAsync(TimeSpan.FromSeconds(_optionsMonitor.CurrentValue.ConnectionRetryIntervalSeconds), cancellationToken);
         }
     }
 

@@ -206,31 +206,38 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
     {
         foreach (var entry in db.ChangeTracker.Entries())
         {
-            // find value of id property
-            var id = entry.Properties
-                .FirstOrDefault(x =>
-                    x.Metadata.ValueGenerated == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd)?.CurrentValue;
-
-            // find matching existing entry, if any
-            Entry e = null;
-
-            if (id != null)
+            try
             {
-                e = Entries.FirstOrDefault(x => id.Equals(x.Properties.FirstOrDefault(y =>
-                    y.Metadata.ValueGenerated == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd)?.CurrentValue));
+                // find value of id property
+                var id = entry.Properties
+                    .FirstOrDefault(x =>
+                        x.Metadata.ValueGenerated == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd)?.CurrentValue;
+
+                // find matching existing entry, if any
+                Entry e = null;
+
+                if (id != null)
+                {
+                    e = Entries.FirstOrDefault(x => id.Equals(x.Properties.FirstOrDefault(y =>
+                        y.Metadata.ValueGenerated == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd)?.CurrentValue));
+                }
+
+                if (e != null)
+                {
+                    // if entry already exists, mark which properties were previously modified,
+                    // remove old entry and add new one, to avoid duplicates
+                    var newEntry = new Entry(entry, e);
+                    Entries.Remove(e);
+                    Entries.Add(newEntry);
+                }
+                else
+                {
+                    Entries.Add(new Entry(entry));
+                }
             }
-
-            if (e != null)
+            catch (Exception ex)
             {
-                // if entry already exists, mark which properties were previously modified,
-                // remove old entry and add new one, to avoid duplicates
-                var newEntry = new Entry(entry, e);
-                Entries.Remove(e);
-                Entries.Add(newEntry);
-            }
-            else
-            {
-                Entries.Add(new Entry(entry));
+                _logger.LogError(ex, "Error processing entry in SaveEntries");
             }
         }
     }
