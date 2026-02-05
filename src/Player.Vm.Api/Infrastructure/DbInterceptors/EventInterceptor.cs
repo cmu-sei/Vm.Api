@@ -208,36 +208,101 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
         {
             try
             {
+                var entityType = entry.Entity?.GetType()?.Name ?? "null";
+                var entityState = entry.State;
+
+                _logger.LogDebug("SaveEntries processing entry: EntityType={EntityType}, State={State}", entityType, entityState);
+
                 // find value of id property
-                var id = entry.Properties
+                var idProperty = entry.Properties
                     .FirstOrDefault(x =>
-                        x.Metadata.ValueGenerated == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd)?.CurrentValue;
+                        x.Metadata.ValueGenerated == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd);
+
+                var id = idProperty?.CurrentValue;
+
+                _logger.LogDebug("SaveEntries entry id lookup: EntityType={EntityType}, IdPropertyName={IdPropertyName}, IdValue={IdValue}",
+                    entityType,
+                    idProperty?.Metadata?.Name ?? "null",
+                    id ?? "null");
 
                 // find matching existing entry, if any
                 Entry e = null;
 
                 if (id != null)
                 {
-                    e = Entries.FirstOrDefault(x => id.Equals(x.Properties.FirstOrDefault(y =>
-                        y.Metadata.ValueGenerated == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd)?.CurrentValue));
+                    _logger.LogDebug("SaveEntries searching {Count} existing entries for match with id={Id}", Entries.Count, id);
+
+                    foreach (var existingEntry in Entries)
+                    {
+                        if (existingEntry == null)
+                        {
+                            _logger.LogWarning("SaveEntries found null entry in Entries list");
+                            continue;
+                        }
+
+                        if (existingEntry.Properties == null)
+                        {
+                            _logger.LogWarning("SaveEntries found entry with null Properties: EntityType={EntityType}, State={State}",
+                                existingEntry.Entity?.GetType()?.Name ?? "null",
+                                existingEntry.State);
+                            continue;
+                        }
+
+                        var existingIdProp = existingEntry.Properties.FirstOrDefault(y =>
+                            y.Metadata.ValueGenerated == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd);
+
+                        if (existingIdProp != null && id.Equals(existingIdProp.CurrentValue))
+                        {
+                            e = existingEntry;
+                            break;
+                        }
+                    }
                 }
 
                 if (e != null)
                 {
+                    _logger.LogDebug("SaveEntries found existing entry, updating: EntityType={EntityType}, Id={Id}", entityType, id);
+
                     // if entry already exists, mark which properties were previously modified,
                     // remove old entry and add new one, to avoid duplicates
                     var newEntry = new Entry(entry, e);
+
+                    if (newEntry.Properties == null)
+                    {
+                        _logger.LogWarning("SaveEntries created Entry with null Properties from update: EntityType={EntityType}, State={State}, SourceEntryPropertiesNull={SourceNull}, OldEntryPropertiesNull={OldNull}",
+                            entityType, entityState, entry.Properties == null, e.Properties == null);
+                    }
+
                     Entries.Remove(e);
                     Entries.Add(newEntry);
                 }
                 else
                 {
-                    Entries.Add(new Entry(entry));
+                    _logger.LogDebug("SaveEntries adding new entry: EntityType={EntityType}, Id={Id}", entityType, id ?? "null");
+
+                    var newEntry = new Entry(entry);
+
+                    if (newEntry.Properties == null)
+                    {
+                        _logger.LogWarning("SaveEntries created Entry with null Properties: EntityType={EntityType}, State={State}, SourceEntryPropertiesNull={SourceNull}",
+                            entityType, entityState, entry.Properties == null);
+                    }
+
+                    Entries.Add(newEntry);
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing entry in SaveEntries");
+                var entityTypeName = "unknown";
+                var entityState = "unknown";
+                try
+                {
+                    entityTypeName = entry.Entity?.GetType()?.Name ?? "null";
+                    entityState = entry.State.ToString();
+                }
+                catch { }
+
+                _logger.LogError(ex, "Error processing entry in SaveEntries: EntityType={EntityType}, State={State}", entityTypeName, entityState);
             }
         }
     }
