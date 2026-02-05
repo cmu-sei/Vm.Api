@@ -128,8 +128,14 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
 
     private List<INotification> CreateEvents()
     {
+        _logger.LogDebug("CreateEvents called. Thread: {ThreadId}",
+            Environment.CurrentManagedThreadId);
+
         var events = new List<INotification>();
         var entries = GetEntries();
+
+        _logger.LogDebug("CreateEvents processing {Count} entries. Thread: {ThreadId}",
+            entries.Length, Environment.CurrentManagedThreadId);
 
         foreach (var entry in entries)
         {
@@ -192,14 +198,16 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
         try
         {
             // Log total count for debugging
-            _logger.LogDebug("Processing {Count} entries in GetEntries", Entries.Count);
+            _logger.LogDebug("GetEntries called. Thread: {ThreadId}, Total entries: {Count}",
+                Environment.CurrentManagedThreadId, Entries.Count);
 
             // First, identify any null entries
             for (int i = 0; i < Entries.Count; i++)
             {
                 if (Entries[i] == null)
                 {
-                    _logger.LogError("Found null Entry at index {Index}", i);
+                    _logger.LogError("Found null Entry at index {Index} in GetEntries. Thread: {ThreadId}",
+                        i, Environment.CurrentManagedThreadId);
                 }
             }
 
@@ -256,8 +264,10 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
     private void SaveEntries(DbContext db)
     {
         var changeTrackerEntries = db.ChangeTracker.Entries().ToList();
-        _logger.LogDebug("SaveEntries called. ChangeTracker entries: {ChangeTrackerCount}, Current Entries list count: {EntriesCount}",
-            changeTrackerEntries.Count, Entries.Count);
+        _logger.LogDebug("SaveEntries called. Thread: {ThreadId}, ChangeTracker entries: {ChangeTrackerCount}, Current Entries list count: {EntriesCount}",
+            Environment.CurrentManagedThreadId,
+            changeTrackerEntries.Count,
+            Entries.Count);
 
         foreach (var entry in changeTrackerEntries)
         {
@@ -295,13 +305,18 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
                         {
                             if (x == null)
                             {
-                                _logger.LogError("Encountered null entry in Entries list during FirstOrDefault lambda execution");
+                                var nullCount = Entries.Count(e => e != null);
+                                _logger.LogError("Encountered null entry during lambda. Thread: {ThreadId}, TotalEntries: {Total}, NonNullCount: {NonNull}",
+                                    Environment.CurrentManagedThreadId,
+                                    Entries.Count,
+                                    nullCount);
                                 return false;
                             }
 
                             if (x.Properties == null)
                             {
-                                _logger.LogError("Entry has null Properties collection. Entity type: {EntityType}",
+                                _logger.LogError("Entry has null Properties collection. Thread: {ThreadId}, Entity type: {EntityType}",
+                                    Environment.CurrentManagedThreadId,
                                     x.Entity?.GetType()?.Name ?? "null");
                                 return false;
                             }
@@ -312,11 +327,14 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
                             return id.Equals(existingId);
                         });
 
-                        _logger.LogDebug("Existing entry search result: {Found}", e != null ? "Found" : "Not found");
+                        _logger.LogDebug("Existing entry search result: {Found}, Thread: {ThreadId}",
+                            e != null ? "Found" : "Not found",
+                            Environment.CurrentManagedThreadId);
                     }
                     catch (Exception ex)
                     {
-                        _logger.LogError(ex, "Error in FirstOrDefault lambda. ID={Id}, Entries count={Count}", id, Entries.Count);
+                        _logger.LogError(ex, "Error in FirstOrDefault lambda. Thread: {ThreadId}, ID={Id}, Entries count={Count}",
+                            Environment.CurrentManagedThreadId, id, Entries.Count);
                         throw;
                     }
                 }
@@ -327,7 +345,7 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
                     // remove old entry and add new one, to avoid duplicates
                     _logger.LogDebug("Updating existing entry for {EntityType} with ID={Id}", entityType, id);
 
-                    var newEntry = new Entry(entry, e);
+                    var newEntry = new Entry(entry, e, _logger);
                     if (newEntry == null || newEntry.Entity == null)
                     {
                         _logger.LogWarning("Attempted to add null or invalid entry (existing entry path). EntityType: {EntityType}, EntityState: {EntityState}, PropertiesNull: {PropertiesNull}",
@@ -337,17 +355,35 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
                     }
                     else
                     {
-                        _logger.LogDebug("Successfully created updated entry. Removing old entry and adding new one");
+                        _logger.LogDebug("Successfully created updated entry. Removing old entry and adding new one. Thread: {ThreadId}",
+                            Environment.CurrentManagedThreadId);
                         Entries.Remove(e);
                         Entries.Add(newEntry);
-                        _logger.LogDebug("Entries list count after update: {Count}", Entries.Count);
+
+                        // Immediate verification
+                        _logger.LogDebug("Added entry to list. Thread: {ThreadId}, Index: {Index}, EntityType: {EntityType}, EntryIsNull: {IsNull}, EntityIsNull: {EntityNull}",
+                            Environment.CurrentManagedThreadId,
+                            Entries.Count - 1,
+                            newEntry.Entity?.GetType()?.Name ?? "null",
+                            newEntry == null,
+                            newEntry?.Entity == null);
+
+                        var justAdded = Entries[^1];
+                        if (justAdded == null)
+                        {
+                            _logger.LogError("CRITICAL: Entry became null immediately after adding! Thread: {ThreadId}, Index: {Index}",
+                                Environment.CurrentManagedThreadId, Entries.Count - 1);
+                        }
+
+                        _logger.LogDebug("Entries list count after update: {Count}, Thread: {ThreadId}",
+                            Entries.Count, Environment.CurrentManagedThreadId);
                     }
                 }
                 else
                 {
                     _logger.LogDebug("Adding new entry for {EntityType} with ID={Id}", entityType, id ?? "null");
 
-                    var newEntry = new Entry(entry);
+                    var newEntry = new Entry(entry, null, _logger);
                     if (newEntry == null || newEntry.Entity == null)
                     {
                         _logger.LogWarning("Attempted to add null or invalid entry (new entry path). EntityType: {EntityType}, EntityState: {EntityState}, PropertiesNull: {PropertiesNull}",
@@ -358,7 +394,24 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
                     else
                     {
                         Entries.Add(newEntry);
-                        _logger.LogDebug("Successfully added new entry. Entries list count: {Count}", Entries.Count);
+
+                        // Immediate verification
+                        _logger.LogDebug("Added entry to list. Thread: {ThreadId}, Index: {Index}, EntityType: {EntityType}, EntryIsNull: {IsNull}, EntityIsNull: {EntityNull}",
+                            Environment.CurrentManagedThreadId,
+                            Entries.Count - 1,
+                            newEntry.Entity?.GetType()?.Name ?? "null",
+                            newEntry == null,
+                            newEntry?.Entity == null);
+
+                        var justAdded = Entries[^1];
+                        if (justAdded == null)
+                        {
+                            _logger.LogError("CRITICAL: Entry became null immediately after adding! Thread: {ThreadId}, Index: {Index}",
+                                Environment.CurrentManagedThreadId, Entries.Count - 1);
+                        }
+
+                        _logger.LogDebug("Successfully added new entry. Thread: {ThreadId}, Entries list count: {Count}",
+                            Environment.CurrentManagedThreadId, Entries.Count);
                     }
                 }
             }

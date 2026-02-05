@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
+using Microsoft.Extensions.Logging;
 
 namespace Player.Vm.Api.Data;
 
@@ -15,9 +16,30 @@ public class Entry
     public EntityState State { get; set; }
     public IEnumerable<PropertyEntry> Properties { get; set; }
     private Dictionary<string, bool> IsPropertyModified { get; set; } = new();
+    private readonly ILogger _logger;
 
-    public Entry(EntityEntry entry, Entry oldEntry = null)
+    public Entry(EntityEntry entry, Entry oldEntry = null, ILogger logger = null)
     {
+        _logger = logger;
+
+        _logger?.LogDebug("Entry constructor called. Thread: {ThreadId}, Entity type: {EntityType}, State: {State}, OldEntry: {HasOldEntry}",
+            Environment.CurrentManagedThreadId,
+            entry?.Entity?.GetType()?.Name ?? "null",
+            entry?.State.ToString() ?? "null",
+            oldEntry != null);
+
+        if (entry?.Entity == null)
+        {
+            _logger?.LogError("Entry constructor called with null EntityEntry.Entity. Thread: {ThreadId}",
+                Environment.CurrentManagedThreadId);
+        }
+
+        if (entry?.Properties == null)
+        {
+            _logger?.LogError("Entry constructor called with null EntityEntry.Properties. Thread: {ThreadId}",
+                Environment.CurrentManagedThreadId);
+        }
+
         Entity = entry.Entity;
         State = entry.State;
         Properties = entry.Properties;
