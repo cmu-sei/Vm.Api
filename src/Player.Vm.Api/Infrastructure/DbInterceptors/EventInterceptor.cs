@@ -26,8 +26,13 @@ namespace Player.Vm.Api.Infrastructure.DbInterceptors;
 public class EventInterceptor : DbTransactionInterceptor, ISaveChangesInterceptor
 {
     private readonly ILogger<EventInterceptor> _logger;
+    private readonly AsyncLocal<List<Entry>> _entriesStorage = new();
 
-    private List<Entry> Entries { get; set; } = new List<Entry>();
+    private List<Entry> Entries
+    {
+        get => _entriesStorage.Value ??= [];
+        set => _entriesStorage.Value = value;
+    }
 
     public EventInterceptor(ILogger<EventInterceptor> logger)
     {
