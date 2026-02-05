@@ -189,14 +189,65 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
 
     private Entry[] GetEntries()
     {
-        var entries = Entries
-            .Where(x => x.State == EntityState.Added ||
-                        x.State == EntityState.Modified ||
-                        x.State == EntityState.Deleted)
-            .ToList();
+        try
+        {
+            // Log total count for debugging
+            _logger.LogDebug("Processing {Count} entries in GetEntries", Entries.Count);
 
-        Entries.Clear();
-        return entries.ToArray();
+            // First, identify any null entries
+            for (int i = 0; i < Entries.Count; i++)
+            {
+                if (Entries[i] == null)
+                {
+                    _logger.LogError("Found null Entry at index {Index}", i);
+                }
+            }
+
+            // Filter out null entries first, then filter by state
+            var entries = Entries
+                .Where((x, index) =>
+                {
+                    if (x == null)
+                    {
+                        _logger.LogError("Null entry found at index {Index} during filtering", index);
+                        return false;
+                    }
+
+                    try
+                    {
+                        var entityType = x.Entity?.GetType()?.Name ?? "null";
+                        var state = x.State;
+
+                        var isMatch = state == EntityState.Added ||
+                                      state == EntityState.Modified ||
+                                      state == EntityState.Deleted;
+
+                        _logger.LogDebug("Entry {Index}: Entity={EntityType}, State={State}, Match={IsMatch}",
+                            index, entityType, state, isMatch);
+
+                        return isMatch;
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex,
+                            "Error filtering entry at index {Index}. Entry.Entity is null: {IsEntityNull}, Entry.Properties is null: {IsPropertiesNull}",
+                            index,
+                            x.Entity == null,
+                            x.Properties == null);
+                        throw;
+                    }
+                })
+                .ToList();
+
+            Entries.Clear();
+            return entries.ToArray();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error in GetEntries. Total entries: {Count}", Entries?.Count ?? 0);
+            Entries?.Clear();
+            throw;
+        }
     }
 
     /// <summary>
@@ -204,40 +255,118 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
     /// </summary>
     private void SaveEntries(DbContext db)
     {
-        foreach (var entry in db.ChangeTracker.Entries())
+        var changeTrackerEntries = db.ChangeTracker.Entries().ToList();
+        _logger.LogDebug("SaveEntries called. ChangeTracker entries: {ChangeTrackerCount}, Current Entries list count: {EntriesCount}",
+            changeTrackerEntries.Count, Entries.Count);
+
+        foreach (var entry in changeTrackerEntries)
         {
             try
             {
+                var entityType = entry.Entity?.GetType()?.Name ?? "null";
+                var entityState = entry.State;
+
+                _logger.LogDebug("Processing entity: Type={EntityType}, State={EntityState}", entityType, entityState);
+
                 // find value of id property
                 var id = entry.Properties
                     .FirstOrDefault(x =>
                         x.Metadata.ValueGenerated == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd)?.CurrentValue;
+
+                _logger.LogDebug("Extracted ID for {EntityType}: {Id}", entityType, id ?? "null");
 
                 // find matching existing entry, if any
                 Entry e = null;
 
                 if (id != null)
                 {
-                    e = Entries.FirstOrDefault(x => id.Equals(x.Properties.FirstOrDefault(y =>
-                        y.Metadata.ValueGenerated == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd)?.CurrentValue));
+                    _logger.LogDebug("Searching for existing entry with ID={Id}. Current Entries list count: {Count}", id, Entries.Count);
+
+                    // Check for null entries in the list before processing
+                    var nullEntryCount = Entries.Count(x => x == null);
+                    if (nullEntryCount > 0)
+                    {
+                        _logger.LogWarning("Found {NullCount} null entries in Entries list before FirstOrDefault", nullEntryCount);
+                    }
+
+                    try
+                    {
+                        e = Entries.FirstOrDefault(x =>
+                        {
+                            if (x == null)
+                            {
+                                _logger.LogError("Encountered null entry in Entries list during FirstOrDefault lambda execution");
+                                return false;
+                            }
+
+                            if (x.Properties == null)
+                            {
+                                _logger.LogError("Entry has null Properties collection. Entity type: {EntityType}",
+                                    x.Entity?.GetType()?.Name ?? "null");
+                                return false;
+                            }
+
+                            var existingId = x.Properties.FirstOrDefault(y =>
+                                y.Metadata.ValueGenerated == Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.OnAdd)?.CurrentValue;
+
+                            return id.Equals(existingId);
+                        });
+
+                        _logger.LogDebug("Existing entry search result: {Found}", e != null ? "Found" : "Not found");
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error in FirstOrDefault lambda. ID={Id}, Entries count={Count}", id, Entries.Count);
+                        throw;
+                    }
                 }
 
                 if (e != null)
                 {
                     // if entry already exists, mark which properties were previously modified,
                     // remove old entry and add new one, to avoid duplicates
+                    _logger.LogDebug("Updating existing entry for {EntityType} with ID={Id}", entityType, id);
+
                     var newEntry = new Entry(entry, e);
-                    Entries.Remove(e);
-                    Entries.Add(newEntry);
+                    if (newEntry == null || newEntry.Entity == null)
+                    {
+                        _logger.LogWarning("Attempted to add null or invalid entry (existing entry path). EntityType: {EntityType}, EntityState: {EntityState}, PropertiesNull: {PropertiesNull}",
+                            entityType,
+                            entityState,
+                            entry?.Properties == null);
+                    }
+                    else
+                    {
+                        _logger.LogDebug("Successfully created updated entry. Removing old entry and adding new one");
+                        Entries.Remove(e);
+                        Entries.Add(newEntry);
+                        _logger.LogDebug("Entries list count after update: {Count}", Entries.Count);
+                    }
                 }
                 else
                 {
-                    Entries.Add(new Entry(entry));
+                    _logger.LogDebug("Adding new entry for {EntityType} with ID={Id}", entityType, id ?? "null");
+
+                    var newEntry = new Entry(entry);
+                    if (newEntry == null || newEntry.Entity == null)
+                    {
+                        _logger.LogWarning("Attempted to add null or invalid entry (new entry path). EntityType: {EntityType}, EntityState: {EntityState}, PropertiesNull: {PropertiesNull}",
+                            entityType,
+                            entityState,
+                            entry?.Properties == null);
+                    }
+                    else
+                    {
+                        Entries.Add(newEntry);
+                        _logger.LogDebug("Successfully added new entry. Entries list count: {Count}", Entries.Count);
+                    }
                 }
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error processing entry in SaveEntries");
+                _logger.LogError(ex, "Error processing entry in SaveEntries. EntityType: {EntityType}, EntityState: {EntityState}",
+                    entry?.Entity?.GetType()?.Name ?? "null",
+                    entry?.State.ToString() ?? "null");
             }
         }
     }
