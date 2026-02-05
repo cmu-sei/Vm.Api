@@ -28,6 +28,7 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
     private readonly ILogger<EventInterceptor> _logger;
 
     private List<Entry> Entries { get; set; } = new List<Entry>();
+    private int _activeThreadId = 0;
 
     public EventInterceptor(ILogger<EventInterceptor> logger)
     {
@@ -204,6 +205,18 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
     /// </summary>
     private void SaveEntries(DbContext db)
     {
+        var threadId = Environment.CurrentManagedThreadId;
+        var previousThread = Interlocked.Exchange(ref _activeThreadId, threadId);
+        if (previousThread != 0 && previousThread != threadId)
+        {
+            _logger.LogWarning("SaveEntries CONCURRENT ACCESS DETECTED: CurrentThread={Current}, PreviousThread={Previous}, EntriesCount={Count}",
+                threadId, previousThread, Entries.Count);
+        }
+
+        _logger.LogDebug("SaveEntries START: ThreadId={ThreadId}, EntriesCount={Count}", threadId, Entries.Count);
+
+        try
+        {
         foreach (var entry in db.ChangeTracker.Entries())
         {
             try
@@ -211,7 +224,7 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
                 var entityType = entry.Entity?.GetType()?.Name ?? "null";
                 var entityState = entry.State;
 
-                _logger.LogDebug("SaveEntries processing entry: EntityType={EntityType}, State={State}", entityType, entityState);
+                _logger.LogDebug("SaveEntries processing entry: ThreadId={ThreadId}, EntityType={EntityType}, State={State}", threadId, entityType, entityState);
 
                 // find value of id property
                 var idProperty = entry.Properties
@@ -230,7 +243,7 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
 
                 if (id != null)
                 {
-                    _logger.LogDebug("SaveEntries searching {Count} existing entries for match with id={Id}", Entries.Count, id);
+                    _logger.LogDebug("SaveEntries searching: ThreadId={ThreadId}, Count={Count}, Id={Id}", threadId, Entries.Count, id);
 
                     foreach (var existingEntry in Entries)
                     {
@@ -261,7 +274,7 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
 
                 if (e != null)
                 {
-                    _logger.LogDebug("SaveEntries found existing entry, updating: EntityType={EntityType}, Id={Id}", entityType, id);
+                    _logger.LogDebug("SaveEntries updating: ThreadId={ThreadId}, EntityType={EntityType}, Id={Id}", threadId, entityType, id);
 
                     // if entry already exists, mark which properties were previously modified,
                     // remove old entry and add new one, to avoid duplicates
@@ -269,41 +282,50 @@ public class EventInterceptor : DbTransactionInterceptor, ISaveChangesIntercepto
 
                     if (newEntry.Properties == null)
                     {
-                        _logger.LogWarning("SaveEntries created Entry with null Properties from update: EntityType={EntityType}, State={State}, SourceEntryPropertiesNull={SourceNull}, OldEntryPropertiesNull={OldNull}",
-                            entityType, entityState, entry.Properties == null, e.Properties == null);
+                        _logger.LogWarning("SaveEntries created Entry with null Properties from update: ThreadId={ThreadId}, EntityType={EntityType}, State={State}, SourceEntryPropertiesNull={SourceNull}, OldEntryPropertiesNull={OldNull}",
+                            threadId, entityType, entityState, entry.Properties == null, e.Properties == null);
                     }
 
+                    _logger.LogDebug("SaveEntries REMOVE: ThreadId={ThreadId}, EntityType={EntityType}", threadId, entityType);
                     Entries.Remove(e);
+                    _logger.LogDebug("SaveEntries ADD (update): ThreadId={ThreadId}, EntityType={EntityType}", threadId, entityType);
                     Entries.Add(newEntry);
                 }
                 else
                 {
-                    _logger.LogDebug("SaveEntries adding new entry: EntityType={EntityType}, Id={Id}", entityType, id ?? "null");
+                    _logger.LogDebug("SaveEntries adding new: ThreadId={ThreadId}, EntityType={EntityType}, Id={Id}", threadId, entityType, id ?? "null");
 
                     var newEntry = new Entry(entry);
 
                     if (newEntry.Properties == null)
                     {
-                        _logger.LogWarning("SaveEntries created Entry with null Properties: EntityType={EntityType}, State={State}, SourceEntryPropertiesNull={SourceNull}",
-                            entityType, entityState, entry.Properties == null);
+                        _logger.LogWarning("SaveEntries created Entry with null Properties: ThreadId={ThreadId}, EntityType={EntityType}, State={State}, SourceEntryPropertiesNull={SourceNull}",
+                            threadId, entityType, entityState, entry.Properties == null);
                     }
 
+                    _logger.LogDebug("SaveEntries ADD (new): ThreadId={ThreadId}, EntityType={EntityType}", threadId, entityType);
                     Entries.Add(newEntry);
                 }
             }
             catch (Exception ex)
             {
                 var entityTypeName = "unknown";
-                var entityState = "unknown";
+                var entityStateStr = "unknown";
                 try
                 {
                     entityTypeName = entry.Entity?.GetType()?.Name ?? "null";
-                    entityState = entry.State.ToString();
+                    entityStateStr = entry.State.ToString();
                 }
                 catch { }
 
-                _logger.LogError(ex, "Error processing entry in SaveEntries: EntityType={EntityType}, State={State}", entityTypeName, entityState);
+                _logger.LogError(ex, "Error processing entry in SaveEntries: ThreadId={ThreadId}, EntityType={EntityType}, State={State}, EntriesCount={Count}",
+                    threadId, entityTypeName, entityStateStr, Entries.Count);
             }
+        }
+        }
+        finally
+        {
+            Interlocked.CompareExchange(ref _activeThreadId, 0, threadId);
         }
     }
 }
