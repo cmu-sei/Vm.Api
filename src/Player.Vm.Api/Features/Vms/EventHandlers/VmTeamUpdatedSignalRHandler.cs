@@ -12,7 +12,7 @@ using MediatR;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Data;
-using Player.Vm.Api.Domain.Events;
+using Crucible.Common.EntityEvents.Events;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms.Hubs;
 
