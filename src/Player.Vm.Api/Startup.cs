@@ -26,7 +26,7 @@ using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Shared.Behaviors;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Features.Vms.Hubs;
-using Player.Vm.Api.Infrastructure.DbInterceptors;
+using Crucible.Common.EntityEvents.Extensions;
 using Player.Vm.Api.Infrastructure.Exceptions.Middleware;
 using Player.Vm.Api.Infrastructure.Extensions;
 using Player.Vm.Api.Infrastructure.Options;
@@ -100,15 +100,13 @@ public class Startup
         switch (provider)
         {
             case "InMemory":
-                services.AddPooledDbContextFactory<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
-                    .AddInterceptors(serviceProvider.GetRequiredService<EventInterceptor>())
+                services.AddEventPublishingDbContextFactory<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
                     .UseInMemoryDatabase("vm"));
                 break;
             case "Sqlite":
             case "SqlServer":
             case "PostgreSQL":
-                services.AddPooledDbContextFactory<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
-                    .AddInterceptors(serviceProvider.GetRequiredService<EventInterceptor>())
+                services.AddEventPublishingDbContextFactory<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
                     .UseConfiguredDatabase(Configuration));
 
                 var vmLoggingConnectionString = Configuration["VmUsageLogging:PostgreSql"].Trim();
@@ -130,9 +128,6 @@ public class Startup
 
                 break;
         }
-
-        services.AddScoped<VmContextFactory>();
-        services.AddScoped(sp => sp.GetRequiredService<VmContextFactory>().CreateDbContext());
 
         var connectionString = Configuration.GetConnectionString(Configuration.GetValue<string>("Database:Provider", "Sqlite").Trim());
         const string dbHealthCheckName = "database";
@@ -319,8 +314,6 @@ public class Startup
         services.AddSingleton<ProxmoxStateService>();
         services.AddSingleton<IHostedService>(x => x.GetService<ProxmoxStateService>());
         services.AddSingleton<IProxmoxStateService>(x => x.GetService<ProxmoxStateService>());
-
-        services.AddTransient<EventInterceptor>();
 
         services.AddAutoMapper(typeof(Startup));
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(typeof(Startup).Assembly));
