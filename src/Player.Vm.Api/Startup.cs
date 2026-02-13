@@ -42,6 +42,7 @@ using Player.Vm.Api.Infrastructure.Authorization;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
 using Player.Vm.Api.Infrastructure.HttpHandlers;
+using Crucible.Common.ServiceDefaults;
 
 namespace Player.Vm.Api;
 
@@ -53,19 +54,19 @@ public class Startup
     private readonly IdentityClientOptions _identityClientOptions = new();
     private const string _routePrefix = "api";
     private string _pathbase;
-    private readonly TelemetryOptions _telemetryOptions = new();
     private readonly HealthChecksUIOptions _healthChecksUIOptions = new();
+    private readonly IWebHostEnvironment _env;
 
     public IConfiguration Configuration { get; }
 
-    public Startup(IConfiguration configuration)
+    public Startup(IConfiguration configuration, IWebHostEnvironment env)
     {
+        _env = env;
         Configuration = configuration;
         Configuration.Bind("ClientSettings", _clientOptions);
         Configuration.Bind("IdentityClient", _identityClientOptions);
         Configuration.Bind("Authorization", _authOptions);
         Configuration.GetSection("SignalR").Bind(_signalROptions);
-        Configuration.GetSection("Telemetry").Bind(_telemetryOptions);
         Configuration.GetSection("HealthChecksUI").Bind(_healthChecksUIOptions);
         _pathbase = Configuration["PathBase"];
     }
@@ -320,8 +321,9 @@ public class Startup
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CheckTasksBehavior<,>));
 
         services.AddMemoryCache();
-
         services.AddApiClients(identityClientOptions: _identityClientOptions, clientOptions: _clientOptions);
+
+        // Create custom Otel Metric
         services.AddSingleton<TelemetryService>();
         var metricsBuilder = services.AddOpenTelemetry()
             .WithMetrics(builder =>
@@ -333,40 +335,22 @@ public class Startup
                         TelemetryService.VmConsolesMeterName
                     )
                     .AddPrometheusExporter();
-                if (_telemetryOptions.AddRuntimeInstrumentation)
-                {
-                    builder.AddRuntimeInstrumentation();
-                }
-                if (_telemetryOptions.AddProcessInstrumentation)
-                {
-                    builder.AddProcessInstrumentation();
-                }
-                if (_telemetryOptions.AddAspNetCoreInstrumentation)
-                {
-                    builder.AddAspNetCoreInstrumentation();
-                }
-                if (_telemetryOptions.AddHttpClientInstrumentation)
-                {
-                    builder.AddHttpClientInstrumentation();
-                }
-                if (_telemetryOptions.UseMeterMicrosoftAspNetCoreHosting)
-                {
-                    builder.AddMeter("Microsoft.AspNetCore.Hosting");
-                }
-                if (_telemetryOptions.UseMeterMicrosoftAspNetCoreServerKestrel)
-                {
-                    builder.AddMeter("Microsoft.AspNetCore.Server.Kestrel");
-                }
-                if (_telemetryOptions.UseMeterSystemNetHttp)
-                {
-                    builder.AddMeter("System.Net.Http");
-                }
-                if (_telemetryOptions.UseMeterSystemNetNameResolution)
-                {
-                    builder.AddMeter("System.Net.NameResolution");
-                }
             }
         );
+
+        // Add Crucible Common Service Defaults
+        services.AddServiceDefaults(_env, Configuration, openTelemetryOptions =>
+        {
+            // Bind configuration from appsettings.json "OpenTelemetry" section
+            var telemetrySection = Configuration.GetSection("OpenTelemetry");
+            if (telemetrySection.Exists())
+            {
+                telemetrySection.Bind(openTelemetryOptions);
+            }
+
+            // Add custom meter
+            openTelemetryOptions.CustomMeters = openTelemetryOptions.CustomMeters.Append(TelemetryService.VmConsolesMeterName);
+        });
     }
 
     // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
