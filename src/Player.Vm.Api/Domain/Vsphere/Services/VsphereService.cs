@@ -41,6 +41,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<Dictionary<Guid, PowerState>> GetPowerState(IEnumerable<Guid> machineIds);
         Task<IEnumerable<Event>> GetEvents(EventFilterSpec filterSpec, VsphereConnection connection);
         Task RevertToCurrentSnapshot(Guid vmId);
+        Task<List<VmSnapshot>> GetSnapshots(Guid vmId);
+        Task RevertToSnapshot(Guid vmId, string snapshotMoRefValue);
     }
 
     public class VsphereService : IVsphereService
@@ -1197,6 +1199,60 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         {
             var aggregate = await this.GetVm(vmId);
             var task = await aggregate.Connection.Client.RevertToCurrentSnapshot_TaskAsync(aggregate.MachineReference, null, false);
+            var taskInfo = await WaitForVimTask(task, aggregate.Connection);
+
+            if (taskInfo.state == TaskInfoState.error)
+                throw new Exception(taskInfo.error.localizedMessage);
+        }
+
+        public async Task<List<VmSnapshot>> GetSnapshots(Guid vmId)
+        {
+            var aggregate = await this.GetVm(vmId);
+            var machineReference = aggregate.MachineReference;
+
+            RetrievePropertiesResponse propertiesResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
+                VmFilter(machineReference, "snapshot"));
+
+            VimClient.ObjectContent vm = propertiesResponse.returnval.FirstOrDefault();
+            var snapshotInfo = vm?.GetProperty("snapshot") as VirtualMachineSnapshotInfo;
+
+            if (snapshotInfo?.rootSnapshotList == null)
+                return new List<VmSnapshot>();
+
+            var currentSnapshotValue = snapshotInfo.currentSnapshot?.Value;
+            return FlattenSnapshotTree(snapshotInfo.rootSnapshotList, currentSnapshotValue, 0);
+        }
+
+        private List<VmSnapshot> FlattenSnapshotTree(VirtualMachineSnapshotTree[] trees, string currentSnapshotValue, int depth)
+        {
+            var snapshots = new List<VmSnapshot>();
+            if (trees == null) return snapshots;
+
+            foreach (var tree in trees)
+            {
+                snapshots.Add(new VmSnapshot
+                {
+                    Id = tree.snapshot.Value,
+                    Name = tree.name,
+                    Description = tree.description,
+                    CreateTime = tree.createTime,
+                    State = tree.state.ToString(),
+                    IsCurrent = tree.snapshot.Value == currentSnapshotValue,
+                    Depth = depth
+                });
+
+                snapshots.AddRange(FlattenSnapshotTree(tree.childSnapshotList, currentSnapshotValue, depth + 1));
+            }
+
+            return snapshots;
+        }
+
+        public async Task RevertToSnapshot(Guid vmId, string snapshotMoRefValue)
+        {
+            var aggregate = await this.GetVm(vmId);
+            var snapshotRef = new ManagedObjectReference { type = "VirtualMachineSnapshot", Value = snapshotMoRefValue };
+            var task = await aggregate.Connection.Client.RevertToSnapshot_TaskAsync(snapshotRef, null, false);
             var taskInfo = await WaitForVimTask(task, aggregate.Connection);
 
             if (taskInfo.state == TaskInfoState.error)

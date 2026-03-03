@@ -10,6 +10,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VimClient;
 using Swashbuckle.AspNetCore.Annotations;
+using Player.Vm.Api.Domain.Vsphere.Models;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -94,6 +95,31 @@ namespace Player.Vm.Api.Features.Vsphere
         public async Task<IActionResult> Revert([FromRoute] Guid id)
         {
             await _mediator.Send(new Revert.Command { Id = id });
+            return Ok();
+        }
+
+        /// <summary>
+        /// Get all snapshots for a vsphere virtual machine
+        /// </summary>
+        [HttpGet("vms/vsphere/{id}/snapshots")]
+        [ProducesResponseType(typeof(List<VmSnapshot>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getVsphereVirtualMachineSnapshots")]
+        public async Task<IActionResult> GetSnapshots([FromRoute] Guid id)
+        {
+            var result = await _mediator.Send(new GetSnapshots.Query { Id = id });
+            return Json(result);
+        }
+
+        /// <summary>
+        /// Revert to a specific snapshot of a vsphere virtual machine
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/revert-to-snapshot")]
+        [ProducesResponseType((int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "revertToVsphereVirtualMachineSnapshot")]
+        public async Task<IActionResult> RevertToSnapshot([FromRoute] Guid id, [FromBody] RevertToSnapshot.Command command)
+        {
+            command.Id = id;
+            await _mediator.Send(command);
             return Ok();
         }
 
