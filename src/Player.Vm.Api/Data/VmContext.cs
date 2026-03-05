@@ -26,6 +26,7 @@ namespace Player.Vm.Api.Data
         public DbSet<Player.Api.Client.WebhookEvent> WebhookEvents { get; set; }
         public DbSet<ProxmoxVmInfo> ProxmoxVmInfo { get; set; }
         public DbSet<VmUser> VmUsers { get; set; }
+        public DbSet<TeamNetworkPermission> TeamNetworkPermissions { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

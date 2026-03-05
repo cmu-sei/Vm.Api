@@ -2,6 +2,7 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
@@ -14,7 +15,6 @@ using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Domain.Services;
 using System.Security.Principal;
-using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.Vsphere
@@ -51,7 +51,29 @@ namespace Player.Vm.Api.Features.Vsphere
 
             public async Task<VsphereVirtualMachine> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await base.GetVm(request.Id, [AppSystemPermission.ManageViews], [AppViewPermission.ManageView], [], cancellationToken);
+                // Get VM with basic access check
+                var vm = await _vmService.GetAsync(request.Id, cancellationToken);
+
+                if (vm == null)
+                    throw new EntityNotFoundException<VsphereVirtualMachine>();
+
+                var effectivePerms = await _vmService.GetEffectiveNetworkPermissions(
+                    vm.TeamIds, vm.AllowedNetworks, cancellationToken);
+
+                if (effectivePerms.HasFullAccess)
+                {
+                    // Full access — allow any network
+                }
+                else if (effectivePerms.AllowedNetworks?.Length > 0)
+                {
+                    // Validate target network is in allowed list
+                    if (!effectivePerms.AllowedNetworks.Contains(request.Network, StringComparer.OrdinalIgnoreCase))
+                        throw new ForbiddenException("The target network is not in your allowed networks list");
+                }
+                else
+                {
+                    throw new ForbiddenException("You do not have permission to change networks on this VM");
+                }
 
                 await _vsphereService.ReconfigureVm(request.Id, Feature.net, request.Adapter, request.Network);
 

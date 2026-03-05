@@ -21,6 +21,7 @@ namespace Player.Vm.Api.Features.Vms
 
         public Guid? UserId { get; set; }
 
+        [Obsolete("Use team-level network permissions instead. Kept for backward compatibility.")]
         public string[] AllowedNetworks { get; set; }
 
         /// <summary>

@@ -27,6 +27,8 @@ namespace Player.Vm.Api.Domain.Services
         Task<bool> CanManageTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<bool> CanViewTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<bool> CanEditTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<bool> HasFullNetworkAccess(IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<IEnumerable<Guid>> GetUserTeamIds(IEnumerable<Guid> teamIds, CancellationToken ct);
 
         Task<bool> Can(IEnumerable<Guid> teamIds,
                        IEnumerable<Guid> viewIds,
@@ -72,6 +74,39 @@ namespace Player.Vm.Api.Domain.Services
         public async Task<bool> CanEditTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
         {
             return await Can(teamIds, null, [AppSystemPermission.EditViews], [AppViewPermission.EditView], [AppTeamPermission.EditTeam], ct);
+        }
+
+        public async Task<bool> HasFullNetworkAccess(IEnumerable<Guid> teamIds, CancellationToken ct)
+        {
+            return await Can(teamIds, null, [], [AppViewPermission.FullNetworkAccess], [AppTeamPermission.FullNetworkAccess], ct);
+        }
+
+        public async Task<IEnumerable<Guid>> GetUserTeamIds(IEnumerable<Guid> teamIds, CancellationToken ct)
+        {
+            var userTeamIds = new List<Guid>();
+
+            foreach (var teamId in teamIds)
+            {
+                var viewId = await _viewService.GetViewIdForTeam(teamId, ct);
+
+                if (!viewId.HasValue)
+                    continue;
+
+                ICollection<TeamPermissionsClaim> teamPermissionsClaims;
+
+                if (!_teamPermissionsCache.TryGetValue(viewId.Value, out teamPermissionsClaims))
+                {
+                    teamPermissionsClaims = await _playerApiClient.GetMyTeamPermissionsAsync(viewId.Value, null, true);
+                    _teamPermissionsCache.Add(viewId.Value, teamPermissionsClaims);
+                }
+
+                if (teamPermissionsClaims != null && teamPermissionsClaims.Any(x => x.TeamId == teamId))
+                {
+                    userTeamIds.Add(teamId);
+                }
+            }
+
+            return userTeamIds;
         }
 
         public async Task<bool> Can(IEnumerable<Guid> teamIds,

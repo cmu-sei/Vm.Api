@@ -48,18 +48,22 @@ namespace Player.Vm.Api.Features.Vsphere
                 throw new EntityNotFoundException<VsphereVirtualMachine>();
 
             var vsphereVirtualMachine = _mapper.Map<VsphereVirtualMachine>(domainMachine);
-            var canManage = await _playerService.CanManageTeams(vm.TeamIds, cancellationToken);
 
-            vsphereVirtualMachine.Ticket = await _vsphereService.GetConsoleUrl(domainMachine); ;
+            var networkPermissions = await _vmService.GetEffectiveNetworkPermissions(
+                vm.TeamIds, vm.AllowedNetworks, cancellationToken);
+
+            bool hasAnyNetworkAccess = networkPermissions.HasFullAccess || networkPermissions.AllowedNetworks?.Length > 0;
+
+            vsphereVirtualMachine.Ticket = await _vsphereService.GetConsoleUrl(domainMachine);
             vsphereVirtualMachine.NetworkCards = await _vsphereService.GetNicOptions(
                 id: vm.Id,
-                canManage: canManage,
-                allowedNetworks: vm.AllowedNetworks,
+                canManage: networkPermissions.HasFullAccess,
+                allowedNetworks: networkPermissions.AllowedNetworks,
                 machine: domainMachine);
 
             // copy vm properties
             vsphereVirtualMachine = _mapper.Map(vm, vsphereVirtualMachine);
-            vsphereVirtualMachine.CanAccessNicConfiguration = canManage;
+            vsphereVirtualMachine.CanAccessNicConfiguration = hasAnyNetworkAccess;
             vsphereVirtualMachine.IsOwner = vsphereVirtualMachine.UserId == _userId;
 
             return vsphereVirtualMachine;
@@ -91,7 +95,7 @@ namespace Player.Vm.Api.Features.Vsphere
             if (vm == null)
                 throw new EntityNotFoundException<VsphereVirtualMachine>();
 
-            if (requiredSystemPermissions.Any() || requiredViewPermissions.Any() || requiredTeamPermissions.Any())
+            if (requiredSystemPermissions.Length > 0 || requiredViewPermissions.Length > 0 || requiredTeamPermissions.Length > 0)
             {
                 if (!await _playerService.Can(vm.TeamIds, [], requiredSystemPermissions, requiredViewPermissions, requiredTeamPermissions, cancellationToken))
                     throw new ForbiddenException(errorMessage);
