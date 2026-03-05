@@ -35,8 +35,9 @@ namespace Player.Vm.Api.Features.Vsphere
                 IVmService vmService,
                 IMapper mapper,
                 IPlayerService playerService,
-                IPrincipal principal) :
-                base(mapper, vsphereService, playerService, principal, vmService)
+                IPrincipal principal,
+                IViewService viewService) :
+                base(mapper, vsphereService, playerService, principal, vmService, viewService)
             {
                 _vsphereService = vsphereService;
             }

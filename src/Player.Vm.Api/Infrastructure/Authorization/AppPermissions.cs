@@ -7,7 +7,9 @@ public enum AppSystemPermission
 {
     ViewViews,
     ManageViews,
-    EditViews
+    EditViews,
+    ViewNetworks,
+    ManageNetworks
 }
 
 public enum AppViewPermission
@@ -18,7 +20,9 @@ public enum AppViewPermission
     UploadViewIsos,
     DownloadVmFiles,
     UploadVmFiles,
-    RevertVms
+    RevertVms,
+    ViewNetworks,
+    ManageNetworks
 }
 
 public enum AppTeamPermission
