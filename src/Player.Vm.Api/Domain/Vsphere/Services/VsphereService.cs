@@ -877,10 +877,35 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public async Task<NicOptions> GetNicOptions(Guid id, bool canManage, IEnumerable<string> allowedNetworkIds, VsphereVirtualMachine machine)
         {
+            var available = await GetVmNetworks(machine, canManage, allowedNetworkIds);
+            var current = await GetVMConfiguration(machine, Feature.net);
+            var readOnly = new List<string>();
+
+            if (!canManage)
+            {
+                var aggregate = await this.GetVm(id);
+                List<Network> hostNetworks = _connectionService.GetNetworksByHost(machine.HostReference, aggregate.Connection.Address);
+
+                foreach (var (_, networkRef) in current)
+                {
+                    if (!string.IsNullOrEmpty(networkRef) && !available.ContainsKey(networkRef))
+                    {
+                        var net = hostNetworks.FirstOrDefault(n =>
+                            string.Equals(n.Reference, networkRef, StringComparison.OrdinalIgnoreCase));
+                        if (net != null)
+                        {
+                            available[net.Reference] = net.Name;
+                        }
+                        readOnly.Add(networkRef);
+                    }
+                }
+            }
+
             return new NicOptions
             {
-                AvailableNetworks = await GetVmNetworks(machine, canManage, allowedNetworkIds),
-                CurrentNetworks = await GetVMConfiguration(machine, Feature.net)
+                AvailableNetworks = available,
+                CurrentNetworks = current,
+                ReadOnlyNetworks = readOnly.ToArray()
             };
         }
 

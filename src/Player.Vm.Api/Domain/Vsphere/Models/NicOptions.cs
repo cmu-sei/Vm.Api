@@ -9,5 +9,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Models
     {
         public Dictionary<string, string> AvailableNetworks { get; set; }
         public Dictionary<string, string> CurrentNetworks { get; set; }
+        public string[] ReadOnlyNetworks { get; set; } = [];
     }
 }
