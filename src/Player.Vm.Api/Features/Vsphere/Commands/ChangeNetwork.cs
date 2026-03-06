@@ -36,18 +36,21 @@ namespace Player.Vm.Api.Features.Vsphere
             private readonly IVsphereService _vsphereService;
             private readonly IVmService _vmService;
             private readonly IMapper _mapper;
+            private readonly IViewService _viewService;
 
             public Handler(
                 IVsphereService vsphereService,
                 IVmService vmService,
                 IMapper mapper,
                 IPlayerService playerService,
+                IViewService viewService,
                 IPrincipal principal) :
-                base(mapper, vsphereService, playerService, principal, vmService)
+                base(mapper, vsphereService, playerService, principal, vmService, viewService)
             {
                 _vsphereService = vsphereService;
                 _vmService = vmService;
                 _mapper = mapper;
+                _viewService = viewService;
             }
 
             public async Task<VsphereVirtualMachine> Handle(Command request, CancellationToken cancellationToken)
@@ -60,8 +63,11 @@ namespace Player.Vm.Api.Features.Vsphere
 
                 var connectionAddress = await _vsphereService.GetConnectionAddress(vm.Id);
 
+                var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, cancellationToken);
+                var viewId = viewIds.FirstOrDefault();
+
                 var effectivePerms = await _vmService.GetEffectiveNetworkPermissions(
-                    vm.TeamIds, vm.AllowedNetworks,
+                    viewId, vm.TeamIds, vm.AllowedNetworks,
                     VmType.Vsphere, connectionAddress,
                     cancellationToken);
 

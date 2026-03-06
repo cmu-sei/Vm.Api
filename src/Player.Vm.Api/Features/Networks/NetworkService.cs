@@ -1,10 +1,11 @@
-// Copyright 2025 Carnegie Mellon University. All Rights Reserved.
+// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using System;
 using System.Collections.Generic;
@@ -16,13 +17,12 @@ namespace Player.Vm.Api.Features.Networks
 {
     public interface INetworkService
     {
-        Task<TeamNetworkPermission[]> GetByTeamId(Guid teamId, CancellationToken ct);
-        Task<TeamNetworkPermission> Get(Guid teamId, Guid id, CancellationToken ct);
-        Task<TeamNetworkPermission> Create(Guid teamId, TeamNetworkPermissionForm form, CancellationToken ct);
-        Task Delete(Guid teamId, Guid id, CancellationToken ct);
-        Task DeleteAllByTeam(Guid teamId, CancellationToken ct);
+        Task<ViewNetworkDto[]> GetByViewId(Guid viewId, CancellationToken ct);
+        Task<ViewNetworkDto> CreateViewNetwork(Guid viewId, CreateViewNetworkForm form, CancellationToken ct);
+        Task DeleteViewNetwork(Guid viewId, Guid id, CancellationToken ct);
+        Task<ViewNetworkDto> UpdateViewNetworkTeams(Guid viewId, Guid id, UpdateViewNetworkTeamsForm form, CancellationToken ct);
         Task<EffectiveNetworkPermission> GetEffectiveNetworkPermissions(
-            IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
+            Guid viewId, IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
             VmType providerType, string providerInstanceId,
             CancellationToken ct);
     }
@@ -38,109 +38,112 @@ namespace Player.Vm.Api.Features.Networks
             _playerService = playerService;
         }
 
-        public async Task<TeamNetworkPermission[]> GetByTeamId(Guid teamId, CancellationToken ct)
+        public async Task<ViewNetworkDto[]> GetByViewId(Guid viewId, CancellationToken ct)
         {
-            if (!await _playerService.CanManageTeams([teamId], ct))
+            if (!await CanManageView(viewId, ct))
                 throw new ForbiddenException();
 
-            var entities = await _context.TeamNetworkPermissions
-                .Where(t => t.TeamId == teamId)
+            var entities = await _context.ViewNetworks
+                .Where(n => n.ViewId == viewId)
                 .ToArrayAsync(ct);
 
             return entities.Select(MapToDto).ToArray();
         }
 
-        public async Task<TeamNetworkPermission> Get(Guid teamId, Guid id, CancellationToken ct)
+        public async Task<ViewNetworkDto> CreateViewNetwork(Guid viewId, CreateViewNetworkForm form, CancellationToken ct)
         {
-            if (!await _playerService.CanManageTeams([teamId], ct))
+            if (!await CanManageView(viewId, ct))
                 throw new ForbiddenException();
 
-            var entity = await _context.TeamNetworkPermissions
-                .Where(t => t.Id == id && t.TeamId == teamId)
-                .SingleOrDefaultAsync(ct);
-
-            if (entity == null)
-                throw new EntityNotFoundException<TeamNetworkPermission>();
-
-            return MapToDto(entity);
-        }
-
-        public async Task<TeamNetworkPermission> Create(Guid teamId, TeamNetworkPermissionForm form, CancellationToken ct)
-        {
-            if (!await _playerService.CanManageTeams([teamId], ct))
-                throw new ForbiddenException();
-
-            // Idempotent: return existing if duplicate
-            var existing = await _context.TeamNetworkPermissions
-                .Where(t => t.TeamId == teamId
-                    && t.ProviderType == form.ProviderType
-                    && t.ProviderInstanceId == form.ProviderInstanceId
-                    && t.NetworkId == form.NetworkId)
+            var existing = await _context.ViewNetworks
+                .Where(n => n.ViewId == viewId
+                    && n.ProviderType == form.ProviderType
+                    && n.ProviderInstanceId == form.ProviderInstanceId
+                    && n.NetworkId == form.NetworkId)
                 .SingleOrDefaultAsync(ct);
 
             if (existing != null)
                 return MapToDto(existing);
 
-            var entity = new Domain.Models.TeamNetworkPermission
+            var entity = new ViewNetwork
             {
-                TeamId = teamId,
+                ViewId = viewId,
                 ProviderType = form.ProviderType,
                 ProviderInstanceId = form.ProviderInstanceId,
-                NetworkId = form.NetworkId
+                NetworkId = form.NetworkId,
+                TeamIds = []
             };
 
-            _context.TeamNetworkPermissions.Add(entity);
+            _context.ViewNetworks.Add(entity);
             await _context.SaveChangesAsync(ct);
 
             return MapToDto(entity);
         }
 
-        public async Task Delete(Guid teamId, Guid id, CancellationToken ct)
+        public async Task DeleteViewNetwork(Guid viewId, Guid id, CancellationToken ct)
         {
-            if (!await _playerService.CanManageTeams([teamId], ct))
+            if (!await CanManageView(viewId, ct))
                 throw new ForbiddenException();
 
-            var entity = await _context.TeamNetworkPermissions
-                .Where(t => t.Id == id && t.TeamId == teamId)
+            var entity = await _context.ViewNetworks
+                .Where(n => n.Id == id && n.ViewId == viewId)
                 .SingleOrDefaultAsync(ct);
 
             if (entity == null)
-                throw new EntityNotFoundException<TeamNetworkPermission>();
+                throw new EntityNotFoundException<ViewNetwork>();
 
-            _context.TeamNetworkPermissions.Remove(entity);
+            _context.ViewNetworks.Remove(entity);
             await _context.SaveChangesAsync(ct);
         }
 
-        public async Task DeleteAllByTeam(Guid teamId, CancellationToken ct)
+        public async Task<ViewNetworkDto> UpdateViewNetworkTeams(Guid viewId, Guid id, UpdateViewNetworkTeamsForm form, CancellationToken ct)
         {
-            if (!await _playerService.CanManageTeams([teamId], ct))
+            if (!await CanManageView(viewId, ct))
                 throw new ForbiddenException();
 
-            var entities = await _context.TeamNetworkPermissions
-                .Where(t => t.TeamId == teamId)
-                .ToListAsync(ct);
+            var entity = await _context.ViewNetworks
+                .Where(n => n.Id == id && n.ViewId == viewId)
+                .SingleOrDefaultAsync(ct);
 
-            _context.TeamNetworkPermissions.RemoveRange(entities);
+            if (entity == null)
+                throw new EntityNotFoundException<ViewNetwork>();
+
+            entity.TeamIds = form.TeamIds ?? [];
             await _context.SaveChangesAsync(ct);
+
+            return MapToDto(entity);
         }
 
         public async Task<EffectiveNetworkPermission> GetEffectiveNetworkPermissions(
-            IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
+            Guid viewId, IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
             VmType providerType, string providerInstanceId,
             CancellationToken ct)
         {
             if (await _playerService.HasFullNetworkAccess(vmTeamIds, ct))
             {
-                return new EffectiveNetworkPermission { HasFullAccess = true };
+                // Full access is now scoped to view-registered networks
+                var viewNetworkIds = await _context.ViewNetworks
+                    .Where(n => n.ViewId == viewId
+                        && n.ProviderType == providerType
+                        && n.ProviderInstanceId == providerInstanceId)
+                    .Select(n => n.NetworkId)
+                    .ToArrayAsync(ct);
+
+                return new EffectiveNetworkPermission
+                {
+                    HasFullAccess = false,
+                    AllowedNetworkIds = viewNetworkIds
+                };
             }
 
-            var userTeamIds = await _playerService.GetUserTeamIds(vmTeamIds, ct);
+            var userTeamIds = (await _playerService.GetUserTeamIds(vmTeamIds, ct)).ToArray();
 
-            var allowedNetworkIds = await _context.TeamNetworkPermissions
-                .Where(t => userTeamIds.Contains(t.TeamId)
-                    && t.ProviderType == providerType
-                    && t.ProviderInstanceId == providerInstanceId)
-                .Select(t => t.NetworkId)
+            var allowedNetworkIds = await _context.ViewNetworks
+                .Where(n => n.ViewId == viewId
+                    && n.ProviderType == providerType
+                    && n.ProviderInstanceId == providerInstanceId
+                    && n.TeamIds.Any(t => userTeamIds.Contains(t)))
+                .Select(n => n.NetworkId)
                 .Distinct()
                 .ToArrayAsync(ct);
 
@@ -161,15 +164,26 @@ namespace Player.Vm.Api.Features.Networks
             };
         }
 
-        private static TeamNetworkPermission MapToDto(Domain.Models.TeamNetworkPermission entity)
+        private Task<bool> CanManageView(Guid viewId, CancellationToken ct)
         {
-            return new TeamNetworkPermission
+            return _playerService.Can(
+                [], [viewId],
+                [AppSystemPermission.ManageViews],
+                [AppViewPermission.ManageView],
+                [],
+                ct);
+        }
+
+        private static ViewNetworkDto MapToDto(ViewNetwork entity)
+        {
+            return new ViewNetworkDto
             {
                 Id = entity.Id,
-                TeamId = entity.TeamId,
+                ViewId = entity.ViewId,
                 ProviderType = entity.ProviderType,
                 ProviderInstanceId = entity.ProviderInstanceId,
-                NetworkId = entity.NetworkId
+                NetworkId = entity.NetworkId,
+                TeamIds = entity.TeamIds ?? []
             };
         }
     }

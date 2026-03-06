@@ -41,7 +41,7 @@ namespace Player.Vm.Api.Features.Vms
         Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct);
         Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct);
         Task<EffectiveNetworkPermission> GetEffectiveNetworkPermissions(
-            IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
+            Guid viewId, IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
             Domain.Models.VmType providerType, string providerInstanceId,
             CancellationToken ct);
     }
@@ -501,10 +501,10 @@ namespace Player.Vm.Api.Features.Vms
         }
 
         public Task<EffectiveNetworkPermission> GetEffectiveNetworkPermissions(
-            IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
+            Guid viewId, IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
             Domain.Models.VmType providerType, string providerInstanceId,
             CancellationToken ct)
-            => _networkService.GetEffectiveNetworkPermissions(vmTeamIds, vmAllowedNetworks, providerType, providerInstanceId, ct);
+            => _networkService.GetEffectiveNetworkPermissions(viewId, vmTeamIds, vmAllowedNetworks, providerType, providerInstanceId, ct);
 
         #region Private
 

@@ -121,7 +121,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                     b.ToTable("proxmox_vm_info");
                 });
 
-            modelBuilder.Entity("Player.Vm.Api.Domain.Models.TeamNetworkPermission", b =>
+            modelBuilder.Entity("Player.Vm.Api.Domain.Models.ViewNetwork", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -141,16 +141,20 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                         .HasColumnType("integer")
                         .HasColumnName("provider_type");
 
-                    b.Property<Guid>("TeamId")
+                    b.PrimitiveCollection<Guid[]>("TeamIds")
+                        .HasColumnType("uuid[]")
+                        .HasColumnName("team_ids");
+
+                    b.Property<Guid>("ViewId")
                         .HasColumnType("uuid")
-                        .HasColumnName("team_id");
+                        .HasColumnName("view_id");
 
                     b.HasKey("Id");
 
-                    b.HasIndex("TeamId", "ProviderType", "ProviderInstanceId", "NetworkId")
+                    b.HasIndex("ViewId", "ProviderType", "ProviderInstanceId", "NetworkId")
                         .IsUnique();
 
-                    b.ToTable("team_network_permissions");
+                    b.ToTable("view_networks");
                 });
 
             modelBuilder.Entity("Player.Vm.Api.Domain.Models.Vm", b =>

@@ -1,4 +1,4 @@
-// Copyright 2025 Carnegie Mellon University. All Rights Reserved.
+// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using Microsoft.AspNetCore.Authorization;
@@ -25,83 +25,57 @@ namespace Player.Vm.Api.Features.Networks
         }
 
         /// <summary>
-        /// Get all network permissions for a team
+        /// Get all networks for a view
         /// </summary>
-        /// <param name="teamId">The Id of the Team</param>
-        /// <param name="ct"></param>
-        [HttpGet("teams/{teamId}/network-permissions")]
-        [ProducesResponseType(typeof(IEnumerable<TeamNetworkPermission>), (int)HttpStatusCode.OK)]
-        [SwaggerOperation(OperationId = "getTeamNetworkPermissions")]
-        public async Task<IActionResult> GetByTeamId([FromRoute] Guid teamId, CancellationToken ct)
+        [HttpGet("views/{viewId}/networks")]
+        [ProducesResponseType(typeof(IEnumerable<ViewNetworkDto>), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getViewNetworks")]
+        public async Task<IActionResult> GetByViewId([FromRoute] Guid viewId, CancellationToken ct)
         {
-            var permissions = await _networkService.GetByTeamId(teamId, ct);
-            return Ok(permissions);
+            var networks = await _networkService.GetByViewId(viewId, ct);
+            return Ok(networks);
         }
 
         /// <summary>
-        /// Get a single network permission by Id
-        /// </summary>
-        /// <param name="teamId">The Id of the Team</param>
-        /// <param name="id">The Id of the network permission</param>
-        /// <param name="ct"></param>
-        [HttpGet("teams/{teamId}/network-permissions/{id}")]
-        [ProducesResponseType(typeof(TeamNetworkPermission), (int)HttpStatusCode.OK)]
-        [ProducesResponseType((int)HttpStatusCode.NotFound)]
-        [SwaggerOperation(OperationId = "getTeamNetworkPermission")]
-        public async Task<IActionResult> Get([FromRoute] Guid teamId, [FromRoute] Guid id, CancellationToken ct)
-        {
-            var permission = await _networkService.Get(teamId, id, ct);
-            return Ok(permission);
-        }
-
-        /// <summary>
-        /// Add a network permission for a team
+        /// Create a network entry for a view
         /// </summary>
         /// <remarks>
-        /// Idempotent — if a permission with the same ProviderType, ProviderInstanceId, and NetworkId already exists, it is returned.
+        /// Idempotent — if a network with the same ProviderType, ProviderInstanceId, and NetworkId already exists for this view, it is returned.
         /// </remarks>
-        /// <param name="teamId">The Id of the Team</param>
-        /// <param name="form">The network permission to create</param>
-        /// <param name="ct"></param>
-        [HttpPost("teams/{teamId}/network-permissions")]
-        [ProducesResponseType(typeof(TeamNetworkPermission), (int)HttpStatusCode.Created)]
-        [SwaggerOperation(OperationId = "createTeamNetworkPermission")]
-        public async Task<IActionResult> Create([FromRoute] Guid teamId, [FromBody] TeamNetworkPermissionForm form, CancellationToken ct)
+        [HttpPost("views/{viewId}/networks")]
+        [ProducesResponseType(typeof(ViewNetworkDto), (int)HttpStatusCode.Created)]
+        [SwaggerOperation(OperationId = "createViewNetwork")]
+        public async Task<IActionResult> Create([FromRoute] Guid viewId, [FromBody] CreateViewNetworkForm form, CancellationToken ct)
         {
             if (!ModelState.IsValid)
                 throw new InvalidOperationException();
 
-            var permission = await _networkService.Create(teamId, form, ct);
-            return CreatedAtAction(nameof(Get), new { teamId, id = permission.Id }, permission);
+            var network = await _networkService.CreateViewNetwork(viewId, form, ct);
+            return CreatedAtAction(nameof(GetByViewId), new { viewId }, network);
         }
 
         /// <summary>
-        /// Delete a single network permission
+        /// Delete a network entry from a view
         /// </summary>
-        /// <param name="teamId">The Id of the Team</param>
-        /// <param name="id">The Id of the network permission</param>
-        /// <param name="ct"></param>
-        [HttpDelete("teams/{teamId}/network-permissions/{id}")]
+        [HttpDelete("views/{viewId}/networks/{id}")]
         [ProducesResponseType((int)HttpStatusCode.NoContent)]
-        [SwaggerOperation(OperationId = "deleteTeamNetworkPermission")]
-        public async Task<IActionResult> Delete([FromRoute] Guid teamId, [FromRoute] Guid id, CancellationToken ct)
+        [SwaggerOperation(OperationId = "deleteViewNetwork")]
+        public async Task<IActionResult> Delete([FromRoute] Guid viewId, [FromRoute] Guid id, CancellationToken ct)
         {
-            await _networkService.Delete(teamId, id, ct);
+            await _networkService.DeleteViewNetwork(viewId, id, ct);
             return NoContent();
         }
 
         /// <summary>
-        /// Delete all network permissions for a team
+        /// Set team assignments for a network entry
         /// </summary>
-        /// <param name="teamId">The Id of the Team</param>
-        /// <param name="ct"></param>
-        [HttpDelete("teams/{teamId}/network-permissions")]
-        [ProducesResponseType((int)HttpStatusCode.NoContent)]
-        [SwaggerOperation(OperationId = "deleteAllTeamNetworkPermissions")]
-        public async Task<IActionResult> DeleteAll([FromRoute] Guid teamId, CancellationToken ct)
+        [HttpPut("views/{viewId}/networks/{id}/teams")]
+        [ProducesResponseType(typeof(ViewNetworkDto), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "updateViewNetworkTeams")]
+        public async Task<IActionResult> UpdateTeams([FromRoute] Guid viewId, [FromRoute] Guid id, [FromBody] UpdateViewNetworkTeamsForm form, CancellationToken ct)
         {
-            await _networkService.DeleteAllByTeam(teamId, ct);
-            return NoContent();
+            var network = await _networkService.UpdateViewNetworkTeams(viewId, id, form, ct);
+            return Ok(network);
         }
     }
 }

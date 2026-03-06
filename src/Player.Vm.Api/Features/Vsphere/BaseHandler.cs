@@ -25,6 +25,7 @@ namespace Player.Vm.Api.Features.Vsphere
         protected readonly IPlayerService _playerService;
         private readonly Guid _userId;
         private readonly IVmService _vmService;
+        private readonly IViewService _viewService;
 
 
         public BaseHandler(
@@ -32,13 +33,15 @@ namespace Player.Vm.Api.Features.Vsphere
             IVsphereService vsphereService,
             IPlayerService playerService,
             IPrincipal principal,
-            IVmService vmService)
+            IVmService vmService,
+            IViewService viewService)
         {
             _mapper = mapper;
             _vsphereService = vsphereService;
             _playerService = playerService;
             _userId = (principal as ClaimsPrincipal).GetId();
             _vmService = vmService;
+            _viewService = viewService;
         }
 
         protected async Task<VsphereVirtualMachine> GetVsphereVirtualMachine(Features.Vms.Vm vm, CancellationToken cancellationToken)
@@ -52,8 +55,11 @@ namespace Player.Vm.Api.Features.Vsphere
 
             var connectionAddress = await _vsphereService.GetConnectionAddress(vm.Id);
 
+            var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, cancellationToken);
+            var viewId = viewIds.FirstOrDefault();
+
             var networkPermissions = await _vmService.GetEffectiveNetworkPermissions(
-                vm.TeamIds, vm.AllowedNetworks,
+                viewId, vm.TeamIds, vm.AllowedNetworks,
                 VmType.Vsphere, connectionAddress,
                 cancellationToken);
 
