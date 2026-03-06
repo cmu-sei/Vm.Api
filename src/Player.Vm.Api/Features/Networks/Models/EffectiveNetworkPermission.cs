@@ -6,6 +6,6 @@ namespace Player.Vm.Api.Features.Networks
     public class EffectiveNetworkPermission
     {
         public bool HasFullAccess { get; set; }
-        public string[] AllowedNetworks { get; set; }
+        public string[] AllowedNetworkIds { get; set; }
     }
 }

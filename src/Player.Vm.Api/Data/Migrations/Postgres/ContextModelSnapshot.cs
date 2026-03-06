@@ -129,25 +129,25 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                         .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
 
-                    b.Property<string>("ExternalId")
+                    b.Property<string>("NetworkId")
                         .HasColumnType("text")
-                        .HasColumnName("external_id");
+                        .HasColumnName("network_id");
 
-                    b.Property<string>("NetworkName")
+                    b.Property<string>("ProviderInstanceId")
                         .HasColumnType("text")
-                        .HasColumnName("network_name");
+                        .HasColumnName("provider_instance_id");
+
+                    b.Property<int>("ProviderType")
+                        .HasColumnType("integer")
+                        .HasColumnName("provider_type");
 
                     b.Property<Guid>("TeamId")
                         .HasColumnType("uuid")
                         .HasColumnName("team_id");
 
-                    b.Property<string>("Type")
-                        .HasColumnType("text")
-                        .HasColumnName("type");
-
                     b.HasKey("Id");
 
-                    b.HasIndex("TeamId", "NetworkName", "Type", "ExternalId")
+                    b.HasIndex("TeamId", "ProviderType", "ProviderInstanceId", "NetworkId")
                         .IsUnique();
 
                     b.ToTable("team_network_permissions");

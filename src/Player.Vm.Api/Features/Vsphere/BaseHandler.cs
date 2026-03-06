@@ -14,6 +14,7 @@ using System.Security.Claims;
 using Player.Vm.Api.Infrastructure.Extensions;
 using System.Linq;
 using Player.Vm.Api.Infrastructure.Authorization;
+using Player.Vm.Api.Domain.Models;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -49,16 +50,20 @@ namespace Player.Vm.Api.Features.Vsphere
 
             var vsphereVirtualMachine = _mapper.Map<VsphereVirtualMachine>(domainMachine);
 
-            var networkPermissions = await _vmService.GetEffectiveNetworkPermissions(
-                vm.TeamIds, vm.AllowedNetworks, cancellationToken);
+            var connectionAddress = await _vsphereService.GetConnectionAddress(vm.Id);
 
-            bool hasAnyNetworkAccess = networkPermissions.HasFullAccess || networkPermissions.AllowedNetworks?.Length > 0;
+            var networkPermissions = await _vmService.GetEffectiveNetworkPermissions(
+                vm.TeamIds, vm.AllowedNetworks,
+                VmType.Vsphere, connectionAddress,
+                cancellationToken);
+
+            bool hasAnyNetworkAccess = networkPermissions.HasFullAccess || networkPermissions.AllowedNetworkIds?.Length > 0;
 
             vsphereVirtualMachine.Ticket = await _vsphereService.GetConsoleUrl(domainMachine);
             vsphereVirtualMachine.NetworkCards = await _vsphereService.GetNicOptions(
                 id: vm.Id,
                 canManage: networkPermissions.HasFullAccess,
-                allowedNetworks: networkPermissions.AllowedNetworks,
+                allowedNetworkIds: networkPermissions.AllowedNetworkIds,
                 machine: domainMachine);
 
             // copy vm properties

@@ -24,7 +24,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
     {
         Task<VsphereVirtualMachine> GetMachineById(Guid id);
         Task<string> GetConsoleUrl(VsphereVirtualMachine machine);
-        Task<NicOptions> GetNicOptions(Guid id, bool canManage, IEnumerable<string> allowedNetworks, VsphereVirtualMachine machine);
+        Task<NicOptions> GetNicOptions(Guid id, bool canManage, IEnumerable<string> allowedNetworkIds, VsphereVirtualMachine machine);
+        Task<string> GetConnectionAddress(Guid vmId);
         Task<string> PowerOnVm(Guid id);
         Task<string> PowerOffVm(Guid id);
         Task<string> RebootVm(Guid id);
@@ -874,35 +875,44 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return info;
         }
 
-        public async Task<NicOptions> GetNicOptions(Guid id, bool canManage, IEnumerable<string> allowedNetworks, VsphereVirtualMachine machine)
+        public async Task<NicOptions> GetNicOptions(Guid id, bool canManage, IEnumerable<string> allowedNetworkIds, VsphereVirtualMachine machine)
         {
             return new NicOptions
             {
-                AvailableNetworks = await GetVmNetworks(machine, canManage, allowedNetworks),
+                AvailableNetworks = await GetVmNetworks(machine, canManage, allowedNetworkIds),
                 CurrentNetworks = await GetVMConfiguration(machine, Feature.net)
             };
         }
 
-        public async Task<List<string>> GetVmNetworks(VsphereVirtualMachine machine, bool canManage, IEnumerable<string> allowedNetworks)
+        public async Task<string> GetConnectionAddress(Guid vmId)
+        {
+            var aggregate = await this.GetVm(vmId);
+            return aggregate?.Connection?.Address;
+        }
+
+        public async Task<Dictionary<string, string>> GetVmNetworks(VsphereVirtualMachine machine, bool canManage, IEnumerable<string> allowedNetworkIds)
         {
             var aggregate = await this.GetVm(machine.Id);
             List<Network> hostNetworks = _connectionService.GetNetworksByHost(machine.HostReference, aggregate.Connection.Address);
-            List<string> networkNames = hostNetworks.Select(n => n.Name).ToList();
 
             // if a user can manage this VM, then they have access to all available NICs
             if (canManage)
             {
-                return networkNames.OrderBy(x => x).ToList();
+                return hostNetworks.OrderBy(n => n.Name).ToDictionary(n => n.Reference, n => n.Name);
             }
             else
             {
-                if (allowedNetworks != null)
+                if (allowedNetworkIds != null)
                 {
-                    return networkNames.Intersect(allowedNetworks, StringComparer.InvariantCultureIgnoreCase).OrderBy(x => x).ToList();
+                    var idSet = new HashSet<string>(allowedNetworkIds, StringComparer.OrdinalIgnoreCase);
+                    return hostNetworks
+                        .Where(n => idSet.Contains(n.Reference))
+                        .OrderBy(n => n.Name)
+                        .ToDictionary(n => n.Reference, n => n.Name);
                 }
                 else
                 {
-                    return new List<string>();
+                    return new Dictionary<string, string>();
                 }
             }
         }
@@ -938,25 +948,20 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                         {
                             if (backingInfo.GetType() == typeof(VirtualEthernetCardDistributedVirtualPortBackingInfo))
                             {
-                                var card = backingInfo as VirtualEthernetCardDistributedVirtualPortBackingInfo; var portGroupKey = card?.port?.portgroupKey;
+                                var card = backingInfo as VirtualEthernetCardDistributedVirtualPortBackingInfo;
+                                var portGroupKey = card?.port?.portgroupKey;
 
                                 if (!string.IsNullOrEmpty(portGroupKey))
                                 {
-                                    var network = _connectionService.GetNetworkByReference(portGroupKey, aggregate.Connection.Address);
-                                    string cardName = network?.Name;
-
-                                    if (!string.IsNullOrEmpty(cardName))
-                                    {
-                                        names.Add(deviceInfo.label, cardName);
-                                    }
+                                    names.Add(deviceInfo.label, portGroupKey);
                                 }
                             }
                             else if (backingInfo.GetType() == typeof(VirtualEthernetCardNetworkBackingInfo))
                             {
                                 var card = backingInfo as VirtualEthernetCardNetworkBackingInfo;
-                                names.Add(deviceInfo.label, card.deviceName);
+                                var network = _connectionService.GetNetworkByName(card.deviceName, aggregate.Connection.Address);
+                                names.Add(deviceInfo.label, network?.Reference ?? card.deviceName);
                             }
-                            //
                         }
                     }
                     break;
@@ -1068,7 +1073,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                     if (card != null)
                     {
-                        Network network = _connectionService.GetNetworkByName(newvalue, aggregate.Connection.Address);
+                        Network network = _connectionService.GetNetworkByReference(newvalue, aggregate.Connection.Address);
 
                         if (network.IsDistributed)
                         {
@@ -1085,7 +1090,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                         {
                             card.backing = new VirtualEthernetCardNetworkBackingInfo
                             {
-                                deviceName = newvalue
+                                deviceName = network.Name
                             };
                         }
 

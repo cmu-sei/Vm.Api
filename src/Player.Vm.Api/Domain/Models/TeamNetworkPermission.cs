@@ -15,16 +15,16 @@ namespace Player.Vm.Api.Domain.Models
         [DatabaseGenerated(DatabaseGeneratedOption.Identity)]
         public Guid Id { get; set; }
         public Guid TeamId { get; set; }
-        public string NetworkName { get; set; }
-        public string Type { get; set; } = "";
-        public string ExternalId { get; set; } = "";
+        public VmType ProviderType { get; set; } = VmType.Unknown;
+        public string ProviderInstanceId { get; set; } = "";
+        public string NetworkId { get; set; } = "";
     }
 
     public class TeamNetworkPermissionConfiguration : IEntityTypeConfiguration<TeamNetworkPermission>
     {
         public void Configure(EntityTypeBuilder<TeamNetworkPermission> builder)
         {
-            builder.HasIndex(x => new { x.TeamId, x.NetworkName, x.Type, x.ExternalId }).IsUnique();
+            builder.HasIndex(x => new { x.TeamId, x.ProviderType, x.ProviderInstanceId, x.NetworkId }).IsUnique();
         }
     }
 }

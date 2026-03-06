@@ -3,6 +3,7 @@
 
 using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Data;
+using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using System;
@@ -21,7 +22,9 @@ namespace Player.Vm.Api.Features.Networks
         Task Delete(Guid teamId, Guid id, CancellationToken ct);
         Task DeleteAllByTeam(Guid teamId, CancellationToken ct);
         Task<EffectiveNetworkPermission> GetEffectiveNetworkPermissions(
-            IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks, CancellationToken ct);
+            IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
+            VmType providerType, string providerInstanceId,
+            CancellationToken ct);
     }
 
     public class NetworkService : INetworkService
@@ -67,15 +70,12 @@ namespace Player.Vm.Api.Features.Networks
             if (!await _playerService.CanManageTeams([teamId], ct))
                 throw new ForbiddenException();
 
-            var type = form.Type ?? "";
-            var externalId = form.ExternalId ?? "";
-
             // Idempotent: return existing if duplicate
             var existing = await _context.TeamNetworkPermissions
                 .Where(t => t.TeamId == teamId
-                    && t.NetworkName == form.NetworkName
-                    && t.Type == type
-                    && t.ExternalId == externalId)
+                    && t.ProviderType == form.ProviderType
+                    && t.ProviderInstanceId == form.ProviderInstanceId
+                    && t.NetworkId == form.NetworkId)
                 .SingleOrDefaultAsync(ct);
 
             if (existing != null)
@@ -84,9 +84,9 @@ namespace Player.Vm.Api.Features.Networks
             var entity = new Domain.Models.TeamNetworkPermission
             {
                 TeamId = teamId,
-                NetworkName = form.NetworkName,
-                Type = type,
-                ExternalId = externalId
+                ProviderType = form.ProviderType,
+                ProviderInstanceId = form.ProviderInstanceId,
+                NetworkId = form.NetworkId
             };
 
             _context.TeamNetworkPermissions.Add(entity);
@@ -125,7 +125,9 @@ namespace Player.Vm.Api.Features.Networks
         }
 
         public async Task<EffectiveNetworkPermission> GetEffectiveNetworkPermissions(
-            IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks, CancellationToken ct)
+            IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
+            VmType providerType, string providerInstanceId,
+            CancellationToken ct)
         {
             if (await _playerService.HasFullNetworkAccess(vmTeamIds, ct))
             {
@@ -134,18 +136,20 @@ namespace Player.Vm.Api.Features.Networks
 
             var userTeamIds = await _playerService.GetUserTeamIds(vmTeamIds, ct);
 
-            var allowedNetworks = await _context.TeamNetworkPermissions
-                .Where(t => userTeamIds.Contains(t.TeamId))
-                .Select(t => t.NetworkName)
+            var allowedNetworkIds = await _context.TeamNetworkPermissions
+                .Where(t => userTeamIds.Contains(t.TeamId)
+                    && t.ProviderType == providerType
+                    && t.ProviderInstanceId == providerInstanceId)
+                .Select(t => t.NetworkId)
                 .Distinct()
                 .ToArrayAsync(ct);
 
-            if (allowedNetworks.Length > 0)
+            if (allowedNetworkIds.Length > 0)
             {
                 return new EffectiveNetworkPermission
                 {
                     HasFullAccess = false,
-                    AllowedNetworks = allowedNetworks
+                    AllowedNetworkIds = allowedNetworkIds
                 };
             }
 
@@ -153,7 +157,7 @@ namespace Player.Vm.Api.Features.Networks
             return new EffectiveNetworkPermission
             {
                 HasFullAccess = false,
-                AllowedNetworks = vmAllowedNetworks
+                AllowedNetworkIds = vmAllowedNetworks
             };
         }
 
@@ -163,9 +167,9 @@ namespace Player.Vm.Api.Features.Networks
             {
                 Id = entity.Id,
                 TeamId = entity.TeamId,
-                NetworkName = entity.NetworkName,
-                Type = entity.Type,
-                ExternalId = entity.ExternalId
+                ProviderType = entity.ProviderType,
+                ProviderInstanceId = entity.ProviderInstanceId,
+                NetworkId = entity.NetworkId
             };
         }
     }

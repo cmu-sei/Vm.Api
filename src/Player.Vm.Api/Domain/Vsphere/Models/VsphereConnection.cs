@@ -443,7 +443,8 @@ public class VsphereConnection
                     {
                         IsDistributed = false,
                         Name = name,
-                        SwitchId = null
+                        SwitchId = null,
+                        Reference = net.obj.Value
                     };
                 }
                 else if (net.obj.type == "DistributedVirtualPortgroup")

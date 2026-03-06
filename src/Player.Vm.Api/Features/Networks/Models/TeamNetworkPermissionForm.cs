@@ -2,14 +2,17 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System.ComponentModel.DataAnnotations;
+using Player.Vm.Api.Domain.Models;
 
 namespace Player.Vm.Api.Features.Networks
 {
     public class TeamNetworkPermissionForm
     {
         [Required]
-        public string NetworkName { get; set; }
-        public string Type { get; set; }
-        public string ExternalId { get; set; }
+        public VmType ProviderType { get; set; }
+        [Required]
+        public string ProviderInstanceId { get; set; }
+        [Required]
+        public string NetworkId { get; set; }
     }
 }

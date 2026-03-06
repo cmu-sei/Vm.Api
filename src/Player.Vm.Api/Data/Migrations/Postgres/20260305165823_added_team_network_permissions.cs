@@ -17,9 +17,9 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "uuid_generate_v4()"),
                     team_id = table.Column<Guid>(type: "uuid", nullable: false),
-                    network_name = table.Column<string>(type: "text", nullable: true),
-                    type = table.Column<string>(type: "text", nullable: true),
-                    external_id = table.Column<string>(type: "text", nullable: true)
+                    provider_type = table.Column<int>(type: "integer", nullable: false),
+                    provider_instance_id = table.Column<string>(type: "text", nullable: true),
+                    network_id = table.Column<string>(type: "text", nullable: true)
                 },
                 constraints: table =>
                 {
@@ -27,9 +27,9 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                 });
 
             migrationBuilder.CreateIndex(
-                name: "IX_team_network_permissions_team_id_network_name_type_external~",
+                name: "IX_team_network_permissions_team_id_provider_type_provider_ins~",
                 table: "team_network_permissions",
-                columns: new[] { "team_id", "network_name", "type", "external_id" },
+                columns: new[] { "team_id", "provider_type", "provider_instance_id", "network_id" },
                 unique: true);
         }
 

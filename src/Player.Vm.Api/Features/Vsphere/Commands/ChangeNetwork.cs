@@ -16,6 +16,7 @@ using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Domain.Services;
 using System.Security.Principal;
 using Player.Vm.Api.Infrastructure.Authorization;
+using Player.Vm.Api.Domain.Models;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -57,17 +58,20 @@ namespace Player.Vm.Api.Features.Vsphere
                 if (vm == null)
                     throw new EntityNotFoundException<VsphereVirtualMachine>();
 
+                var connectionAddress = await _vsphereService.GetConnectionAddress(vm.Id);
+
                 var effectivePerms = await _vmService.GetEffectiveNetworkPermissions(
-                    vm.TeamIds, vm.AllowedNetworks, cancellationToken);
+                    vm.TeamIds, vm.AllowedNetworks,
+                    VmType.Vsphere, connectionAddress,
+                    cancellationToken);
 
                 if (effectivePerms.HasFullAccess)
                 {
                     // Full access — allow any network
                 }
-                else if (effectivePerms.AllowedNetworks?.Length > 0)
+                else if (effectivePerms.AllowedNetworkIds?.Length > 0)
                 {
-                    // Validate target network is in allowed list
-                    if (!effectivePerms.AllowedNetworks.Contains(request.Network, StringComparer.OrdinalIgnoreCase))
+                    if (!effectivePerms.AllowedNetworkIds.Contains(request.Network, StringComparer.OrdinalIgnoreCase))
                         throw new ForbiddenException("The target network is not in your allowed networks list");
                 }
                 else

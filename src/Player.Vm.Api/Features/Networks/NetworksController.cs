@@ -58,7 +58,7 @@ namespace Player.Vm.Api.Features.Networks
         /// Add a network permission for a team
         /// </summary>
         /// <remarks>
-        /// Idempotent — if a permission with the same NetworkName, Type, and ExternalId already exists, it is returned.
+        /// Idempotent — if a permission with the same ProviderType, ProviderInstanceId, and NetworkId already exists, it is returned.
         /// </remarks>
         /// <param name="teamId">The Id of the Team</param>
         /// <param name="form">The network permission to create</param>

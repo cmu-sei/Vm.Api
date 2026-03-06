@@ -7,7 +7,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Models
 {
     public class NicOptions
     {
-        public List<string> AvailableNetworks { get; set; }
+        public Dictionary<string, string> AvailableNetworks { get; set; }
         public Dictionary<string, string> CurrentNetworks { get; set; }
     }
 }
