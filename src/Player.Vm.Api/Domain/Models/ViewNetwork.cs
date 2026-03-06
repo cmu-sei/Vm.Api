@@ -18,6 +18,7 @@ namespace Player.Vm.Api.Domain.Models
         public VmType ProviderType { get; set; } = VmType.Unknown;
         public string ProviderInstanceId { get; set; } = "";
         public string NetworkId { get; set; } = "";
+        public string Name { get; set; } = "";
         public Guid[] TeamIds { get; set; } = [];
     }
 

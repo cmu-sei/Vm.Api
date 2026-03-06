@@ -37,6 +37,18 @@ namespace Player.Vm.Api.Features.Networks
         }
 
         /// <summary>
+        /// Get a single network entry for a view
+        /// </summary>
+        [HttpGet("views/{viewId}/networks/{id}")]
+        [ProducesResponseType(typeof(ViewNetworkDto), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getViewNetwork")]
+        public async Task<IActionResult> GetById([FromRoute] Guid viewId, [FromRoute] Guid id, CancellationToken ct)
+        {
+            var network = await _networkService.GetById(viewId, id, ct);
+            return Ok(network);
+        }
+
+        /// <summary>
         /// Create a network entry for a view
         /// </summary>
         /// <remarks>
@@ -51,7 +63,22 @@ namespace Player.Vm.Api.Features.Networks
                 throw new InvalidOperationException();
 
             var network = await _networkService.CreateViewNetwork(viewId, form, ct);
-            return CreatedAtAction(nameof(GetByViewId), new { viewId }, network);
+            return CreatedAtAction(nameof(GetById), new { viewId, id = network.Id }, network);
+        }
+
+        /// <summary>
+        /// Update a network entry for a view
+        /// </summary>
+        [HttpPut("views/{viewId}/networks/{id}")]
+        [ProducesResponseType(typeof(ViewNetworkDto), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "updateViewNetwork")]
+        public async Task<IActionResult> Update([FromRoute] Guid viewId, [FromRoute] Guid id, [FromBody] UpdateViewNetworkForm form, CancellationToken ct)
+        {
+            if (!ModelState.IsValid)
+                throw new InvalidOperationException();
+
+            var network = await _networkService.UpdateViewNetwork(viewId, id, form, ct);
+            return Ok(network);
         }
 
         /// <summary>
@@ -64,18 +91,6 @@ namespace Player.Vm.Api.Features.Networks
         {
             await _networkService.DeleteViewNetwork(viewId, id, ct);
             return NoContent();
-        }
-
-        /// <summary>
-        /// Set team assignments for a network entry
-        /// </summary>
-        [HttpPut("views/{viewId}/networks/{id}/teams")]
-        [ProducesResponseType(typeof(ViewNetworkDto), (int)HttpStatusCode.OK)]
-        [SwaggerOperation(OperationId = "updateViewNetworkTeams")]
-        public async Task<IActionResult> UpdateTeams([FromRoute] Guid viewId, [FromRoute] Guid id, [FromBody] UpdateViewNetworkTeamsForm form, CancellationToken ct)
-        {
-            var network = await _networkService.UpdateViewNetworkTeams(viewId, id, form, ct);
-            return Ok(network);
         }
     }
 }

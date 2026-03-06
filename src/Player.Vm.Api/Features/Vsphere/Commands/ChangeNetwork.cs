@@ -71,14 +71,20 @@ namespace Player.Vm.Api.Features.Vsphere
                     VmType.Vsphere, connectionAddress,
                     cancellationToken);
 
-                if (effectivePerms.HasFullAccess)
+                if (effectivePerms.AllowedNetworks?.Count > 0)
                 {
-                    // Full access — allow any network
-                }
-                else if (effectivePerms.AllowedNetworkIds?.Length > 0)
-                {
-                    if (!effectivePerms.AllowedNetworkIds.Contains(request.Network, StringComparer.OrdinalIgnoreCase))
+                    if (!effectivePerms.AllowedNetworks.ContainsKey(request.Network))
                         throw new ForbiddenException("The target network is not in your allowed networks list");
+
+                    // Validate stored name matches actual vSphere network name
+                    var storedName = effectivePerms.AllowedNetworks[request.Network];
+                    if (storedName != null)
+                    {
+                        var machine = await _vsphereService.GetMachineById(vm.Id);
+                        var validated = await _vsphereService.GetVmNetworks(machine, false, effectivePerms.AllowedNetworks);
+                        if (!validated.ContainsKey(request.Network))
+                            throw new ForbiddenException("Network name mismatch — the registered network may have been renamed or misconfigured");
+                    }
                 }
                 else
                 {

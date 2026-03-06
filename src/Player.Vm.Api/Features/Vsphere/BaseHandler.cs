@@ -63,13 +63,13 @@ namespace Player.Vm.Api.Features.Vsphere
                 VmType.Vsphere, connectionAddress,
                 cancellationToken);
 
-            bool hasAnyNetworkAccess = networkPermissions.HasFullAccess || networkPermissions.AllowedNetworkIds?.Length > 0;
+            bool hasAnyNetworkAccess = networkPermissions.AllowedNetworks?.Count > 0;
 
             vsphereVirtualMachine.Ticket = await _vsphereService.GetConsoleUrl(domainMachine);
             vsphereVirtualMachine.NetworkCards = await _vsphereService.GetNicOptions(
                 id: vm.Id,
-                canManage: networkPermissions.HasFullAccess,
-                allowedNetworkIds: networkPermissions.AllowedNetworkIds,
+                canManage: false,
+                allowedNetworks: networkPermissions.AllowedNetworks,
                 machine: domainMachine);
 
             // copy vm properties

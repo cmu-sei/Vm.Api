@@ -2,17 +2,20 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using System.ComponentModel.DataAnnotations;
 using Player.Vm.Api.Domain.Models;
 
 namespace Player.Vm.Api.Features.Networks
 {
-    public class ViewNetworkDto
+    public class UpdateViewNetworkForm
     {
-        public Guid Id { get; set; }
-        public Guid ViewId { get; set; }
+        [Required]
         public VmType ProviderType { get; set; }
+        [Required]
         public string ProviderInstanceId { get; set; }
+        [Required]
         public string NetworkId { get; set; }
+        [Required]
         public string Name { get; set; }
         public Guid[] TeamIds { get; set; } = [];
     }

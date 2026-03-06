@@ -24,7 +24,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
     {
         Task<VsphereVirtualMachine> GetMachineById(Guid id);
         Task<string> GetConsoleUrl(VsphereVirtualMachine machine);
-        Task<NicOptions> GetNicOptions(Guid id, bool canManage, IEnumerable<string> allowedNetworkIds, VsphereVirtualMachine machine);
+        Task<NicOptions> GetNicOptions(Guid id, bool canManage, Dictionary<string, string> allowedNetworks, VsphereVirtualMachine machine);
+        Task<Dictionary<string, string>> GetVmNetworks(VsphereVirtualMachine machine, bool canManage, Dictionary<string, string> allowedNetworks);
         Task<string> GetConnectionAddress(Guid vmId);
         Task<string> PowerOnVm(Guid id);
         Task<string> PowerOffVm(Guid id);
@@ -875,9 +876,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return info;
         }
 
-        public async Task<NicOptions> GetNicOptions(Guid id, bool canManage, IEnumerable<string> allowedNetworkIds, VsphereVirtualMachine machine)
+        public async Task<NicOptions> GetNicOptions(Guid id, bool canManage, Dictionary<string, string> allowedNetworks, VsphereVirtualMachine machine)
         {
-            var available = await GetVmNetworks(machine, canManage, allowedNetworkIds);
+            var available = await GetVmNetworks(machine, canManage, allowedNetworks);
             var current = await GetVMConfiguration(machine, Feature.net);
             var readOnly = new List<string>();
 
@@ -915,23 +916,22 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return aggregate?.Connection?.Address;
         }
 
-        public async Task<Dictionary<string, string>> GetVmNetworks(VsphereVirtualMachine machine, bool canManage, IEnumerable<string> allowedNetworkIds)
+        public async Task<Dictionary<string, string>> GetVmNetworks(VsphereVirtualMachine machine, bool canManage, Dictionary<string, string> allowedNetworks)
         {
             var aggregate = await this.GetVm(machine.Id);
             List<Network> hostNetworks = _connectionService.GetNetworksByHost(machine.HostReference, aggregate.Connection.Address);
 
-            // if a user can manage this VM, then they have access to all available NICs
             if (canManage)
             {
                 return hostNetworks.OrderBy(n => n.Name).ToDictionary(n => n.Reference, n => n.Name);
             }
             else
             {
-                if (allowedNetworkIds != null)
+                if (allowedNetworks != null)
                 {
-                    var idSet = new HashSet<string>(allowedNetworkIds, StringComparer.OrdinalIgnoreCase);
                     return hostNetworks
-                        .Where(n => idSet.Contains(n.Reference))
+                        .Where(n => allowedNetworks.TryGetValue(n.Reference, out var storedName)
+                            && (storedName == null || string.Equals(n.Name, storedName, StringComparison.OrdinalIgnoreCase)))
                         .OrderBy(n => n.Name)
                         .ToDictionary(n => n.Reference, n => n.Name);
                 }
