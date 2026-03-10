@@ -11,7 +11,6 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Player.Api.Client;
-using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
 namespace Player.Vm.Api.Domain.Services
 {
@@ -113,13 +112,21 @@ namespace Player.Vm.Api.Domain.Services
         private async Task<TeamInfo> GetTeamInfoFromPlayer(Guid teamId, CancellationToken ct)
         {
             var teamInfo = new TeamInfo();
-            var team = await _playerApiClient.GetTeamAsync(teamId, ct);
-            if (team != null)
+
+            try
             {
-                teamInfo.ViewId = team.ViewId;
-                teamInfo.TeamName = team.Name;
-                var view = await _playerApiClient.GetViewAsync(team.ViewId, ct);
-                teamInfo.ViewName = view.Name;
+                var team = await _playerApiClient.GetTeamAsync(teamId, ct);
+                if (team != null)
+                {
+                    teamInfo.ViewId = team.ViewId;
+                    teamInfo.TeamName = team.Name;
+                    var view = await _playerApiClient.GetViewAsync(team.ViewId, ct);
+                    teamInfo.ViewName = view.Name;
+                }
+            }
+            catch (ApiException ex) when (ex.StatusCode == 404)
+            {
+                _logger.LogWarning("Team {TeamId} not found in Player API", teamId);
             }
 
             return teamInfo;
