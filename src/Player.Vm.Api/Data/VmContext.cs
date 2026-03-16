@@ -2,6 +2,7 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -41,14 +42,14 @@ namespace Player.Vm.Api.Data
             }
         }
 
-        protected override async Task PublishEventsAsync(CancellationToken cancellationToken)
+        public override async Task PublishEventsAsync(IReadOnlyList<IEntityEvent> events, CancellationToken cancellationToken)
         {
-            if (EntityEvents.Count > 0 && ServiceProvider is not null)
+            if (ServiceProvider is not null)
             {
                 var mediator = ServiceProvider.GetRequiredService<IMediator>();
                 var logger = ServiceProvider.GetRequiredService<ILogger<VmContext>>();
 
-                foreach (var evt in EntityEvents.Cast<INotification>())
+                foreach (var evt in events.Cast<INotification>())
                 {
                     try
                     {
