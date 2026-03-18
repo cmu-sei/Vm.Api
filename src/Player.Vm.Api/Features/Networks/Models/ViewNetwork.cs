@@ -6,7 +6,7 @@ using Player.Vm.Api.Domain.Models;
 
 namespace Player.Vm.Api.Features.Networks
 {
-    public class ViewNetworkDto
+    public class ViewNetwork
     {
         public Guid Id { get; set; }
         public Guid ViewId { get; set; }

@@ -67,7 +67,7 @@ namespace Player.Vm.Api.Features.Vsphere
                 var viewId = viewIds.FirstOrDefault();
 
                 var effectivePerms = await _vmService.GetEffectiveNetworkPermissions(
-                    viewId, vm.TeamIds, vm.AllowedNetworks,
+                    viewId, vm.TeamIds,
                     VmType.Vsphere, connectionAddress,
                     cancellationToken);
 

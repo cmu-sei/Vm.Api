@@ -1,6 +1,7 @@
 // Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
+using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Models;
@@ -17,13 +18,13 @@ namespace Player.Vm.Api.Features.Networks
 {
     public interface INetworkService
     {
-        Task<ViewNetworkDto[]> GetByViewId(Guid viewId, CancellationToken ct);
-        Task<ViewNetworkDto> GetById(Guid viewId, Guid id, CancellationToken ct);
-        Task<ViewNetworkDto> CreateViewNetwork(Guid viewId, CreateViewNetworkForm form, CancellationToken ct);
-        Task<ViewNetworkDto> UpdateViewNetwork(Guid viewId, Guid id, UpdateViewNetworkForm form, CancellationToken ct);
+        Task<ViewNetwork[]> GetByViewId(Guid viewId, CancellationToken ct);
+        Task<ViewNetwork> GetById(Guid viewId, Guid id, CancellationToken ct);
+        Task<ViewNetwork> CreateViewNetwork(Guid viewId, CreateViewNetworkForm form, CancellationToken ct);
+        Task<ViewNetwork> UpdateViewNetwork(Guid viewId, Guid id, UpdateViewNetworkForm form, CancellationToken ct);
         Task DeleteViewNetwork(Guid viewId, Guid id, CancellationToken ct);
         Task<EffectiveNetworkPermission> GetEffectiveNetworkPermissions(
-            Guid viewId, IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
+            Guid viewId, IEnumerable<Guid> vmTeamIds,
             VmType providerType, string providerInstanceId,
             CancellationToken ct);
     }
@@ -32,14 +33,16 @@ namespace Player.Vm.Api.Features.Networks
     {
         private readonly VmContext _context;
         private readonly IPlayerService _playerService;
+        private readonly IMapper _mapper;
 
-        public NetworkService(VmContext context, IPlayerService playerService)
+        public NetworkService(VmContext context, IPlayerService playerService, IMapper mapper)
         {
             _context = context;
             _playerService = playerService;
+            _mapper = mapper;
         }
 
-        public async Task<ViewNetworkDto[]> GetByViewId(Guid viewId, CancellationToken ct)
+        public async Task<ViewNetwork[]> GetByViewId(Guid viewId, CancellationToken ct)
         {
             if (!await CanViewNetworks(viewId, ct))
                 throw new ForbiddenException();
@@ -48,10 +51,10 @@ namespace Player.Vm.Api.Features.Networks
                 .Where(n => n.ViewId == viewId)
                 .ToArrayAsync(ct);
 
-            return entities.Select(MapToDto).ToArray();
+            return _mapper.Map<ViewNetwork[]>(entities);
         }
 
-        public async Task<ViewNetworkDto> CreateViewNetwork(Guid viewId, CreateViewNetworkForm form, CancellationToken ct)
+        public async Task<ViewNetwork> CreateViewNetwork(Guid viewId, CreateViewNetworkForm form, CancellationToken ct)
         {
             if (!await CanManageNetworks(viewId, ct))
                 throw new ForbiddenException();
@@ -64,22 +67,15 @@ namespace Player.Vm.Api.Features.Networks
                 .SingleOrDefaultAsync(ct);
 
             if (existing != null)
-                return MapToDto(existing);
+                return _mapper.Map<ViewNetwork>(existing);
 
-            var entity = new ViewNetwork
-            {
-                ViewId = viewId,
-                ProviderType = form.ProviderType,
-                ProviderInstanceId = form.ProviderInstanceId,
-                NetworkId = form.NetworkId,
-                Name = form.Name,
-                TeamIds = form.TeamIds ?? []
-            };
+            var entity = _mapper.Map<Domain.Models.ViewNetwork>(form);
+            entity.ViewId = viewId;
 
             _context.ViewNetworks.Add(entity);
             await _context.SaveChangesAsync(ct);
 
-            return MapToDto(entity);
+            return _mapper.Map<ViewNetwork>(entity);
         }
 
         public async Task DeleteViewNetwork(Guid viewId, Guid id, CancellationToken ct)
@@ -98,7 +94,7 @@ namespace Player.Vm.Api.Features.Networks
             await _context.SaveChangesAsync(ct);
         }
 
-        public async Task<ViewNetworkDto> GetById(Guid viewId, Guid id, CancellationToken ct)
+        public async Task<ViewNetwork> GetById(Guid viewId, Guid id, CancellationToken ct)
         {
             if (!await CanViewNetworks(viewId, ct))
                 throw new ForbiddenException();
@@ -110,10 +106,10 @@ namespace Player.Vm.Api.Features.Networks
             if (entity == null)
                 throw new EntityNotFoundException<ViewNetwork>();
 
-            return MapToDto(entity);
+            return _mapper.Map<ViewNetwork>(entity);
         }
 
-        public async Task<ViewNetworkDto> UpdateViewNetwork(Guid viewId, Guid id, UpdateViewNetworkForm form, CancellationToken ct)
+        public async Task<ViewNetwork> UpdateViewNetwork(Guid viewId, Guid id, UpdateViewNetworkForm form, CancellationToken ct)
         {
             if (!await CanManageNetworks(viewId, ct))
                 throw new ForbiddenException();
@@ -142,19 +138,15 @@ namespace Player.Vm.Api.Features.Networks
                         "A network with the same ProviderType, ProviderInstanceId, and NetworkId already exists for this view.");
             }
 
-            entity.ProviderType = form.ProviderType;
-            entity.ProviderInstanceId = form.ProviderInstanceId;
-            entity.NetworkId = form.NetworkId;
-            entity.Name = form.Name;
-            entity.TeamIds = form.TeamIds ?? [];
+            _mapper.Map(form, entity);
 
             await _context.SaveChangesAsync(ct);
 
-            return MapToDto(entity);
+            return _mapper.Map<ViewNetwork>(entity);
         }
 
         public async Task<EffectiveNetworkPermission> GetEffectiveNetworkPermissions(
-            Guid viewId, IEnumerable<Guid> vmTeamIds, string[] vmAllowedNetworks,
+            Guid viewId, IEnumerable<Guid> vmTeamIds,
             VmType providerType, string providerInstanceId,
             CancellationToken ct)
         {
@@ -178,14 +170,7 @@ namespace Player.Vm.Api.Features.Networks
                     && n.TeamIds.Any(t => userTeamIds.Contains(t)))
                 .ToDictionaryAsync(n => n.NetworkId, n => n.Name ?? "", ct);
 
-            if (teamViewNetworks.Count > 0)
-            {
-                return new EffectiveNetworkPermission { AllowedNetworks = teamViewNetworks };
-            }
-
-            // Fallback to legacy VM-level AllowedNetworks (no name validation possible)
-            var legacy = (vmAllowedNetworks ?? []).ToDictionary(id => id, _ => (string)null);
-            return new EffectiveNetworkPermission { AllowedNetworks = legacy };
+            return new EffectiveNetworkPermission { AllowedNetworks = teamViewNetworks };
         }
 
         private Task<bool> CanViewNetworks(Guid viewId, CancellationToken ct)
@@ -208,18 +193,5 @@ namespace Player.Vm.Api.Features.Networks
                 ct);
         }
 
-        private static ViewNetworkDto MapToDto(ViewNetwork entity)
-        {
-            return new ViewNetworkDto
-            {
-                Id = entity.Id,
-                ViewId = entity.ViewId,
-                ProviderType = entity.ProviderType,
-                ProviderInstanceId = entity.ProviderInstanceId,
-                NetworkId = entity.NetworkId,
-                Name = entity.Name,
-                TeamIds = entity.TeamIds ?? []
-            };
-        }
     }
 }

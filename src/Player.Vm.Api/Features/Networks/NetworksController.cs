@@ -28,7 +28,7 @@ namespace Player.Vm.Api.Features.Networks
         /// Get all networks for a view
         /// </summary>
         [HttpGet("views/{viewId}/networks")]
-        [ProducesResponseType(typeof(IEnumerable<ViewNetworkDto>), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(IEnumerable<ViewNetwork>), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "getViewNetworks")]
         public async Task<IActionResult> GetByViewId([FromRoute] Guid viewId, CancellationToken ct)
         {
@@ -40,7 +40,7 @@ namespace Player.Vm.Api.Features.Networks
         /// Get a single network entry for a view
         /// </summary>
         [HttpGet("views/{viewId}/networks/{id}")]
-        [ProducesResponseType(typeof(ViewNetworkDto), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(ViewNetwork), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "getViewNetwork")]
         public async Task<IActionResult> GetById([FromRoute] Guid viewId, [FromRoute] Guid id, CancellationToken ct)
         {
@@ -55,13 +55,10 @@ namespace Player.Vm.Api.Features.Networks
         /// Idempotent — if a network with the same ProviderType, ProviderInstanceId, and NetworkId already exists for this view, it is returned.
         /// </remarks>
         [HttpPost("views/{viewId}/networks")]
-        [ProducesResponseType(typeof(ViewNetworkDto), (int)HttpStatusCode.Created)]
+        [ProducesResponseType(typeof(ViewNetwork), (int)HttpStatusCode.Created)]
         [SwaggerOperation(OperationId = "createViewNetwork")]
         public async Task<IActionResult> Create([FromRoute] Guid viewId, [FromBody] CreateViewNetworkForm form, CancellationToken ct)
         {
-            if (!ModelState.IsValid)
-                throw new InvalidOperationException();
-
             var network = await _networkService.CreateViewNetwork(viewId, form, ct);
             return CreatedAtAction(nameof(GetById), new { viewId, id = network.Id }, network);
         }
@@ -70,13 +67,10 @@ namespace Player.Vm.Api.Features.Networks
         /// Update a network entry for a view
         /// </summary>
         [HttpPut("views/{viewId}/networks/{id}")]
-        [ProducesResponseType(typeof(ViewNetworkDto), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(ViewNetwork), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "updateViewNetwork")]
         public async Task<IActionResult> Update([FromRoute] Guid viewId, [FromRoute] Guid id, [FromBody] UpdateViewNetworkForm form, CancellationToken ct)
         {
-            if (!ModelState.IsValid)
-                throw new InvalidOperationException();
-
             var network = await _networkService.UpdateViewNetwork(viewId, id, form, ct);
             return Ok(network);
         }
