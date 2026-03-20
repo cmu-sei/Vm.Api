@@ -2,7 +2,6 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
-using System.Collections.Generic;
 using VimClient;
 using Player.Vm.Api.Domain.Vsphere.Models;
 
@@ -27,8 +26,6 @@ namespace Player.Vm.Api.Features.Vsphere
         public NicOptions NetworkCards { get; set; }
 
         public bool CanAccessNicConfiguration { get; set; }
-
-        public List<string> AllowedNetworks { get; set; }
 
         public VirtualMachineToolsStatus VmToolsStatus { get; set; }
         public bool HasSnapshot { get; set; }

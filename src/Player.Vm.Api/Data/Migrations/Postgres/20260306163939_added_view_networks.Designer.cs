@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 using Player.Vm.Api.Data;
@@ -15,9 +16,11 @@ using Player.Vm.Api.Data;
 namespace Player.Vm.Api.Data.Migrations.Postgres
 {
     [DbContext(typeof(VmContext))]
-    partial class ContextModelSnapshot : ModelSnapshot
+    [Migration("20260306163939_added_view_networks")]
+    partial class added_view_networks
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -132,10 +135,6 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                         .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
 
-                    b.Property<string>("Name")
-                        .HasColumnType("text")
-                        .HasColumnName("name");
-
                     b.Property<string>("NetworkId")
                         .HasColumnType("text")
                         .HasColumnName("network_id");
@@ -171,6 +170,10 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                         .HasColumnType("uuid")
                         .HasColumnName("id")
                         .HasDefaultValueSql("uuid_generate_v4()");
+
+                    b.PrimitiveCollection<string[]>("AllowedNetworks")
+                        .HasColumnType("text[]")
+                        .HasColumnName("allowed_networks");
 
                     b.Property<string>("ConsoleConnectionInfo")
                         .HasColumnType("text")

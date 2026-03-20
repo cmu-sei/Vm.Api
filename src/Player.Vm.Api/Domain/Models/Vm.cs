@@ -28,8 +28,6 @@ namespace Player.Vm.Api.Domain.Models
 
         public virtual ICollection<VmTeam> VmTeams { get; set; } = new List<VmTeam>();
 
-        public string[] AllowedNetworks { get; set; }
-
         public PowerState PowerState { get; set; }
 
         public string[] IpAddresses { get; set; }

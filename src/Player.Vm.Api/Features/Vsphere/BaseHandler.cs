@@ -14,6 +14,7 @@ using System.Security.Claims;
 using Player.Vm.Api.Infrastructure.Extensions;
 using System.Linq;
 using Player.Vm.Api.Infrastructure.Authorization;
+using Player.Vm.Api.Domain.Models;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -24,6 +25,7 @@ namespace Player.Vm.Api.Features.Vsphere
         protected readonly IPlayerService _playerService;
         private readonly Guid _userId;
         private readonly IVmService _vmService;
+        private readonly IViewService _viewService;
 
 
         public BaseHandler(
@@ -31,13 +33,15 @@ namespace Player.Vm.Api.Features.Vsphere
             IVsphereService vsphereService,
             IPlayerService playerService,
             IPrincipal principal,
-            IVmService vmService)
+            IVmService vmService,
+            IViewService viewService)
         {
             _mapper = mapper;
             _vsphereService = vsphereService;
             _playerService = playerService;
             _userId = (principal as ClaimsPrincipal).GetId();
             _vmService = vmService;
+            _viewService = viewService;
         }
 
         protected async Task<VsphereVirtualMachine> GetVsphereVirtualMachine(Features.Vms.Vm vm, CancellationToken cancellationToken)
@@ -48,18 +52,29 @@ namespace Player.Vm.Api.Features.Vsphere
                 throw new EntityNotFoundException<VsphereVirtualMachine>();
 
             var vsphereVirtualMachine = _mapper.Map<VsphereVirtualMachine>(domainMachine);
-            var canManage = await _playerService.CanManageTeams(vm.TeamIds, cancellationToken);
 
-            vsphereVirtualMachine.Ticket = await _vsphereService.GetConsoleUrl(domainMachine); ;
+            var connectionAddress = await _vsphereService.GetConnectionAddress(vm.Id);
+
+            var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, cancellationToken);
+            var viewId = viewIds.FirstOrDefault();
+
+            var networkPermissions = await _vmService.GetEffectiveNetworkPermissions(
+                viewId, vm.TeamIds,
+                VmType.Vsphere, connectionAddress,
+                cancellationToken);
+
+            bool hasAnyNetworkAccess = networkPermissions.AllowedNetworks?.Count > 0;
+
+            vsphereVirtualMachine.Ticket = await _vsphereService.GetConsoleUrl(domainMachine);
             vsphereVirtualMachine.NetworkCards = await _vsphereService.GetNicOptions(
                 id: vm.Id,
-                canManage: canManage,
-                allowedNetworks: vm.AllowedNetworks,
+                canManage: false,
+                allowedNetworks: networkPermissions.AllowedNetworks,
                 machine: domainMachine);
 
             // copy vm properties
             vsphereVirtualMachine = _mapper.Map(vm, vsphereVirtualMachine);
-            vsphereVirtualMachine.CanAccessNicConfiguration = canManage;
+            vsphereVirtualMachine.CanAccessNicConfiguration = hasAnyNetworkAccess;
             vsphereVirtualMachine.IsOwner = vsphereVirtualMachine.UserId == _userId;
 
             return vsphereVirtualMachine;
@@ -91,7 +106,7 @@ namespace Player.Vm.Api.Features.Vsphere
             if (vm == null)
                 throw new EntityNotFoundException<VsphereVirtualMachine>();
 
-            if (requiredSystemPermissions.Any() || requiredViewPermissions.Any() || requiredTeamPermissions.Any())
+            if (requiredSystemPermissions.Length > 0 || requiredViewPermissions.Length > 0 || requiredTeamPermissions.Length > 0)
             {
                 if (!await _playerService.Can(vm.TeamIds, [], requiredSystemPermissions, requiredViewPermissions, requiredTeamPermissions, cancellationToken))
                     throw new ForbiddenException(errorMessage);

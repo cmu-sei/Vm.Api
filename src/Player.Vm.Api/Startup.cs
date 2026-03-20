@@ -24,6 +24,7 @@ using Player.Vm.Api.Domain.Services.HealthChecks;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Shared.Behaviors;
+using Player.Vm.Api.Features.Networks;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Features.Vms.Hubs;
 using Crucible.Common.EntityEvents.Extensions;
@@ -286,6 +287,7 @@ public class Startup
         services.AddSingleton<IHttpContextAccessor, HttpContextAccessor>();
         services.AddScoped<IPrincipal>(p => p.GetService<IHttpContextAccessor>()?.HttpContext?.User);
 
+        services.AddScoped<INetworkService, NetworkService>();
         services.AddScoped<IVmService, VmService>();
         services.AddScoped<IPlayerService, PlayerService>();
         services.AddScoped<IViewService, ViewService>();

@@ -37,11 +37,6 @@ namespace Player.Vm.Api.Features.Vms
         public Guid? UserId { get; set; }
 
         /// <summary>
-        /// A list of networks that a regular user can access
-        /// </summary>
-        public string[] AllowedNetworks { get; set; }
-
-        /// <summary>
         /// The Vm's last known power state
         /// </summary>
         public PowerState PowerState { get; set; }

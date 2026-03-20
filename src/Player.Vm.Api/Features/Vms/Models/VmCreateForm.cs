@@ -21,8 +21,6 @@ namespace Player.Vm.Api.Features.Vms
 
         public Guid? UserId { get; set; }
 
-        public string[] AllowedNetworks { get; set; }
-
         /// <summary>
         /// The connection info for connecting to a Vm console through Guacamole.
         /// This is used for non-VMware Vms such as in Azure or AWS.

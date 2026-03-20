@@ -15,6 +15,7 @@ using System.Security.Claims;
 using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
+using Player.Vm.Api.Features.Networks;
 
 namespace Player.Vm.Api.Features.Vms
 {
@@ -39,6 +40,10 @@ namespace Player.Vm.Api.Features.Vms
         Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct);
         Task<SimpleTeam[]> GetTeamsAsync(Guid viewId, CancellationToken ct);
         Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct);
+        Task<EffectiveNetworkPermission> GetEffectiveNetworkPermissions(
+            Guid viewId, IEnumerable<Guid> vmTeamIds,
+            Domain.Models.VmType providerType, string providerInstanceId,
+            CancellationToken ct);
     }
 
     public class VmService : IVmService
@@ -47,17 +52,20 @@ namespace Player.Vm.Api.Features.Vms
         private readonly IPlayerService _playerService;
         private readonly ClaimsPrincipal _user;
         private readonly IMapper _mapper;
+        private readonly INetworkService _networkService;
 
         public VmService(
             VmContext context,
             IPlayerService playerService,
             IPrincipal user,
-            IMapper mapper)
+            IMapper mapper,
+            INetworkService networkService)
         {
             _context = context;
             _playerService = playerService;
             _user = user as ClaimsPrincipal;
             _mapper = mapper;
+            _networkService = networkService;
         }
 
         public async Task<Vm[]> GetAllAsync(CancellationToken ct)
@@ -491,6 +499,12 @@ namespace Player.Vm.Api.Features.Vms
 
             return retTeams.ToArray();
         }
+
+        public Task<EffectiveNetworkPermission> GetEffectiveNetworkPermissions(
+            Guid viewId, IEnumerable<Guid> vmTeamIds,
+            Domain.Models.VmType providerType, string providerInstanceId,
+            CancellationToken ct)
+            => _networkService.GetEffectiveNetworkPermissions(viewId, vmTeamIds, providerType, providerInstanceId, ct);
 
         #region Private
 
