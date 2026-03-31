@@ -10,7 +10,7 @@ on:
 jobs:
   build-and-publish:
     name: Build and Publish
-    uses: cmu-sei/Crucible-Github-Actions/.github/workflows/docker-build.yaml@docker-v1
+    uses: cmu-sei/Crucible-Github-Actions/.github/workflows/docker-build.yaml@docker-v1.1.2
     with:
       imageName: cmusei/vm-api
       additionalTarget: debug
