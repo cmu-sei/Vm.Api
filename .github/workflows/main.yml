@@ -13,6 +13,7 @@ jobs:
     uses: cmu-sei/Crucible-Github-Actions/.github/workflows/docker-build.yaml@docker-v1
     with:
       imageName: cmusei/vm-api
+      versionMode: csproj
       additionalTarget: debug
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
