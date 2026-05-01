@@ -35,5 +35,6 @@
     <PackageReference Include="AspNetCore.HealthChecks.UI.Client" Version="9.0.0" />
     <PackageReference Include="Crucible.Common.EntityEvents" Version="0.2.0" />
     <PackageReference Include="Crucible.Common.ServiceDefaults" Version="0.0.2" />
+    <PackageReference Include="TinCan" Version="1.3.0" />
   </ItemGroup>
 </Project>

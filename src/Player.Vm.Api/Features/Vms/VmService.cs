@@ -53,19 +53,22 @@ namespace Player.Vm.Api.Features.Vms
         private readonly ClaimsPrincipal _user;
         private readonly IMapper _mapper;
         private readonly INetworkService _networkService;
+        private readonly IXApiService _xApiService;
 
         public VmService(
             VmContext context,
             IPlayerService playerService,
             IPrincipal user,
             IMapper mapper,
-            INetworkService networkService)
+            INetworkService networkService,
+            IXApiService xApiService)
         {
             _context = context;
             _playerService = playerService;
             _user = user as ClaimsPrincipal;
             _mapper = mapper;
             _networkService = networkService;
+            _xApiService = xApiService;
         }
 
         public async Task<Vm[]> GetAllAsync(CancellationToken ct)
@@ -88,6 +91,26 @@ namespace Player.Vm.Api.Features.Vms
                 .SingleOrDefaultAsync(ct);
 
             await CanAccessVm(vmEntity, ct);
+
+            // Emit xAPI VM Console Accessed statement
+            if (_xApiService.IsConfigured() && vmEntity?.VmTeams.Any() == true)
+            {
+                try
+                {
+                    var firstTeamId = vmEntity.VmTeams.First().TeamId;
+                    var team = await _playerService.GetTeamById(firstTeamId);
+                    if (team != null)
+                    {
+                        await _xApiService.EmitVmConsoleAccessedAsync(id, team.ViewId, ct);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    // Log but don't fail the request
+                    System.Diagnostics.Debug.WriteLine($"xAPI tracking failed: {ex.Message}");
+                }
+            }
+
             var model = _mapper.Map<Vm>(vmEntity);
             return model;
         }

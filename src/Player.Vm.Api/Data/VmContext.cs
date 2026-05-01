@@ -30,6 +30,7 @@ namespace Player.Vm.Api.Data
         public DbSet<ProxmoxVmInfo> ProxmoxVmInfo { get; set; }
         public DbSet<VmUser> VmUsers { get; set; }
         public DbSet<ViewNetwork> ViewNetworks { get; set; }
+        public DbSet<XApiQueuedStatementEntity> XApiQueuedStatements { get; set; }
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {

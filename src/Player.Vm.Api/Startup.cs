@@ -187,6 +187,10 @@ public class Startup
             .Configure<ProxmoxOptions>(Configuration.GetSection("Proxmox"))
             .AddScoped(config => config.GetService<IOptionsSnapshot<ProxmoxOptions>>().Value);
 
+        services
+            .Configure<XApiOptions>(Configuration.GetSection("XApiOptions"))
+            .AddScoped(config => config.GetService<IOptionsMonitor<XApiOptions>>().CurrentValue);
+
         services.AddOptions()
             .Configure<HealthChecksUIOptions>(Configuration.GetSection("HealthChecksUI"))
             .AddScoped(config => config.GetService<IOptionsMonitor<HealthChecksUIOptions>>().CurrentValue);
@@ -317,6 +321,12 @@ public class Startup
         services.AddSingleton<ProxmoxStateService>();
         services.AddSingleton<IHostedService>(x => x.GetService<ProxmoxStateService>());
         services.AddSingleton<IProxmoxStateService>(x => x.GetService<ProxmoxStateService>());
+
+        // xAPI Services
+        services.AddHttpClient();
+        services.AddScoped<IXApiQueueService, XApiQueueService>();
+        services.AddScoped<IXApiService, XApiService>();
+        services.AddSingleton<IHostedService, XApiBackgroundService>();
 
         services.AddAutoMapper(typeof(Startup));
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(typeof(Startup).Assembly));
