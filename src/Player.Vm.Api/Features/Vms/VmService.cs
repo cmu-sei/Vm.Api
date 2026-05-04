@@ -24,7 +24,6 @@ namespace Player.Vm.Api.Features.Vms
 
         Task<Vm[]> GetAllAsync(CancellationToken ct);
         Task<Vm> GetAsync(Guid id, CancellationToken ct);
-        Task TrackConsoleAccessAsync(Guid id, CancellationToken ct);
         Task<IEnumerable<Vm>> GetByTeamIdAsync(Guid teamId, string name, bool includePersonal, bool onlyMine, CancellationToken ct);
         Task<IEnumerable<Vm>> GetByViewIdAsync(Guid viewId, string name, bool includePersonal, bool onlyMine, CancellationToken ct);
         Task<Vm> CreateAsync(VmCreateForm form, CancellationToken ct);
@@ -95,35 +94,6 @@ namespace Player.Vm.Api.Features.Vms
 
             var model = _mapper.Map<Vm>(vmEntity);
             return model;
-        }
-
-        public async Task TrackConsoleAccessAsync(Guid id, CancellationToken ct)
-        {
-            var vmEntity = await _context.Vms
-                .Include(v => v.VmTeams)
-                .Where(v => v.Id == id)
-                .SingleOrDefaultAsync(ct);
-
-            await CanAccessVm(vmEntity, ct);
-
-            // Emit xAPI VM Console Accessed statement
-            if (_xApiService.IsConfigured() && vmEntity?.VmTeams.Any() == true)
-            {
-                try
-                {
-                    var firstTeamId = vmEntity.VmTeams.First().TeamId;
-                    var team = await _playerService.GetTeamById(firstTeamId);
-                    if (team != null)
-                    {
-                        await _xApiService.EmitVmConsoleAccessedAsync(id, team.ViewId, ct);
-                    }
-                }
-                catch (Exception ex)
-                {
-                    // Log but don't fail the request
-                    System.Diagnostics.Debug.WriteLine($"xAPI tracking failed: {ex.Message}");
-                }
-            }
         }
 
         public async Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct)

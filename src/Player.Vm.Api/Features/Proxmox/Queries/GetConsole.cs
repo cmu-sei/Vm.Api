@@ -38,17 +38,23 @@ namespace Player.Vm.Api.Features.Proxmox
             private readonly IMapper _mapper;
             private readonly IVmService _vmService;
             private readonly IProxmoxService _proxmoxService;
+            private readonly IXApiService _xApiService;
+            private readonly IPlayerService _playerService;
 
             public Handler(
                 VmContext db,
                 IMapper mapper,
                 IVmService vmService,
-                IProxmoxService proxmoxService)
+                IProxmoxService proxmoxService,
+                IXApiService xApiService,
+                IPlayerService playerService)
             {
                 _db = db;
                 _mapper = mapper;
                 _vmService = vmService;
                 _proxmoxService = proxmoxService;
+                _xApiService = xApiService;
+                _playerService = playerService;
             }
 
             public async Task<ProxmoxConsole> Handle(Query request, CancellationToken cancellationToken)
@@ -65,6 +71,25 @@ namespace Player.Vm.Api.Features.Proxmox
 
                 if (vmEntity.ProxmoxVmInfo == null)
                     throw new InvalidOperationException($"VM {request.Id} does not have Proxmox configuration. Ensure ProxmoxVmInfo is set with valid Id and Node values.");
+
+                // Emit xAPI statement for console access
+                if (_xApiService.IsConfigured() && vmEntity.VmTeams.Any())
+                {
+                    try
+                    {
+                        var firstTeamId = vmEntity.VmTeams.First().TeamId;
+                        var team = await _playerService.GetTeamById(firstTeamId);
+                        if (team != null)
+                        {
+                            await _xApiService.EmitVmConsoleAccessedAsync(request.Id, team.ViewId, cancellationToken);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        // Log but don't fail the console request
+                        System.Diagnostics.Debug.WriteLine($"xAPI tracking failed: {ex.Message}");
+                    }
+                }
 
                 return _mapper.Map<ProxmoxConsole>(await _proxmoxService.GetConsole(vmEntity.ProxmoxVmInfo));
             }

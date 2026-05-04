@@ -66,21 +66,6 @@ namespace Player.Vm.Api.Features.Vms
         }
 
         /// <summary>
-        /// Track console access for xAPI
-        /// </summary>
-        /// <param name="id">The Id of the Vm</param>
-        /// <param name="ct"></param>
-        /// <returns></returns>
-        [HttpPost("vms/{id}/console/access")]
-        [ProducesResponseType((int)HttpStatusCode.NoContent)]
-        [SwaggerOperation(OperationId = "trackConsoleAccess")]
-        public async Task<IActionResult> TrackConsoleAccess(Guid id, CancellationToken ct)
-        {
-            await _vmService.TrackConsoleAccessAsync(id, ct);
-            return NoContent();
-        }
-
-        /// <summary>
         /// Retrieve permissions of a single Vm by Id
         /// </summary>
         /// <param name="id">The Id of the Vm</param>
