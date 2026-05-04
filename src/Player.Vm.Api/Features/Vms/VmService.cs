@@ -92,6 +92,19 @@ namespace Player.Vm.Api.Features.Vms
 
             await CanAccessVm(vmEntity, ct);
 
+            var model = _mapper.Map<Vm>(vmEntity);
+            return model;
+        }
+
+        public async Task TrackConsoleAccessAsync(Guid id, CancellationToken ct)
+        {
+            var vmEntity = await _context.Vms
+                .Include(v => v.VmTeams)
+                .Where(v => v.Id == id)
+                .SingleOrDefaultAsync(ct);
+
+            await CanAccessVm(vmEntity, ct);
+
             // Emit xAPI VM Console Accessed statement
             if (_xApiService.IsConfigured() && vmEntity?.VmTeams.Any() == true)
             {
@@ -110,9 +123,6 @@ namespace Player.Vm.Api.Features.Vms
                     System.Diagnostics.Debug.WriteLine($"xAPI tracking failed: {ex.Message}");
                 }
             }
-
-            var model = _mapper.Map<Vm>(vmEntity);
-            return model;
         }
 
         public async Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct)

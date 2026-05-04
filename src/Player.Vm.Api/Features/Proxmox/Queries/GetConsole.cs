@@ -63,6 +63,9 @@ namespace Player.Vm.Api.Features.Proxmox
 
                 await _vmService.CanAccessVm(vmEntity, cancellationToken);
 
+                if (vmEntity.ProxmoxVmInfo == null)
+                    throw new InvalidOperationException($"VM {request.Id} does not have Proxmox configuration. Ensure ProxmoxVmInfo is set with valid Id and Node values.");
+
                 return _mapper.Map<ProxmoxConsole>(await _proxmoxService.GetConsole(vmEntity.ProxmoxVmInfo));
             }
         }

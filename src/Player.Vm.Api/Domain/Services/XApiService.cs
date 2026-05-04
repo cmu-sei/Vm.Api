@@ -150,7 +150,8 @@ public class XApiService : IXApiService
             var contextObj = BuildContext(viewId);
 
             // Add parent context activity (the View)
-            var parentActivity = new Activity { id = $"{_xApiOptions.ApiUrl.Replace("/vm", "")}/views/{viewId}" };
+            // Views are owned by Player API, so use PlayerApiUrl
+            var parentActivity = new Activity { id = $"{_xApiOptions.PlayerApiUrl}/views/{viewId}" };
             parentActivity.definition = new ActivityDefinition
             {
                 type = new Uri("http://adlnet.gov/expapi/activities/simulation")

@@ -11,4 +11,5 @@ public class XApiOptions
     public string IssuerUrl { get; set; }
     public string Platform { get; set; }
     public string ApiUrl { get; set; }
+    public string PlayerApiUrl { get; set; }
 }
