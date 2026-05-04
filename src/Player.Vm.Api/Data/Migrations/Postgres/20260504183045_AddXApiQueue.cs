@@ -1,7 +1,4 @@
-// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
-// Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
-
-using System;
+﻿using System;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
@@ -18,7 +15,7 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                 name: "x_api_queued_statements",
                 columns: table => new
                 {
-                    id = table.Column<Guid>(type: "uuid", nullable: false),
+                    id = table.Column<Guid>(type: "uuid", nullable: false, defaultValueSql: "uuid_generate_v4()"),
                     statement_json = table.Column<string>(type: "text", nullable: false),
                     queued_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: false),
                     last_attempt_at = table.Column<DateTime>(type: "timestamp with time zone", nullable: true),
@@ -31,13 +28,8 @@ namespace Player.Vm.Api.Data.Migrations.Postgres
                 },
                 constraints: table =>
                 {
-                    table.PrimaryKey("pk_x_api_queued_statements", x => x.id);
+                    table.PrimaryKey("PK_x_api_queued_statements", x => x.id);
                 });
-
-            migrationBuilder.CreateIndex(
-                name: "ix_x_api_queued_statements_status",
-                table: "x_api_queued_statements",
-                column: "status");
         }
 
         /// <inheritdoc />
