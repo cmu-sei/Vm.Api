@@ -17,29 +17,31 @@ namespace Player.Vm.Api.Domain.Services;
 public class XApiBackgroundService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly XApiOptions _xApiOptions;
     private readonly ILogger<XApiBackgroundService> _logger;
     private readonly HttpClient _httpClient;
     private DateTime _lastCleanup = DateTime.UtcNow;
 
     public XApiBackgroundService(
         IServiceScopeFactory scopeFactory,
-        XApiOptions xApiOptions,
         ILogger<XApiBackgroundService> logger,
         IHttpClientFactory httpClientFactory)
     {
         _scopeFactory = scopeFactory;
-        _xApiOptions = xApiOptions;
         _logger = logger;
         _httpClient = httpClientFactory.CreateClient();
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        if (string.IsNullOrWhiteSpace(_xApiOptions.Username))
+        // Check if xAPI is configured (get from scope)
+        using (var scope = _scopeFactory.CreateScope())
         {
-            _logger.LogInformation("xAPI not configured - background service will not process statements");
-            return;
+            var xApiOptions = scope.ServiceProvider.GetRequiredService<XApiOptions>();
+            if (string.IsNullOrWhiteSpace(xApiOptions.Username))
+            {
+                _logger.LogInformation("xAPI not configured - background service will not process statements");
+                return;
+            }
         }
 
         _logger.LogInformation("xAPI background service started");
@@ -50,12 +52,13 @@ public class XApiBackgroundService : BackgroundService
             {
                 using var scope = _scopeFactory.CreateScope();
                 var queueService = scope.ServiceProvider.GetRequiredService<IXApiQueueService>();
+                var xApiOptions = scope.ServiceProvider.GetRequiredService<XApiOptions>();
 
                 var statement = await queueService.DequeueAsync(stoppingToken);
 
                 if (statement != null)
                 {
-                    await ProcessStatementAsync(statement, queueService, stoppingToken);
+                    await ProcessStatementAsync(statement, queueService, xApiOptions, stoppingToken);
                 }
                 else
                 {
@@ -82,15 +85,15 @@ public class XApiBackgroundService : BackgroundService
         _logger.LogInformation("xAPI background service stopped");
     }
 
-    private async Task ProcessStatementAsync(Models.XApiQueuedStatementEntity statement, IXApiQueueService queueService, CancellationToken ct)
+    private async Task ProcessStatementAsync(Models.XApiQueuedStatementEntity statement, IXApiQueueService queueService, XApiOptions xApiOptions, CancellationToken ct)
     {
         try
         {
-            var request = new HttpRequestMessage(HttpMethod.Post, $"{_xApiOptions.Endpoint}/statements");
+            var request = new HttpRequestMessage(HttpMethod.Post, $"{xApiOptions.Endpoint}/statements");
             request.Headers.Add("X-Experience-API-Version", "1.0.3");
 
             var authString = Convert.ToBase64String(
-                Encoding.ASCII.GetBytes($"{_xApiOptions.Username}:{_xApiOptions.Password}"));
+                Encoding.ASCII.GetBytes($"{xApiOptions.Username}:{xApiOptions.Password}"));
             request.Headers.Authorization = new AuthenticationHeaderValue("Basic", authString);
 
             request.Content = new StringContent(statement.StatementJson, Encoding.UTF8, "application/json");
