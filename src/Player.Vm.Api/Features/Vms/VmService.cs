@@ -24,6 +24,7 @@ namespace Player.Vm.Api.Features.Vms
 
         Task<Vm[]> GetAllAsync(CancellationToken ct);
         Task<Vm> GetAsync(Guid id, CancellationToken ct);
+        Task TrackConsoleAccessAsync(Guid id, CancellationToken ct);
         Task<IEnumerable<Vm>> GetByTeamIdAsync(Guid teamId, string name, bool includePersonal, bool onlyMine, CancellationToken ct);
         Task<IEnumerable<Vm>> GetByViewIdAsync(Guid viewId, string name, bool includePersonal, bool onlyMine, CancellationToken ct);
         Task<Vm> CreateAsync(VmCreateForm form, CancellationToken ct);
