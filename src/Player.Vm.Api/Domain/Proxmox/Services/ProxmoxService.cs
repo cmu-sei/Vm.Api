@@ -83,7 +83,7 @@ public class ProxmoxService : IProxmoxService
         }
         else
         {
-            url = $"wss://{_options.Host}{urlFragment}";
+            url = $"wss://{_options.Host}:{_options.Port}{urlFragment}";
         }
 
         return new ProxmoxConsole()
