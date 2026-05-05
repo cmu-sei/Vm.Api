@@ -127,7 +127,9 @@ public class XApiService : IXApiService
             await EnsureAgentInitializedAsync(ct);
 
             using var context = await _contextFactory.CreateDbContextAsync(ct);
-            var vm = await context.Vms.FindAsync(new object[] { vmId }, ct);
+            var vm = await context.Vms
+                .Include(v => v.VmTeams)
+                .FirstOrDefaultAsync(v => v.Id == vmId, ct);
             if (vm == null)
             {
                 _logger.LogWarning("Cannot emit VmConsoleAccessed: VM {VmId} not found", vmId);
@@ -159,6 +161,12 @@ public class XApiService : IXApiService
             if (vm.IpAddresses != null && vm.IpAddresses.Length > 0)
             {
                 extensionsDict["https://crucible.sei.cmu.edu/xapi/extensions/vm-ip-addresses"] = string.Join(", ", vm.IpAddresses);
+            }
+
+            if (vm.VmTeams != null && vm.VmTeams.Count > 0)
+            {
+                var teamIds = string.Join(", ", vm.VmTeams.Select(vt => vt.TeamId));
+                extensionsDict["https://crucible.sei.cmu.edu/xapi/extensions/team-ids"] = teamIds;
             }
 
             activity.definition.extensions = new TinCan.Extensions(Newtonsoft.Json.Linq.JObject.FromObject(extensionsDict));
@@ -214,7 +222,9 @@ public class XApiService : IXApiService
             await EnsureAgentInitializedAsync(ct);
 
             using var context = await _contextFactory.CreateDbContextAsync(ct);
-            var vm = await context.Vms.FindAsync(new object[] { vmId }, ct);
+            var vm = await context.Vms
+                .Include(v => v.VmTeams)
+                .FirstOrDefaultAsync(v => v.Id == vmId, ct);
             if (vm == null)
             {
                 _logger.LogWarning("Cannot emit VmConsoleClosed: VM {VmId} not found", vmId);
@@ -246,6 +256,12 @@ public class XApiService : IXApiService
             if (vm.IpAddresses != null && vm.IpAddresses.Length > 0)
             {
                 extensionsDict["https://crucible.sei.cmu.edu/xapi/extensions/vm-ip-addresses"] = string.Join(", ", vm.IpAddresses);
+            }
+
+            if (vm.VmTeams != null && vm.VmTeams.Count > 0)
+            {
+                var teamIds = string.Join(", ", vm.VmTeams.Select(vt => vt.TeamId));
+                extensionsDict["https://crucible.sei.cmu.edu/xapi/extensions/team-ids"] = teamIds;
             }
 
             activity.definition.extensions = new TinCan.Extensions(Newtonsoft.Json.Linq.JObject.FromObject(extensionsDict));
