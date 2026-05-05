@@ -13,6 +13,7 @@ using Microsoft.EntityFrameworkCore;
 using System.Threading.Tasks;
 using Player.Vm.Api.Infrastructure.Options;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
 namespace Player.Vm.Api.Domain.Services;
 
@@ -41,17 +42,23 @@ public class VmUsageLoggingService : IVmUsageLoggingService
     private readonly IPlayerService _playerService;
     private readonly IVmService _vmService;
     private readonly VmLoggingContext _dbContext;
+    private readonly IXApiService _xApiService;
+    private readonly ILogger<VmUsageLoggingService> _logger;
 
     public VmUsageLoggingService(
         VmUsageLoggingOptions loggingOptions,
         IPlayerService playerService,
         IVmService vmService,
-        VmLoggingContext dbContext)
+        VmLoggingContext dbContext,
+        IXApiService xApiService,
+        ILogger<VmUsageLoggingService> logger)
     {
         _loggingOptions = loggingOptions;
         _playerService = playerService;
         _vmService = vmService;
         _dbContext = dbContext;
+        _xApiService = xApiService;
+        _logger = logger;
     }
 
     public async Task CreateVmLogEntry(Guid userId, Guid vmId, IEnumerable<Guid> teamIds, CancellationToken ct)
@@ -112,6 +119,20 @@ public class VmUsageLoggingService : IVmUsageLoggingService
 
             await _dbContext.VmUsageLogEntries.AddAsync(logEntry);
             await _dbContext.SaveChangesAsync();
+
+            // Emit xAPI statement for console access
+            if (_xApiService.IsConfigured())
+            {
+                try
+                {
+                    var viewId = session.ViewId;
+                    await _xApiService.EmitVmConsoleAccessedAsync(vmId, viewId, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to emit xAPI console access for VM {VmId}, User {UserId}", vmId, userId);
+                }
+            }
         }
     }
 
@@ -137,6 +158,20 @@ public class VmUsageLoggingService : IVmUsageLoggingService
         foreach (var log in vmUsageLogEntries)
         {
             log.VmInactiveDT = DateTimeOffset.UtcNow;
+
+            // Emit xAPI statement for console close
+            if (_xApiService.IsConfigured())
+            {
+                try
+                {
+                    var viewId = log.Session.ViewId;
+                    await _xApiService.EmitVmConsoleClosedAsync(vmId, viewId, ct);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to emit xAPI console close for VM {VmId}, User {UserId}", vmId, userId);
+                }
+            }
         }
 
         await _dbContext.SaveChangesAsync();

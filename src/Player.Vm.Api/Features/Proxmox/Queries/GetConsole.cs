@@ -73,25 +73,6 @@ namespace Player.Vm.Api.Features.Proxmox
                 if (vmEntity.ProxmoxVmInfo == null)
                     throw new InvalidOperationException($"VM {request.Id} does not have Proxmox configuration. Ensure ProxmoxVmInfo is set with valid Id and Node values.");
 
-                // Emit xAPI statement for console access
-                if (_xApiService.IsConfigured() && vmEntity.VmTeams.Any())
-                {
-                    try
-                    {
-                        var firstTeamId = vmEntity.VmTeams.First().TeamId;
-                        var team = await _playerService.GetTeamById(firstTeamId);
-                        if (team != null)
-                        {
-                            await _xApiService.EmitVmConsoleAccessedAsync(request.Id, team.ViewId, cancellationToken);
-                        }
-                    }
-                    catch (Exception ex)
-                    {
-                        // Log but don't fail the console request
-                        System.Diagnostics.Debug.WriteLine($"xAPI tracking failed: {ex.Message}");
-                    }
-                }
-
                 return _mapper.Map<ProxmoxConsole>(await _proxmoxService.GetConsole(vmEntity.ProxmoxVmInfo));
             }
         }

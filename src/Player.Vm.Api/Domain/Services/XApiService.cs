@@ -22,6 +22,7 @@ public interface IXApiService
 {
     bool IsConfigured();
     Task EmitVmConsoleAccessedAsync(Guid vmId, Guid viewId, CancellationToken ct = default);
+    Task EmitVmConsoleClosedAsync(Guid vmId, Guid viewId, CancellationToken ct = default);
 }
 
 public class XApiService : IXApiService
@@ -179,6 +180,78 @@ public class XApiService : IXApiService
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to emit VmConsoleAccessed for VM {VmId}, View {ViewId}", vmId, viewId);
+        }
+    }
+
+    public async Task EmitVmConsoleClosedAsync(Guid vmId, Guid viewId, CancellationToken ct = default)
+    {
+        _logger.LogInformation("EmitVmConsoleClosedAsync called for VM {VmId}, View {ViewId}, IsConfigured: {IsConfigured}",
+            vmId, viewId, IsConfigured());
+
+        if (!IsConfigured())
+        {
+            _logger.LogWarning("xAPI is not configured - skipping statement emission");
+            return;
+        }
+
+        try
+        {
+            await EnsureAgentInitializedAsync(ct);
+
+            using var context = await _contextFactory.CreateDbContextAsync(ct);
+            var vm = await context.Vms.FindAsync(new object[] { vmId }, ct);
+            if (vm == null)
+            {
+                _logger.LogWarning("Cannot emit VmConsoleClosed: VM {VmId} not found", vmId);
+                return;
+            }
+
+            var verb = new Verb { id = new Uri("http://adlnet.gov/expapi/verbs/exited") };
+            verb.display = new LanguageMap();
+            verb.display.Add("en-US", "exited");
+
+            var activity = new Activity { id = $"{_xApiOptions.ApiUrl}/vms/{vmId}/console" };
+            activity.definition = new ActivityDefinition
+            {
+                type = new Uri("http://activitystrea.ms/schema/1.0/application")
+            };
+            activity.definition.name = new LanguageMap();
+            activity.definition.name.Add("en-US", $"{vm.Name} Console");
+            activity.definition.description = new LanguageMap();
+            activity.definition.description.Add("en-US", $"Virtual machine console for {vm.Name}");
+
+            var contextObj = BuildContext(viewId);
+
+            // Add parent context activity (the View)
+            // Views are owned by Player API, so use PlayerApiUrl
+            var parentActivity = new Activity { id = $"{_xApiOptions.PlayerApiUrl}/views/{viewId}" };
+            parentActivity.definition = new ActivityDefinition
+            {
+                type = new Uri("http://adlnet.gov/expapi/activities/simulation")
+            };
+            contextObj.contextActivities.parent = new List<Activity> { parentActivity };
+
+            var statement = new Statement
+            {
+                actor = _agent,
+                verb = verb,
+                target = activity,
+                context = contextObj
+            };
+
+            await _queueService.EnqueueAsync(new XApiQueuedStatementEntity
+            {
+                StatementJson = statement.ToJSON(true),
+                Verb = "exited",
+                ActivityId = activity.id,
+                ViewId = viewId
+            }, ct);
+
+            _logger.LogInformation("Queued VmConsoleClosed statement for VM {VmId}, View {ViewId}", vmId, viewId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to emit VmConsoleClosed for VM {VmId}, View {ViewId}", vmId, viewId);
         }
     }
 }
