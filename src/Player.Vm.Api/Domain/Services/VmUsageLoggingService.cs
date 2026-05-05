@@ -144,6 +144,7 @@ public class VmUsageLoggingService : IVmUsageLoggingService
         }
 
         var vmUsageLogEntries = await _dbContext.VmUsageLogEntries
+            .Include(e => e.Session)
             .Where(e => e.UserId == userId &&
                 e.VmId == vmId &&
                 e.VmInactiveDT <= DateTimeOffset.MinValue)
