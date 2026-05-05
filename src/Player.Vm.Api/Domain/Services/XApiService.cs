@@ -148,6 +148,21 @@ public class XApiService : IXApiService
             activity.definition.description = new LanguageMap();
             activity.definition.description.Add("en-US", $"Virtual machine console for {vm.Name}");
 
+            // Add VM details as extensions
+            var extensionsDict = new Dictionary<string, string>
+            {
+                ["https://crucible.sei.cmu.edu/xapi/extensions/vm-id"] = vmId.ToString(),
+                ["https://crucible.sei.cmu.edu/xapi/extensions/vm-name"] = vm.Name,
+                ["https://crucible.sei.cmu.edu/xapi/extensions/vm-type"] = vm.Type.ToString()
+            };
+
+            if (vm.IpAddresses != null && vm.IpAddresses.Length > 0)
+            {
+                extensionsDict["https://crucible.sei.cmu.edu/xapi/extensions/vm-ip-addresses"] = string.Join(", ", vm.IpAddresses);
+            }
+
+            activity.definition.extensions = new TinCan.Extensions(Newtonsoft.Json.Linq.JObject.FromObject(extensionsDict));
+
             var contextObj = BuildContext(viewId);
 
             // Add parent context activity (the View)
@@ -219,6 +234,21 @@ public class XApiService : IXApiService
             activity.definition.name.Add("en-US", $"{vm.Name} Console");
             activity.definition.description = new LanguageMap();
             activity.definition.description.Add("en-US", $"Virtual machine console for {vm.Name}");
+
+            // Add VM details as extensions
+            var extensionsDict = new Dictionary<string, string>
+            {
+                ["https://crucible.sei.cmu.edu/xapi/extensions/vm-id"] = vmId.ToString(),
+                ["https://crucible.sei.cmu.edu/xapi/extensions/vm-name"] = vm.Name,
+                ["https://crucible.sei.cmu.edu/xapi/extensions/vm-type"] = vm.Type.ToString()
+            };
+
+            if (vm.IpAddresses != null && vm.IpAddresses.Length > 0)
+            {
+                extensionsDict["https://crucible.sei.cmu.edu/xapi/extensions/vm-ip-addresses"] = string.Join(", ", vm.IpAddresses);
+            }
+
+            activity.definition.extensions = new TinCan.Extensions(Newtonsoft.Json.Linq.JObject.FromObject(extensionsDict));
 
             var contextObj = BuildContext(viewId);
 
