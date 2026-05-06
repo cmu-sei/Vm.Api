@@ -43,14 +43,14 @@ public class XApiQueueService : IXApiQueueService
         statement.RetryCount = 0;
 
         _context.XApiQueuedStatements.Add(statement);
-        await context.SaveChangesAsync(ct);
+        await _context.SaveChangesAsync(ct);
 
         _logger.LogDebug("Enqueued xAPI statement {StatementId} with verb {Verb}", statement.Id, statement.Verb);
     }
 
     public async Task<XApiQueuedStatementEntity> DequeueAsync(CancellationToken ct = default)
     {
-        var statement = await context.XApiQueuedStatements
+        var statement = await _context.XApiQueuedStatements
             .Where(s => s.Status == XApiQueueStatus.Pending && s.RetryCount < MaxRetries)
             .OrderBy(s => s.QueuedAt)
             .FirstOrDefaultAsync(ct);
@@ -60,12 +60,12 @@ public class XApiQueueService : IXApiQueueService
 
     public async Task MarkCompletedAsync(Guid id, CancellationToken ct = default)
     {
-        var statement = await context.XApiQueuedStatements.FindAsync(new object[] { id }, ct);
+        var statement = await _context.XApiQueuedStatements.FindAsync(new object[] { id }, ct);
         if (statement != null)
         {
             statement.Status = XApiQueueStatus.Completed;
             statement.LastAttemptAt = DateTime.UtcNow;
-            await context.SaveChangesAsync(ct);
+            await _context.SaveChangesAsync(ct);
 
             _logger.LogDebug("Marked xAPI statement {StatementId} as completed", id);
         }
@@ -73,7 +73,7 @@ public class XApiQueueService : IXApiQueueService
 
     public async Task MarkFailedAsync(Guid id, string errorMessage, CancellationToken ct = default)
     {
-        var statement = await context.XApiQueuedStatements.FindAsync(new object[] { id }, ct);
+        var statement = await _context.XApiQueuedStatements.FindAsync(new object[] { id }, ct);
         if (statement != null)
         {
             statement.RetryCount++;
@@ -92,14 +92,14 @@ public class XApiQueueService : IXApiQueueService
                     id, statement.RetryCount, errorMessage);
             }
 
-            await context.SaveChangesAsync(ct);
+            await _context.SaveChangesAsync(ct);
         }
     }
 
     public async Task CleanupOldStatementsAsync(TimeSpan olderThan, CancellationToken ct = default)
     {
         var cutoffDate = DateTime.UtcNow - olderThan;
-        var oldStatements = await context.XApiQueuedStatements
+        var oldStatements = await _context.XApiQueuedStatements
             .Where(s => (s.Status == XApiQueueStatus.Completed || s.Status == XApiQueueStatus.Failed)
                      && s.QueuedAt < cutoffDate)
             .ToListAsync(ct);
@@ -107,7 +107,7 @@ public class XApiQueueService : IXApiQueueService
         if (oldStatements.Any())
         {
             _context.XApiQueuedStatements.RemoveRange(oldStatements);
-            await context.SaveChangesAsync(ct);
+            await _context.SaveChangesAsync(ct);
 
             _logger.LogInformation("Cleaned up {Count} old xAPI statements", oldStatements.Count);
         }
