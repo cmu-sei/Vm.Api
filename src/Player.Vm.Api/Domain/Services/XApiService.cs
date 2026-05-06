@@ -27,7 +27,7 @@ public interface IXApiService
 
 public class XApiService : IXApiService
 {
-    private readonly IDbContextFactory<VmContext> _contextFactory;
+    private readonly VmContext _context;
     private readonly ClaimsPrincipal _user;
     private readonly XApiOptions _xApiOptions;
     private readonly IXApiQueueService _queueService;
@@ -35,13 +35,13 @@ public class XApiService : IXApiService
     private Agent _agent;
 
     public XApiService(
-        IDbContextFactory<VmContext> contextFactory,
+        VmContext context,
         IPrincipal user,
         XApiOptions xApiOptions,
         IXApiQueueService queueService,
         ILogger<XApiService> logger)
     {
-        _contextFactory = contextFactory;
+        _context = context;
         _user = user as ClaimsPrincipal;
         _xApiOptions = xApiOptions;
         _queueService = queueService;
@@ -126,8 +126,7 @@ public class XApiService : IXApiService
         {
             await EnsureAgentInitializedAsync(ct);
 
-            using var context = await _contextFactory.CreateDbContextAsync(ct);
-            var vm = await context.Vms
+            var vm = await _context.Vms
                 .Include(v => v.VmTeams)
                 .FirstOrDefaultAsync(v => v.Id == vmId, ct);
             if (vm == null)
@@ -221,8 +220,7 @@ public class XApiService : IXApiService
         {
             await EnsureAgentInitializedAsync(ct);
 
-            using var context = await _contextFactory.CreateDbContextAsync(ct);
-            var vm = await context.Vms
+            var vm = await _context.Vms
                 .Include(v => v.VmTeams)
                 .FirstOrDefaultAsync(v => v.Id == vmId, ct);
             if (vm == null)
