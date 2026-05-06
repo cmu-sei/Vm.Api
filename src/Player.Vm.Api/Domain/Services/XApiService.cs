@@ -84,7 +84,7 @@ public class XApiService : IXApiService
 
     public bool IsConfigured()
     {
-        return !string.IsNullOrWhiteSpace(_xApiOptions.Username);
+        return _xApiOptions.Enabled && !string.IsNullOrWhiteSpace(_xApiOptions.Username);
     }
 
     private Context BuildContext(Guid viewId)
