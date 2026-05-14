@@ -16,3 +16,5 @@ jobs:
           github_app_private_key: ${{ secrets.CRUCIBLE_HELM_UPDATE_PRIVATE_KEY }}
           chart_file: charts/player/charts/vm-api/Chart.yaml
           parent_chart_file: charts/player/Chart.yaml
+          settings_file: src/Player.Vm.Api/appsettings.json
+          settings_file_kind: dotnet-appsettings
