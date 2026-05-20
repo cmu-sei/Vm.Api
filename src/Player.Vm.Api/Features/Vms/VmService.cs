@@ -388,6 +388,11 @@ namespace Player.Vm.Api.Features.Vms
                 return null;
 
             var primTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, ct);
+
+            // If primTeam is null, view doesn't exist in Player API
+            if (primTeam == null)
+                return null;
+
             // Only return the maps user has access to
             var accessableMaps = new List<Domain.Models.VmMap>();
             foreach (var m in maps)
