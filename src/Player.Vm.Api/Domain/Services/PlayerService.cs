@@ -7,6 +7,7 @@ using Player.Api.Client;
 using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Extensions;
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -45,7 +46,7 @@ namespace Player.Vm.Api.Domain.Services
         private readonly Guid _userId;
         private readonly IViewService _viewService;
         private readonly IMemoryCache _cache;
-        private Dictionary<Guid, ICollection<TeamPermissionsClaim>> _teamPermissionsCache = new();
+        private ConcurrentDictionary<Guid, ICollection<TeamPermissionsClaim>> _teamPermissionsCache = new();
 
         public PlayerService(IHttpContextAccessor httpContextAccessor, IPlayerApiClient playerApiClient, IViewService viewService, IMemoryCache cache)
         {
@@ -98,12 +99,10 @@ namespace Player.Vm.Api.Domain.Services
                 if (!viewId.HasValue)
                     continue;
 
-                ICollection<TeamPermissionsClaim> teamPermissionsClaims;
-
-                if (!_teamPermissionsCache.TryGetValue(viewId.Value, out teamPermissionsClaims))
+                if (!_teamPermissionsCache.TryGetValue(viewId.Value, out var teamPermissionsClaims))
                 {
                     teamPermissionsClaims = await _playerApiClient.GetMyTeamPermissionsAsync(viewId.Value, null, true);
-                    _teamPermissionsCache.Add(viewId.Value, teamPermissionsClaims);
+                    _teamPermissionsCache.TryAdd(viewId.Value, teamPermissionsClaims);
                 }
 
                 if (teamPermissionsClaims != null && teamPermissionsClaims.Any(x => x.TeamId == teamId))
@@ -147,12 +146,10 @@ namespace Player.Vm.Api.Domain.Services
 
             foreach (var viewId in allViewIds)
             {
-                ICollection<TeamPermissionsClaim> teamPermissionsClaims;
-
-                if (!_teamPermissionsCache.TryGetValue(viewId, out teamPermissionsClaims))
+                if (!_teamPermissionsCache.TryGetValue(viewId, out var teamPermissionsClaims))
                 {
                     teamPermissionsClaims = await _playerApiClient.GetMyTeamPermissionsAsync(viewId, null, true);
-                    _teamPermissionsCache.Add(viewId, teamPermissionsClaims);
+                    _teamPermissionsCache.TryAdd(viewId, teamPermissionsClaims);
                 }
 
                 if (teamPermissionsClaims != null)
