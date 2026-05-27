@@ -2,6 +2,7 @@ bin/
 obj/
 player/
 *.user
+*.csproj.lscache
 player_vm.db
 .vs/
 appsettings.Development.json
