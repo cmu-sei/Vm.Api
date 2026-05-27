@@ -1490,6 +1490,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         public async Task<VsphereVirtualMachine> GetMachineById(Guid id)
         {
             var aggregate = await this.GetVm(id);
+
+            if (aggregate == null)
+            {
+                return null;
+            }
+
             var machineReference = aggregate.MachineReference;
 
             // retrieve all machine properties we need
