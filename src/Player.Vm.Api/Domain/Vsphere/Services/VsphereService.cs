@@ -1190,11 +1190,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         private async Task<DatacenterInfo> GetDatacenterForDatastore(string dsName, VsphereConnection connection)
         {
-            if (connection.DatacenterCache.TryGetValue(dsName, out var cached))
-            {
-                return cached;
-            }
-
             var tree = await LoadInventoryTree(connection, new PropertySpec[]
             {
                 new PropertySpec
@@ -1227,24 +1222,22 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                 if (match != null)
                 {
-                    return CacheDatacenter(connection, dsName, dc);
+                    return ToDatacenterInfo(dc);
                 }
             }
 
             // Fallback: single-datacenter deployments (or datastore not matched) - use the first datacenter.
             var fallback = datacenters.FirstOrDefault();
-            return fallback != null ? CacheDatacenter(connection, dsName, fallback) : null;
+            return fallback != null ? ToDatacenterInfo(fallback) : null;
         }
 
-        private static DatacenterInfo CacheDatacenter(VsphereConnection connection, string dsName, VimClient.ObjectContent dc)
+        private static DatacenterInfo ToDatacenterInfo(VimClient.ObjectContent dc)
         {
-            var info = new DatacenterInfo
+            return new DatacenterInfo
             {
                 Name = dc.GetProperty("name") as string,
                 Reference = dc.obj
             };
-            connection.DatacenterCache.TryAdd(dsName, info);
-            return info;
         }
 
         // Walk the rootFolder inventory (Datacenters and their datastores, recursing through folders)
