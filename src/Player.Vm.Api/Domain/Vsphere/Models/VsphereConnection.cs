@@ -47,6 +47,7 @@ public class VsphereConnection
     public ConcurrentDictionary<string, List<Network>> NetworkCache = new ConcurrentDictionary<string, List<Network>>();
     public ConcurrentDictionary<string, Datastore> DatastoreCache = new ConcurrentDictionary<string, Datastore>();
     public ConcurrentDictionary<string, Guid> VmGuids = new ConcurrentDictionary<string, Guid>();
+    public ConcurrentDictionary<string, DatacenterInfo> DatacenterCache = new ConcurrentDictionary<string, DatacenterInfo>(); // dsName -> datacenter
 
     public VsphereConnection(VsphereHost host, VsphereOptions options, ILogger logger)
     {

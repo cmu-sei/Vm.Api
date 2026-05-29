@@ -80,12 +80,25 @@ namespace Player.Vm.Api.Infrastructure.Extensions
         public static void AddApiClients(
             this IServiceCollection services,
             IdentityClientOptions identityClientOptions,
-            ClientOptions clientOptions)
+            ClientOptions clientOptions,
+            IsoUploadOptions isoUploadOptions)
         {
             services.AddHttpClient();
             services.AddIdentityClient(identityClientOptions);
             services.AddPlayerClient(clientOptions);
+            services.AddDatastoreClient(isoUploadOptions);
             services.AddTransient<AuthenticatingHandler>();
+        }
+
+        // Named HttpClient used to PUT ISOs directly to a vSphere datastore (UploadToDatastore mode).
+        private static void AddDatastoreClient(
+            this IServiceCollection services,
+            IsoUploadOptions isoUploadOptions)
+        {
+            services.AddHttpClient("vSphereDatastore", client =>
+            {
+                client.Timeout = TimeSpan.FromMinutes(isoUploadOptions.UploadTimeoutMinutes <= 0 ? 60 : isoUploadOptions.UploadTimeoutMinutes);
+            });
         }
 
         private static void AddIdentityClient(

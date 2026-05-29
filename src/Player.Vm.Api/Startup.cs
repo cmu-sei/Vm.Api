@@ -323,7 +323,7 @@ public class Startup
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CheckTasksBehavior<,>));
 
         services.AddMemoryCache();
-        services.AddApiClients(identityClientOptions: _identityClientOptions, clientOptions: _clientOptions);
+        services.AddApiClients(identityClientOptions: _identityClientOptions, clientOptions: _clientOptions, isoUploadOptions: isoOptions);
 
         // Create custom Otel Metric
         services.AddSingleton<TelemetryService>();

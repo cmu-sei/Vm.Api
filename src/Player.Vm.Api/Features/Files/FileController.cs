@@ -8,8 +8,10 @@ using System.Net;
 using System.Threading.Tasks;
 using DiscUtils.Iso9660;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Options;
 using Swashbuckle.AspNetCore.Annotations;
@@ -23,14 +25,17 @@ namespace Player.Vm.Api.Features.Files
     {
         private IsoUploadOptions _isoUploadOptions;
         private readonly IPlayerService _playerService;
+        private readonly IVsphereService _vsphereService;
 
         public FileController(
             IsoUploadOptions isoUploadOptions,
-            IPlayerService playerService
+            IPlayerService playerService,
+            IVsphereService vsphereService
         ) : base()
         {
             _isoUploadOptions = isoUploadOptions;
             _playerService = playerService;
+            _vsphereService = vsphereService;
         }
 
         [HttpPost("views/{uuid}/isos"), DisableRequestSizeLimit]
@@ -43,7 +48,9 @@ namespace Player.Vm.Api.Features.Files
             var scope = Request.Form["scope"][0];
             var size = Convert.ToInt64(Request.Form["size"][0]);
 
-            if (size > _isoUploadOptions.MaxFileSize)
+            // Cheap pre-flight check on the client-reported size, plus an authoritative check on the
+            // actual uploaded byte count - the form value is client-controlled and must not be trusted.
+            if (size > _isoUploadOptions.MaxFileSize || formFile.Length > _isoUploadOptions.MaxFileSize)
             {
                 throw new Exception($"File exceeds the {_isoUploadOptions.MaxFileSize} byte maximum size.");
             }
@@ -61,10 +68,17 @@ namespace Player.Vm.Api.Features.Files
                     throw new InvalidOperationException("You do not have permission to upload files for this Team");
             }
 
+            var scopeId = (scope == "view") ? uuid.ToString() : team.Id.ToString();
+
+            if (_isoUploadOptions.UploadToDatastore)
+            {
+                return await UploadToDatastore(uuid.ToString(), scopeId, filename, formFile);
+            }
+
             var destPath = Path.Combine(
                 _isoUploadOptions.BasePath,
                 uuid.ToString(),
-                (scope == "view") ? uuid.ToString() : team.Id.ToString()
+                scopeId
             );
 
             var destFile = Path.Combine(destPath, filename);
@@ -73,7 +87,6 @@ namespace Player.Vm.Api.Features.Files
 
             using (var sourceStream = formFile.OpenReadStream())
             {
-
                 if (filename.ToLower().EndsWith(".iso"))
                 {
                     using (var destStream = System.IO.File.Create(destFile))
@@ -83,15 +96,71 @@ namespace Player.Vm.Api.Features.Files
                 }
                 else
                 {
-                    CDBuilder builder = new CDBuilder();
-                    builder.UseJoliet = true;
-                    builder.VolumeIdentifier = "PlayerIso";
-                    builder.AddFile(filename, sourceStream);
-                    builder.Build(destFile + ".iso");
+                    BuildIso(sourceStream, filename, destFile + ".iso");
                 }
             }
 
             return Json("ISO was uploaded");
+        }
+
+        // Stage the upload as an ISO locally, then stream it directly to the vSphere datastore(s).
+        // Used for VMware Cloud on AWS SDDC environments that lack NFS datastores.
+        private async Task<IActionResult> UploadToDatastore(string viewId, string scopeId, string filename, IFormFile formFile)
+        {
+            var stagingDir = string.IsNullOrWhiteSpace(_isoUploadOptions.TempStagingPath)
+                ? Path.GetTempPath()
+                : _isoUploadOptions.TempStagingPath;
+            Directory.CreateDirectory(stagingDir);
+
+            var isIso = filename.ToLower().EndsWith(".iso");
+            // datastore filename matches the NFS naming so GetIsos/MountIso resolve it identically
+            var isoName = isIso ? filename : filename + ".iso";
+            var tempPath = Path.Combine(stagingDir, Guid.NewGuid().ToString() + ".iso");
+
+            try
+            {
+                using (var sourceStream = formFile.OpenReadStream())
+                {
+                    if (isIso)
+                    {
+                        using (var destStream = System.IO.File.Create(tempPath))
+                        {
+                            await sourceStream.CopyToAsync(destStream);
+                        }
+                    }
+                    else
+                    {
+                        BuildIso(sourceStream, filename, tempPath);
+                    }
+                }
+
+                var failures = await _vsphereService.UploadIso(viewId, scopeId, isoName, tempPath);
+
+                if (failures.Any())
+                {
+                    return Json($"ISO uploaded, but failed on: {string.Join("; ", failures)}");
+                }
+
+                return Json("ISO was uploaded");
+            }
+            finally
+            {
+                if (System.IO.File.Exists(tempPath))
+                {
+                    try { System.IO.File.Delete(tempPath); }
+                    catch { /* best-effort cleanup */ }
+                }
+            }
+        }
+
+        // Wrap an arbitrary uploaded file into a single-file ISO at destPath (Joliet, "PlayerIso" volume).
+        private static void BuildIso(System.IO.Stream source, string filename, string destPath)
+        {
+            CDBuilder builder = new CDBuilder();
+            builder.UseJoliet = true;
+            builder.VolumeIdentifier = "PlayerIso";
+            builder.AddFile(filename, source);
+            builder.Build(destPath);
         }
 
         private string SanitizeFilename(string filename)

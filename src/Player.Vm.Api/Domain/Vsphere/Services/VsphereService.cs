@@ -6,7 +6,10 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.IO;
+using System.ServiceModel;
+using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
@@ -36,6 +39,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<string> UploadFileToVm(Guid id, string username, string password, string filepath, Stream fileStream);
         Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath);
         Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subFolder);
+        // Uploads an ISO to the vSphere datastore on all enabled/connected hosts.
+        // Returns messages for hosts that failed (empty => uploaded to every host). Throws only if all hosts fail.
+        Task<IReadOnlyList<string>> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
         Task<string> SetResolution(Guid id, int width, int height);
         Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation);
         Task<Dictionary<Guid, string>> BulkShutdown(Guid[] ids);
@@ -57,13 +63,15 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private readonly IConfiguration _configuration;
         private readonly IConnectionService _connectionService;
         private readonly IMapper _mapper;
+        private readonly IHttpClientFactory _httpClientFactory;
 
         public VsphereService(
                 IOptions<RewriteHostOptions> rewriteHostOptions,
                 ILogger<VsphereService> logger,
                 IConfiguration configuration,
                 IConnectionService connectionService,
-                IMapper mapper
+                IMapper mapper,
+                IHttpClientFactory httpClientFactory
             )
         {
             _rewriteHostOptions = rewriteHostOptions.Value;
@@ -71,6 +79,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _connectionService = connectionService;
             _configuration = configuration;
             _mapper = mapper;
+            _httpClientFactory = httpClientFactory;
         }
 
         public async Task<string> GetConsoleUrl(VsphereVirtualMachine machine)
@@ -997,6 +1006,13 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return names;
         }
 
+        // Single source of truth for the datastore-relative ISO folder layout, shared by the ISO
+        // search (GetIsos) and the datastore upload (UploadIsoToConnection) so they never diverge.
+        private static string BuildIsoFolderRelative(string baseFolder, string viewId, string scopeId)
+        {
+            return $"{baseFolder}/{viewId}/{scopeId}";
+        }
+
         public async Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subfolder)
         {
             var aggregate = await this.GetVm(vmId);
@@ -1004,8 +1020,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             List<IsoFile> list = new List<IsoFile>();
             var dsName = connection.Host.DsName;
-            var baseFolder = connection.Host.BaseFolder;
-            var filepath = $"[{dsName}] {baseFolder}/{viewId}/{subfolder}";
+            var filepath = $"[{dsName}] {BuildIsoFolderRelative(connection.Host.BaseFolder, viewId, subfolder)}";
 
             var datastore = await GetDatastoreByName(dsName, connection);
             if (datastore == null)
@@ -1049,6 +1064,240 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
 
             return list;
+        }
+
+        public async Task<IReadOnlyList<string>> UploadIso(string viewId, string scopeId, string filename, string localFilePath)
+        {
+            // Upload to all enabled/connected hosts so the ISO is available wherever the VM runs
+            // (mirrors the shared-storage semantics of the NFS path).
+            var connections = _connectionService.GetAllConnections()
+                .Where(c => c.Enabled && c.Connected && c.Client != null)
+                .ToList();
+
+            if (!connections.Any())
+            {
+                throw new InvalidOperationException("No connected vSphere hosts available for ISO upload.");
+            }
+
+            // Upload to every host concurrently; each host streams its own FileStream off the staged
+            // file, so the PUTs are independent. Per-host failures are captured (never faulting the
+            // whole batch) so wall-clock is ~the slowest host rather than the sum.
+            var results = await Task.WhenAll(connections.Select(async connection =>
+            {
+                try
+                {
+                    await UploadIsoToConnection(connection, viewId, scopeId, filename, localFilePath);
+                    return (string)null;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to upload ISO {File} to {Host}", filename, connection.Address);
+                    return $"{connection.Address}: {ex.Message}";
+                }
+            }));
+
+            var failures = results.Where(r => r != null).ToList();
+
+            // Idempotent re-upload heals any missed host (deterministic path + PUT overwrite),
+            // so report partial failures rather than aborting. Throw only if every host failed.
+            if (failures.Count == connections.Count)
+            {
+                throw new Exception($"ISO upload failed on all hosts: {string.Join("; ", failures)}");
+            }
+
+            if (failures.Any())
+            {
+                _logger.LogWarning("ISO {File} uploaded with partial failures: {Failures}", filename, string.Join("; ", failures));
+            }
+
+            return failures;
+        }
+
+        private async Task UploadIsoToConnection(VsphereConnection connection, string viewId, string scopeId, string filename, string localFilePath)
+        {
+            var dsName = connection.Host.DsName;
+
+            // datastore-relative folder (no "[ds]" prefix; that form is only used for search/mount/MakeDirectory paths)
+            var folderPath = BuildIsoFolderRelative(connection.Host.BaseFolder, viewId, scopeId);
+
+            var datacenter = await GetDatacenterForDatastore(dsName, connection);
+            if (datacenter == null)
+            {
+                throw new InvalidOperationException($"Could not resolve datacenter for datastore {dsName} on {connection.Address}");
+            }
+
+            // 1) ensure the destination directory exists (ignore "already exists")
+            await EnsureDatastoreDirectory(connection, datacenter, dsName, folderPath);
+
+            // 2) HTTP PUT the file to the datastore HTTP file API
+            var url = BuildDatastoreUploadUrl(connection.Address, folderPath, filename, datacenter.Name, dsName);
+
+            var client = _httpClientFactory.CreateClient("vSphereDatastore");
+
+            // HTTP Basic auth (not the SOAP session cookie) - matches the topomojo implementation
+            var credentials = Convert.ToBase64String(
+                Encoding.UTF8.GetBytes($"{connection.Host.Username}:{connection.Host.Password}"));
+
+            using (var fileStream = System.IO.File.OpenRead(localFilePath))
+            using (var request = new HttpRequestMessage(HttpMethod.Put, url))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
+
+                var content = new StreamContent(fileStream);
+                content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                content.Headers.ContentLength = fileStream.Length;
+                request.Content = content;
+
+                _logger.LogDebug("Uploading ISO to datastore: {Url}", url);
+
+                var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    throw new Exception($"Datastore PUT failed ({(int)response.StatusCode}): {body}");
+                }
+            }
+        }
+
+        private static string BuildDatastoreUploadUrl(string host, string folderPath, string file, string dcName, string dsName)
+        {
+            // https://{host}/folder/{folder}/{file}?dcPath={datacenter}&dsName={datastore}
+            var folder = string.Join("/", folderPath.Split('/').Select(Uri.EscapeDataString));
+            return $"https://{host}/folder/{folder}/{Uri.EscapeDataString(file)}"
+                 + $"?dcPath={Uri.EscapeDataString(dcName)}&dsName={Uri.EscapeDataString(dsName)}";
+        }
+
+        private async Task EnsureDatastoreDirectory(VsphereConnection connection, DatacenterInfo datacenter, string dsName, string folderPath)
+        {
+            var datastorePath = $"[{dsName}] {folderPath}";
+            try
+            {
+                await connection.Client.MakeDirectoryAsync(
+                    connection.Sic.fileManager,
+                    datastorePath,
+                    datacenter.Reference,
+                    true /* createParentDirectories */);
+            }
+            catch (FaultException<VimClient.FileAlreadyExists>)
+            {
+                // directory already present - nothing to do
+            }
+            catch (FaultException<VimClient.FileFault> ex) when (ex.Detail is VimClient.FileAlreadyExists)
+            {
+                // directory already present (surfaced as the base FileFault) - nothing to do
+            }
+        }
+
+        private async Task<DatacenterInfo> GetDatacenterForDatastore(string dsName, VsphereConnection connection)
+        {
+            if (connection.DatacenterCache.TryGetValue(dsName, out var cached))
+            {
+                return cached;
+            }
+
+            var tree = await LoadInventoryTree(connection, new PropertySpec[]
+            {
+                new PropertySpec
+                {
+                    type = "Datacenter",
+                    pathSet = new string[] { "name", "datastore" }
+                },
+                new PropertySpec
+                {
+                    type = "Datastore",
+                    pathSet = new string[] { "name" }
+                }
+            });
+            if (tree.Length == 0)
+            {
+                return null;
+            }
+
+            var datacenters = tree.FindType("Datacenter");
+            var datastores = tree.FindType("Datastore");
+
+            // Prefer the datacenter that actually contains the named datastore.
+            foreach (var dc in datacenters)
+            {
+                var dsRefs = dc.GetProperty("datastore") as ManagedObjectReference[] ?? Array.Empty<ManagedObjectReference>();
+
+                var match = datastores.FirstOrDefault(d =>
+                    (d.GetProperty("name") as string) == dsName &&
+                    dsRefs.Any(r => r.Value == d.obj.Value));
+
+                if (match != null)
+                {
+                    return CacheDatacenter(connection, dsName, dc);
+                }
+            }
+
+            // Fallback: single-datacenter deployments (or datastore not matched) - use the first datacenter.
+            var fallback = datacenters.FirstOrDefault();
+            return fallback != null ? CacheDatacenter(connection, dsName, fallback) : null;
+        }
+
+        private static DatacenterInfo CacheDatacenter(VsphereConnection connection, string dsName, VimClient.ObjectContent dc)
+        {
+            var info = new DatacenterInfo
+            {
+                Name = dc.GetProperty("name") as string,
+                Reference = dc.obj
+            };
+            connection.DatacenterCache.TryAdd(dsName, info);
+            return info;
+        }
+
+        // Walk the rootFolder inventory (Datacenters and their datastores, recursing through folders)
+        // retrieving the supplied properties. Shared by datastore and datacenter lookups so the
+        // traversal scaffolding lives in one place.
+        private async Task<VimClient.ObjectContent[]> LoadInventoryTree(VsphereConnection connection, PropertySpec[] props)
+        {
+            var plan = new TraversalSpec
+            {
+                name = "FolderTraverseSpec",
+                type = "Folder",
+                path = "childEntity",
+                selectSet = new SelectionSpec[] {
+                    new TraversalSpec()
+                    {
+                        type = "Datacenter",
+                        path = "datastore",
+                        selectSet = new SelectionSpec[] {
+                            new SelectionSpec {
+                                name = "FolderTraverseSpec"
+                            }
+                        }
+                    },
+
+                    new TraversalSpec()
+                    {
+                        type = "Folder",
+                        path = "childEntity",
+                        selectSet = new SelectionSpec[] {
+                            new SelectionSpec {
+                                name = "FolderTraverseSpec"
+                            }
+                        }
+                    }
+                }
+            };
+
+            ObjectSpec objectspec = new ObjectSpec
+            {
+                obj = connection.Sic.rootFolder,
+                selectSet = new SelectionSpec[] { plan }
+            };
+
+            PropertyFilterSpec filter = new PropertyFilterSpec
+            {
+                propSet = props,
+                objectSet = new ObjectSpec[] { objectspec }
+            };
+
+            PropertyFilterSpec[] filters = new PropertyFilterSpec[] { filter };
+            RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(connection.Props, filters);
+
+            return response.returnval;
         }
 
         public async Task<TaskInfo> ReconfigureVm(Guid id, Feature feature, string label, string newvalue)
@@ -1586,58 +1835,14 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         private async Task<VimClient.ObjectContent[]> LoadReferenceTree(VsphereConnection connection)
         {
-            var plan = new TraversalSpec
-            {
-                name = "FolderTraverseSpec",
-                type = "Folder",
-                path = "childEntity",
-                selectSet = new SelectionSpec[] {
-
-                    new TraversalSpec()
-                    {
-                        type = "Datacenter",
-                        path = "datastore",
-                        selectSet = new SelectionSpec[] {
-                            new SelectionSpec {
-                                name = "FolderTraverseSpec"
-                            }
-                        }
-                    },
-
-                    new TraversalSpec()
-                    {
-                        type = "Folder",
-                        path = "childEntity",
-                        selectSet = new SelectionSpec[] {
-                            new SelectionSpec {
-                                name = "FolderTraverseSpec"
-                            }
-                        }
-                    }
-                }
-            };
-
-            var props = new PropertySpec[]
+            return await LoadInventoryTree(connection, new PropertySpec[]
             {
                 new PropertySpec
                 {
                     type = "Datastore",
                     pathSet = new string[] { "name", "browser" }
                 }
-            };
-
-            ObjectSpec objectspec = new ObjectSpec();
-            objectspec.obj = connection.Sic.rootFolder;
-            objectspec.selectSet = new SelectionSpec[] { plan };
-
-            PropertyFilterSpec filter = new PropertyFilterSpec();
-            filter.propSet = props;
-            filter.objectSet = new ObjectSpec[] { objectspec };
-
-            PropertyFilterSpec[] filters = new PropertyFilterSpec[] { filter };
-            RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(connection.Props, filters);
-
-            return response.returnval;
+            });
         }
 
         #endregion
