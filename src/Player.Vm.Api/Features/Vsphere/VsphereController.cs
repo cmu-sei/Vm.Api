@@ -124,6 +124,31 @@ namespace Player.Vm.Api.Features.Vsphere
         }
 
         /// <summary>
+        /// Create a snapshot of a vsphere virtual machine
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/snapshots")]
+        [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "createVsphereVirtualMachineSnapshot")]
+        public async Task<IActionResult> CreateSnapshot([FromRoute] Guid id, [FromBody] CreateSnapshot.Command command)
+        {
+            command.Id = id;
+            var result = await _mediator.Send(command);
+            return Json(result);
+        }
+
+        /// <summary>
+        /// Delete a snapshot of a vsphere virtual machine
+        /// </summary>
+        [HttpDelete("vms/vsphere/{id}/actions/snapshots/{snapshotId}")]
+        [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "deleteVsphereVirtualMachineSnapshot")]
+        public async Task<IActionResult> DeleteSnapshot([FromRoute] Guid id, [FromRoute] string snapshotId)
+        {
+            var result = await _mediator.Send(new DeleteSnapshot.Command { Id = id, SnapshotId = snapshotId });
+            return Json(result);
+        }
+
+        /// <summary>
         /// Get tools status of a vsphere virtual machine
         /// </summary>
         [HttpGet("vms/vsphere/{id}/tools")]

@@ -45,6 +45,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task RevertToCurrentSnapshot(Guid vmId);
         Task<List<VmSnapshot>> GetSnapshots(Guid vmId);
         Task RevertToSnapshot(Guid vmId, string snapshotMoRefValue);
+        Task<string> CreateSnapshotAsync(Guid vmId, string snapshotName, string description, bool includeMemory);
+        Task<string> DeleteSnapshotAsync(Guid vmId, string snapshotMoRefValue);
         Task<GuestProcessResult> RunGuestProcessAsync(Guid vmId, string username, string password, string command, string arguments, string workingDirectory, TimeSpan timeout);
         Task<long> RunGuestProcessFastAsync(Guid vmId, string username, string password, string command, string arguments, string workingDirectory);
         Task<string> ReadGuestFileAsync(Guid vmId, string username, string password, string guestFilePath);
@@ -1292,6 +1294,34 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             if (taskInfo.state == TaskInfoState.error)
                 throw new Exception(taskInfo.error.localizedMessage);
+        }
+
+        public async Task<string> CreateSnapshotAsync(Guid vmId, string snapshotName, string description, bool includeMemory)
+        {
+            var aggregate = await this.GetVm(vmId);
+            // quiesce=false matches the existing RevertToSnapshot conservatism — let the caller add VM Tools quiesce later if needed.
+            var task = await aggregate.Connection.Client.CreateSnapshot_TaskAsync(
+                aggregate.MachineReference, snapshotName, description, includeMemory, false);
+            var taskInfo = await WaitForVimTask(task, aggregate.Connection);
+
+            if (taskInfo.state == TaskInfoState.error)
+                throw new Exception(taskInfo.error.localizedMessage);
+
+            return $"snapshot {snapshotName} created on vm {vmId}";
+        }
+
+        public async Task<string> DeleteSnapshotAsync(Guid vmId, string snapshotMoRefValue)
+        {
+            var aggregate = await this.GetVm(vmId);
+            var snapshotRef = new ManagedObjectReference { type = "VirtualMachineSnapshot", Value = snapshotMoRefValue };
+            // removeChildren=false: only the named snapshot is removed; its children are reparented onto its parent.
+            var task = await aggregate.Connection.Client.RemoveSnapshot_TaskAsync(snapshotRef, false, false);
+            var taskInfo = await WaitForVimTask(task, aggregate.Connection);
+
+            if (taskInfo.state == TaskInfoState.error)
+                throw new Exception(taskInfo.error.localizedMessage);
+
+            return $"snapshot {snapshotMoRefValue} removed from vm {vmId}";
         }
 
         #region Guest Operations
