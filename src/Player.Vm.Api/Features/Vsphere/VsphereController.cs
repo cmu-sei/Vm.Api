@@ -229,5 +229,69 @@ namespace Player.Vm.Api.Features.Vsphere
             var result = await _mediator.Send(command);
             return Json(result);
         }
+
+        /// <summary>
+        /// Run a process inside the guest OS of a vsphere virtual machine and wait for completion
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/run-guest-process")]
+        [ProducesResponseType(typeof(GuestProcessResult), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "runGuestProcessOnVsphereVirtualMachine")]
+        public async Task<IActionResult> RunGuestProcess([FromRoute] Guid id, [FromBody] RunGuestProcess.Command command)
+        {
+            command.Id = id;
+            var result = await _mediator.Send(command);
+            return Json(result);
+        }
+
+        /// <summary>
+        /// Start a process inside the guest OS of a vsphere virtual machine without waiting for completion
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/run-guest-process-fast")]
+        [ProducesResponseType(typeof(long), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "runGuestProcessFastOnVsphereVirtualMachine")]
+        public async Task<IActionResult> RunGuestProcessFast([FromRoute] Guid id, [FromBody] RunGuestProcessFast.Command command)
+        {
+            command.Id = id;
+            var result = await _mediator.Send(command);
+            return Json(result);
+        }
+
+        /// <summary>
+        /// Read the contents of a file from the guest OS of a vsphere virtual machine
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/read-guest-file")]
+        [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "readGuestFileFromVsphereVirtualMachine")]
+        public async Task<IActionResult> ReadGuestFile([FromRoute] Guid id, [FromBody] ReadGuestFile.Command command)
+        {
+            command.Id = id;
+            var result = await _mediator.Send(command);
+            return Json(result);
+        }
+
+        /// <summary>
+        /// Clone a vsphere virtual machine from a template
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/clone-from-template")]
+        [ProducesResponseType(typeof(CloneVmFromTemplate.Response), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "cloneVsphereVirtualMachineFromTemplate")]
+        public async Task<IActionResult> CloneFromTemplate([FromRoute] Guid id, [FromBody] CloneVmFromTemplate.Command command)
+        {
+            command.Id = id;
+            var result = await _mediator.Send(command);
+            return Json(result);
+        }
+
+        /// <summary>
+        /// Delete a vsphere virtual machine
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/delete")]
+        [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "deleteVsphereVirtualMachine")]
+        public async Task<IActionResult> Delete([FromRoute] Guid id)
+        {
+            var result = await _mediator.Send(new DeleteVm.Command { Id = id });
+            return Json(result);
+        }
     }
 }

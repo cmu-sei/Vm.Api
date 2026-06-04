@@ -45,6 +45,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task RevertToCurrentSnapshot(Guid vmId);
         Task<List<VmSnapshot>> GetSnapshots(Guid vmId);
         Task RevertToSnapshot(Guid vmId, string snapshotMoRefValue);
+        Task<GuestProcessResult> RunGuestProcessAsync(Guid vmId, string username, string password, string command, string arguments, string workingDirectory, TimeSpan timeout);
+        Task<long> RunGuestProcessFastAsync(Guid vmId, string username, string password, string command, string arguments, string workingDirectory);
+        Task<string> ReadGuestFileAsync(Guid vmId, string username, string password, string guestFilePath);
+        Task<Guid> CloneVmFromTemplateAsync(Guid sourceVmId, string cloneName, bool powerOn);
+        Task<string> DeleteVmAsync(Guid vmId);
     }
 
     public class VsphereService : IVsphereService
@@ -1288,6 +1293,251 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             if (taskInfo.state == TaskInfoState.error)
                 throw new Exception(taskInfo.error.localizedMessage);
         }
+
+        #region Guest Operations
+
+        private async Task<(VsphereAggregate Aggregate, NamePasswordAuthentication Auth, ManagedObjectReference ProcessManager, ManagedObjectReference FileManager)> PrepareGuestOperations(Guid vmId, string username, string password)
+        {
+            var aggregate = await GetVm(vmId);
+            if (aggregate?.MachineReference == null)
+                throw new Exception("Could not get vm reference");
+
+            var toolsStatus = await GetVmToolsStatus(vmId);
+            if (toolsStatus == VirtualMachineToolsStatus.toolsNotInstalled || toolsStatus == VirtualMachineToolsStatus.toolsNotRunning)
+                throw new Exception("VM Tools is not running");
+
+            var auth = new NamePasswordAuthentication
+            {
+                interactiveSession = false,
+                username = username,
+                password = password
+            };
+
+            var processManager = new ManagedObjectReference
+            {
+                type = "GuestProcessManager",
+                Value = "guestOperationsProcessManager"
+            };
+
+            var fileManager = new ManagedObjectReference
+            {
+                type = "GuestFileManager",
+                Value = "guestOperationsFileManager"
+            };
+
+            return (aggregate, auth, processManager, fileManager);
+        }
+
+        public async Task<long> RunGuestProcessFastAsync(Guid vmId, string username, string password, string command, string arguments, string workingDirectory)
+        {
+            _logger.LogDebug("RunGuestProcessFastAsync called for vm {vmId}", vmId);
+
+            var (aggregate, auth, processManager, _) = await PrepareGuestOperations(vmId, username, password);
+
+            var spec = new GuestProgramSpec
+            {
+                programPath = command,
+                arguments = arguments ?? string.Empty,
+                workingDirectory = workingDirectory ?? string.Empty
+            };
+
+            return await aggregate.Connection.Client.StartProgramInGuestAsync(processManager, aggregate.MachineReference, auth, spec);
+        }
+
+        public async Task<GuestProcessResult> RunGuestProcessAsync(Guid vmId, string username, string password, string command, string arguments, string workingDirectory, TimeSpan timeout)
+        {
+            _logger.LogDebug("RunGuestProcessAsync called for vm {vmId}", vmId);
+
+            var capturedStdoutPath = $"/tmp/player-vm-api-stdout-{Guid.NewGuid():N}";
+            var redirectedArgs = $"{arguments ?? string.Empty} > {capturedStdoutPath} 2>&1".Trim();
+
+            var (aggregate, auth, processManager, fileManager) = await PrepareGuestOperations(vmId, username, password);
+
+            var spec = new GuestProgramSpec
+            {
+                programPath = command,
+                arguments = redirectedArgs,
+                workingDirectory = workingDirectory ?? string.Empty
+            };
+
+            long pid = await aggregate.Connection.Client.StartProgramInGuestAsync(processManager, aggregate.MachineReference, auth, spec);
+
+            var deadline = DateTime.UtcNow.Add(timeout <= TimeSpan.Zero ? TimeSpan.FromMinutes(5) : timeout);
+            GuestProcessInfo procInfo = null;
+
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(_pollInterval);
+                var procResponse = await aggregate.Connection.Client.ListProcessesInGuestAsync(processManager, aggregate.MachineReference, auth, new[] { pid });
+                procInfo = procResponse?.returnval?.FirstOrDefault();
+
+                if (procInfo == null || procInfo.endTimeSpecified)
+                    break;
+            }
+
+            if (procInfo != null && !procInfo.endTimeSpecified)
+            {
+                return new GuestProcessResult
+                {
+                    Success = false,
+                    ExitCode = -1,
+                    Error = $"Timed out waiting for process {pid} to exit"
+                };
+            }
+
+            string output = string.Empty;
+            try
+            {
+                output = await ReadGuestFileInternal(aggregate, fileManager, auth, capturedStdoutPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to read captured stdout file for vm {vmId}", vmId);
+            }
+
+            return new GuestProcessResult
+            {
+                Output = output,
+                ExitCode = procInfo?.exitCode ?? 0,
+                Success = procInfo != null && procInfo.exitCode == 0
+            };
+        }
+
+        public async Task<string> ReadGuestFileAsync(Guid vmId, string username, string password, string guestFilePath)
+        {
+            _logger.LogDebug("ReadGuestFileAsync called for vm {vmId}", vmId);
+
+            var (aggregate, auth, _, fileManager) = await PrepareGuestOperations(vmId, username, password);
+            return await ReadGuestFileInternal(aggregate, fileManager, auth, guestFilePath);
+        }
+
+        private async Task<string> ReadGuestFileInternal(VsphereAggregate aggregate, ManagedObjectReference fileManager, NamePasswordAuthentication auth, string guestFilePath)
+        {
+            var transferInfo = await aggregate.Connection.Client.InitiateFileTransferFromGuestAsync(
+                fileManager, aggregate.MachineReference, auth, guestFilePath);
+
+            var url = transferInfo.url;
+
+            // Replace IP with hostname when needed (mirrors UploadFileToVm)
+            var summaryResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
+                VmFilter(aggregate.MachineReference));
+            var vmSummary = (VirtualMachineSummary)summaryResponse.returnval[0].propSet[0].val;
+
+            var hostResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
+                HostFilter(vmSummary.runtime.host, "name"));
+            var hostName = hostResponse.returnval[0].propSet[0].val as string;
+
+            if (!url.Contains(hostName))
+            {
+                url = url.Replace("https://", "");
+                var s = url.IndexOf("/");
+                url = "https://" + hostName + url.Substring(s);
+            }
+
+            using var handler = new HttpClientHandler
+            {
+                ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+            };
+            using var client = new HttpClient(handler);
+            var timeoutMinutes = _configuration.GetSection("vmOptions").GetValue("Timeout", 3);
+            client.Timeout = TimeSpan.FromMinutes(timeoutMinutes);
+
+            return await client.GetStringAsync(url);
+        }
+
+        #endregion
+
+        #region Lifecycle
+
+        public async Task<Guid> CloneVmFromTemplateAsync(Guid sourceVmId, string cloneName, bool powerOn)
+        {
+            _logger.LogDebug("CloneVmFromTemplateAsync called for source vm {sourceVmId} cloneName {cloneName}", sourceVmId, cloneName);
+
+            var aggregate = await GetVm(sourceVmId);
+            if (aggregate?.MachineReference == null)
+                throw new Exception("Could not get source vm reference");
+
+            // Retrieve source VM's parent folder + resourcePool
+            var response = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
+                VmFilter(aggregate.MachineReference, "parent resourcePool runtime.host"));
+
+            var oc = response.returnval[0];
+            var parentFolder = oc.propSet.FirstOrDefault(p => p.name == "parent")?.val as ManagedObjectReference;
+            var resourcePool = oc.propSet.FirstOrDefault(p => p.name == "resourcePool")?.val as ManagedObjectReference;
+            var host = oc.propSet.FirstOrDefault(p => p.name == "runtime.host")?.val as ManagedObjectReference;
+
+            if (parentFolder == null)
+                throw new Exception("Could not determine parent folder for source vm");
+
+            var cloneSpec = new VirtualMachineCloneSpec
+            {
+                location = new VirtualMachineRelocateSpec
+                {
+                    pool = resourcePool,
+                    host = host
+                },
+                powerOn = powerOn,
+                template = false
+            };
+
+            var task = await aggregate.Connection.Client.CloneVM_TaskAsync(aggregate.MachineReference, parentFolder, cloneName, cloneSpec);
+            var info = await WaitForVimTask(task, aggregate.Connection);
+
+            if (info.state == TaskInfoState.error)
+                throw new Exception(info.error.localizedMessage);
+
+            var clonedRef = info.result as ManagedObjectReference;
+            if (clonedRef == null)
+                throw new Exception("Clone task succeeded but did not return a vm reference");
+
+            // Read config.uuid off the cloned vm to return its Guid
+            var cloneProps = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
+                VmFilter(clonedRef, "config.uuid"));
+            var uuidProp = cloneProps.returnval[0].propSet.FirstOrDefault(p => p.name == "config.uuid");
+
+            if (uuidProp == null || !Guid.TryParse(uuidProp.val?.ToString(), out var cloneId))
+                throw new Exception("Could not read uuid of cloned vm");
+
+            return cloneId;
+        }
+
+        public async Task<string> DeleteVmAsync(Guid vmId)
+        {
+            _logger.LogDebug("DeleteVmAsync called for vm {vmId}", vmId);
+
+            var aggregate = await GetVm(vmId);
+            if (aggregate?.MachineReference == null)
+                return "vm not found";
+
+            // Power off if running
+            var state = await GetPowerState(vmId);
+            if (state == "on")
+            {
+                try
+                {
+                    var powerOffTask = await aggregate.Connection.Client.PowerOffVM_TaskAsync(aggregate.MachineReference);
+                    await WaitForVimTask(powerOffTask, aggregate.Connection);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogDebug(ex, "Power off before delete failed for vm {vmId}", vmId);
+                }
+            }
+
+            var task = await aggregate.Connection.Client.UnregisterAndDestroy_TaskAsync(aggregate.MachineReference);
+            var info = await WaitForVimTask(task, aggregate.Connection);
+
+            if (info.state == TaskInfoState.error)
+                throw new Exception(info.error.localizedMessage);
+
+            return "deleted";
+        }
+
+        #endregion
 
         #region Filters
 
