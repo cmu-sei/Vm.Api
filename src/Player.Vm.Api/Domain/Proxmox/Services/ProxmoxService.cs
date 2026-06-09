@@ -425,23 +425,100 @@ public class ProxmoxService : IProxmoxService
 
     private static List<object> BuildAgentCommand(string command, string arguments)
     {
-        // The QGA exec endpoint takes the program in its first slot followed by separate arguments.
-        // We split on whitespace to keep parity with vSphere's RunGuestProcess semantics where the
-        // 'arguments' field is a single space-separated string.
+        // QGA exec takes the program in its first slot followed by separate arguments. We tokenize
+        // the single 'arguments' string with shell-style quote/escape handling so callers can
+        // safely write things like:  -c "touch /tmp/x.txt"  or  -c 'echo "hi there"'.
         var list = new List<object> { command };
         if (!string.IsNullOrEmpty(arguments))
         {
-            foreach (var arg in arguments.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+            foreach (var arg in TokenizeShellArguments(arguments))
                 list.Add(arg);
         }
         return list;
     }
 
+    /// <summary>
+    /// Splits a command-line argument string the way POSIX shells do: whitespace separates tokens
+    /// except inside single or double quotes, and a backslash escapes the next character outside
+    /// single quotes. Mismatched quotes throw — better to fail loudly than silently mis-execute.
+    /// </summary>
+    private static List<string> TokenizeShellArguments(string input)
+    {
+        var tokens = new List<string>();
+        var current = new System.Text.StringBuilder();
+        var inSingle = false;
+        var inDouble = false;
+        var hasToken = false;
+
+        for (var i = 0; i < input.Length; i++)
+        {
+            var c = input[i];
+
+            if (inSingle)
+            {
+                if (c == '\'') { inSingle = false; }
+                else { current.Append(c); }
+                continue;
+            }
+
+            if (inDouble)
+            {
+                if (c == '\\' && i + 1 < input.Length)
+                {
+                    var next = input[i + 1];
+                    // Inside double quotes only \, ", $, ` and newline are escapable; other
+                    // backslashes are kept literally (mirrors bash behavior closely enough).
+                    if (next == '\\' || next == '"' || next == '$' || next == '`' || next == '\n')
+                    {
+                        current.Append(next);
+                        i++;
+                    }
+                    else
+                    {
+                        current.Append(c);
+                    }
+                }
+                else if (c == '"') { inDouble = false; }
+                else { current.Append(c); }
+                continue;
+            }
+
+            if (c == '\'') { inSingle = true; hasToken = true; continue; }
+            if (c == '"') { inDouble = true; hasToken = true; continue; }
+            if (c == '\\' && i + 1 < input.Length) { current.Append(input[++i]); hasToken = true; continue; }
+
+            if (char.IsWhiteSpace(c))
+            {
+                if (hasToken)
+                {
+                    tokens.Add(current.ToString());
+                    current.Clear();
+                    hasToken = false;
+                }
+                continue;
+            }
+
+            current.Append(c);
+            hasToken = true;
+        }
+
+        if (inSingle || inDouble)
+            throw new ArgumentException("Unterminated quote in arguments string.");
+
+        if (hasToken)
+            tokens.Add(current.ToString());
+
+        return tokens;
+    }
+
     private static string DecodeAgentOutput(dynamic data, string field)
     {
         // QGA returns "out-data" / "err-data" as plain strings (not base64) — only the truncated
-        // flag indicates capture limits. Fall back to empty when absent.
-        var raw = field == "out-data" ? data["out-data"] : data["err-data"];
-        return raw != null ? (string)raw : string.Empty;
+        // flag indicates capture limits. Fall back to empty when absent. The PveClient surfaces
+        // the JSON object as an ExpandoObject, so we look up the hyphenated key via its
+        // IDictionary<string, object> view rather than dynamic [] / member access.
+        if (data is IDictionary<string, object> dict && dict.TryGetValue(field, out var raw) && raw != null)
+            return raw.ToString();
+        return string.Empty;
     }
 }
