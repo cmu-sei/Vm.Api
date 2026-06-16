@@ -16,6 +16,7 @@ using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Infrastructure.Exceptions;
 using System.Web;
 
 namespace Player.Vm.Api.Domain.Vsphere.Services
@@ -855,32 +856,59 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         private async Task<TaskInfo> WaitForVimTask(ManagedObjectReference task, VsphereConnection connection)
         {
-            int i = 0;
-            TaskInfo info = new TaskInfo();
+            // Bound how long we will poll a vCenter task. Without this the loop ran forever whenever a
+            // task stayed queued/running (the old "timeout" counter was never checked), so a stuck
+            // PowerOff/Destroy would hang the request until the caller gave up. Configurable via
+            // vmOptions:TaskTimeoutMinutes; defaults to 10 minutes.
+            var timeoutMinutes = _configuration.GetSection("vmOptions").GetValue("TaskTimeoutMinutes", 10);
+            var deadline = DateTime.UtcNow.AddMinutes(timeoutMinutes);
 
-            //iterate the search until complete or timeout occurs
+            var taskKey = task?.Value;
+            TaskInfo info = new TaskInfo();
+            int polls = 0;
+
+            //poll until the task reaches a terminal state or we hit the deadline
             do
             {
-                //check every so often
                 await Task.Delay(_pollInterval);
                 info = await GetVimTaskInfo(task, connection);
-                i++;
-                //check for status updates until the task is complete
+                polls++;
+
+                if (DateTime.UtcNow >= deadline &&
+                    (info.state == TaskInfoState.running || info.state == TaskInfoState.queued))
+                {
+                    _logger.LogWarning(
+                        "vCenter task {TaskKey} did not complete within {TimeoutMinutes} minute(s); last state {State}, progress {Progress}% after {Polls} polls. Abandoning wait.",
+                        taskKey, timeoutMinutes, info.state, info.progress, polls);
+                    throw new TimeoutException(
+                        $"vCenter task {taskKey} did not reach a terminal state within {timeoutMinutes} minute(s) (last state: {info.state}).");
+                }
             } while ((info.state == TaskInfoState.running || info.state == TaskInfoState.queued));
 
-            //return the task info
+            _logger.LogDebug(
+                "vCenter task {TaskKey} finished with state {State} after {Polls} polls.",
+                taskKey, info.state, polls);
+
             return info;
         }
 
         private async Task<TaskInfo> GetVimTaskInfo(ManagedObjectReference task, VsphereConnection connection)
         {
-            TaskInfo info = new TaskInfo();
             RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(
                 connection.Props,
                 TaskFilter(task));
-            VimClient.ObjectContent[] oc = response.returnval;
-            info = (TaskInfo)oc[0].propSet[0].val;
-            return info;
+
+            // A task that has not yet been registered in the property collector (or a transient empty
+            // read) returns no objects/props. Treat that as "still running" so the caller keeps polling
+            // rather than NullReference/IndexOutOfRange-ing out of the wait loop.
+            var oc = response?.returnval;
+            if (oc == null || oc.Length == 0 || oc[0].propSet == null || oc[0].propSet.Length == 0)
+            {
+                _logger.LogDebug("Task {TaskKey} info not yet available from property collector; treating as running.", task?.Value);
+                return new TaskInfo { state = TaskInfoState.running };
+            }
+
+            return (TaskInfo)oc[0].propSet[0].val;
         }
 
         public async Task<NicOptions> GetNicOptions(Guid id, bool canManage, Dictionary<string, string> allowedNetworks, VsphereVirtualMachine machine)
@@ -1285,15 +1313,25 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return snapshots;
         }
 
-        public async Task RevertToSnapshot(Guid vmId, string snapshotMoRefValue)
+        public async Task RevertToSnapshot(Guid vmId, string snapshotIdentifier)
         {
             var aggregate = await this.GetVm(vmId);
+            var snapshotMoRefValue = await ResolveSnapshotMoRefValue(vmId, snapshotIdentifier);
+            _logger.LogInformation(
+                "RevertToSnapshot vm {vmId} reverting to snapshot identifier '{Identifier}' resolved to MoRef '{MoRef}'",
+                vmId, snapshotIdentifier, snapshotMoRefValue);
             var snapshotRef = new ManagedObjectReference { type = "VirtualMachineSnapshot", Value = snapshotMoRefValue };
             var task = await aggregate.Connection.Client.RevertToSnapshot_TaskAsync(snapshotRef, null, false);
             var taskInfo = await WaitForVimTask(task, aggregate.Connection);
 
             if (taskInfo.state == TaskInfoState.error)
-                throw new Exception(taskInfo.error.localizedMessage);
+            {
+                var message = taskInfo.error?.localizedMessage ?? "Revert to snapshot task failed";
+                _logger.LogError("RevertToSnapshot task for vm {vmId} failed: {Message}", vmId, message);
+                throw new Exception(message);
+            }
+
+            _logger.LogInformation("RevertToSnapshot vm {vmId} reverted to snapshot '{MoRef}'", vmId, snapshotMoRefValue);
         }
 
         public async Task<string> CreateSnapshotAsync(Guid vmId, string snapshotName, string description, bool includeMemory)
@@ -1310,9 +1348,10 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return $"snapshot {snapshotName} created on vm {vmId}";
         }
 
-        public async Task<string> DeleteSnapshotAsync(Guid vmId, string snapshotMoRefValue)
+        public async Task<string> DeleteSnapshotAsync(Guid vmId, string snapshotIdentifier)
         {
             var aggregate = await this.GetVm(vmId);
+            var snapshotMoRefValue = await ResolveSnapshotMoRefValue(vmId, snapshotIdentifier);
             var snapshotRef = new ManagedObjectReference { type = "VirtualMachineSnapshot", Value = snapshotMoRefValue };
             // removeChildren=false: only the named snapshot is removed; its children are reparented onto its parent.
             var task = await aggregate.Connection.Client.RemoveSnapshot_TaskAsync(snapshotRef, false, false);
@@ -1321,7 +1360,50 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             if (taskInfo.state == TaskInfoState.error)
                 throw new Exception(taskInfo.error.localizedMessage);
 
-            return $"snapshot {snapshotMoRefValue} removed from vm {vmId}";
+            return $"snapshot {snapshotIdentifier} removed from vm {vmId}";
+        }
+
+        /// <summary>
+        /// Resolve a caller-supplied snapshot identifier to a vSphere snapshot managed object reference
+        /// value (e.g. "snapshot-1234"). Steamfitter and other callers may pass either the snapshot's
+        /// human-readable name or its MoRef value, so we look the identifier up against the VM's snapshot
+        /// tree by name first, then fall back to treating it as a MoRef value. Matching by name is
+        /// case-sensitive and, when multiple snapshots share a name, resolves to the most recently created.
+        /// </summary>
+        private async Task<string> ResolveSnapshotMoRefValue(Guid vmId, string snapshotIdentifier)
+        {
+            if (string.IsNullOrWhiteSpace(snapshotIdentifier))
+                throw new ArgumentException("A snapshot name or id must be provided.", nameof(snapshotIdentifier));
+
+            var identifier = snapshotIdentifier.Trim();
+            var snapshots = await GetSnapshots(vmId);
+
+            // Prefer an exact MoRef match so callers that already pass the id keep working unambiguously.
+            var byId = snapshots.FirstOrDefault(s => s.Id == identifier);
+            if (byId != null)
+                return byId.Id;
+
+            // Otherwise resolve by name. Case-insensitive + trimmed to tolerate caller formatting; when
+            // multiple snapshots share a name, prefer the most recently created.
+            var byName = snapshots
+                .Where(s => string.Equals(s.Name?.Trim(), identifier, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(s => s.CreateTime)
+                .ToList();
+
+            if (byName.Count > 0)
+                return byName[0].Id;
+
+            // No match. Fail with a clear, actionable message (and the available snapshots) instead of
+            // passing an unresolvable value to vSphere, which returns a cryptic
+            // "has already been deleted or has not been completely created" fault.
+            var available = snapshots.Count == 0
+                ? "none"
+                : string.Join(", ", snapshots.Select(s => $"'{s.Name}' (id {s.Id})"));
+            _logger.LogWarning(
+                "ResolveSnapshotMoRefValue: no snapshot matching '{Identifier}' on vm {vmId}. Available snapshots: {Available}",
+                identifier, vmId, available);
+            throw new EntityNotFoundException<VmSnapshot>(
+                $"No snapshot named or identified by '{snapshotIdentifier}' was found on this vm. Available snapshots: {available}.");
         }
 
         #region Guest Operations
@@ -1537,33 +1619,57 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public async Task<string> DeleteVmAsync(Guid vmId)
         {
-            _logger.LogDebug("DeleteVmAsync called for vm {vmId}", vmId);
+            _logger.LogInformation("DeleteVmAsync called for vm {vmId}", vmId);
 
             var aggregate = await GetVm(vmId);
             if (aggregate?.MachineReference == null)
+            {
+                _logger.LogWarning("DeleteVmAsync could not resolve a machine reference for vm {vmId}", vmId);
                 return "vm not found";
+            }
 
-            // Power off if running
+            // Power off if running. vSphere refuses to destroy a powered-on VM, so this must complete
+            // (or the VM must already be off) before the destroy below.
             var state = await GetPowerState(vmId);
+            _logger.LogInformation("DeleteVmAsync vm {vmId} power state is {State}", vmId, state);
             if (state == "on")
             {
                 try
                 {
+                    _logger.LogInformation("DeleteVmAsync powering off vm {vmId} before destroy", vmId);
                     var powerOffTask = await aggregate.Connection.Client.PowerOffVM_TaskAsync(aggregate.MachineReference);
-                    await WaitForVimTask(powerOffTask, aggregate.Connection);
+                    var powerOffInfo = await WaitForVimTask(powerOffTask, aggregate.Connection);
+                    if (powerOffInfo.state == TaskInfoState.error)
+                    {
+                        // Surface the failure instead of swallowing it: destroy will fail on a still-on VM,
+                        // and the old code hid the real reason behind that secondary failure.
+                        throw new Exception(powerOffInfo.error?.localizedMessage ?? "Power off task failed");
+                    }
+                    _logger.LogInformation("DeleteVmAsync powered off vm {vmId}", vmId);
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogDebug(ex, "Power off before delete failed for vm {vmId}", vmId);
+                    _logger.LogError(ex, "DeleteVmAsync power off before delete failed for vm {vmId}", vmId);
+                    throw;
                 }
             }
 
-            var task = await aggregate.Connection.Client.UnregisterAndDestroy_TaskAsync(aggregate.MachineReference);
+            // Destroy_Task is the ManagedEntity operation valid for a VirtualMachine; it removes the VM
+            // from inventory AND deletes its files from the datastore. The previous call,
+            // UnregisterAndDestroy_Task, is a Folder operation, so vCenter rejected it for a VirtualMachine
+            // MoRef with "The request refers to an unexpected or unknown type."
+            _logger.LogInformation("DeleteVmAsync issuing Destroy for vm {vmId}", vmId);
+            var task = await aggregate.Connection.Client.Destroy_TaskAsync(aggregate.MachineReference);
             var info = await WaitForVimTask(task, aggregate.Connection);
 
             if (info.state == TaskInfoState.error)
-                throw new Exception(info.error.localizedMessage);
+            {
+                var message = info.error?.localizedMessage ?? "Destroy task failed";
+                _logger.LogError("DeleteVmAsync destroy task for vm {vmId} failed: {Message}", vmId, message);
+                throw new Exception(message);
+            }
 
+            _logger.LogInformation("DeleteVmAsync destroyed vm {vmId}", vmId);
             return "deleted";
         }
 
