@@ -685,14 +685,18 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _logger.LogDebug("UploadFileToVm called");
 
             var aggregate = await GetVm(id);
-            var vmReference = aggregate.MachineReference;
 
-            if (vmReference == null)
+            // GetVm returns null when the VM isn't in the connection cache yet (e.g. between connect-loop
+            // refreshes). Guard against it so we surface a clear, retryable message instead of NRE-ing on
+            // aggregate.MachineReference below.
+            if (aggregate?.MachineReference == null)
             {
                 var errorMessage = $"could not upload file, vmReference is null";
                 _logger.LogDebug(errorMessage);
                 return errorMessage;
             }
+
+            var vmReference = aggregate.MachineReference;
             //retrieve the properties specificied
             RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
                 aggregate.Connection.Props,
@@ -742,8 +746,13 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                         fileTransferUrl = "https://" + hostName + fileTransferUrl.Substring(s);
                     }
 
-                    // http put to url
-                    using (var httpClientHandler = new HttpClientHandler())
+                    // http put to url. ESXi hosts present a self-signed cert, so bypass cert
+                    // validation here exactly as ReadGuestFileInternal does for the download side;
+                    // without this the PUT fails with "The SSL connection could not be established."
+                    using (var httpClientHandler = new HttpClientHandler
+                    {
+                        ServerCertificateCustomValidationCallback = (_, _, _, _) => true
+                    })
                     {
                         using (var httpClient = new HttpClient(httpClientHandler))
                         {
