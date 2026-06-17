@@ -417,10 +417,15 @@ namespace Player.Vm.Api.Features.Vms
         /// <param name="ct"></param>
         [HttpGet("views/{viewId}/teams")]
         [ProducesResponseType(typeof(IEnumerable<SimpleTeam>), (int)HttpStatusCode.OK)]
+        [ProducesResponseType((int)HttpStatusCode.NotFound)]
         [SwaggerOperation(OperationId = "getTeams")]
         public async Task<IActionResult> GetTeams([FromRoute] Guid viewId, CancellationToken ct)
         {
             var teams = await _vmService.GetTeamsAsync(viewId, ct);
+
+            if (teams == null)
+                return NotFound(new { title = "View not found", status = 404 });
+
             return Ok(teams);
         }
     }

@@ -192,8 +192,16 @@ namespace Player.Vm.Api.Domain.Services
 
         public async Task<IEnumerable<Team>> GetTeamsByViewIdAsync(Guid viewId, CancellationToken ct)
         {
-            var teams = await _playerApiClient.GetUserViewTeamsAsync(viewId, _userId, ct);
-            return teams;
+            try
+            {
+                var teams = await _playerApiClient.GetUserViewTeamsAsync(viewId, _userId, ct);
+                return teams;
+            }
+            catch (Player.Api.Client.ApiException ex) when (ex.StatusCode == 404)
+            {
+                // View not found in Player API - return null to allow caller to handle
+                return null;
+            }
         }
 
         public async Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct)

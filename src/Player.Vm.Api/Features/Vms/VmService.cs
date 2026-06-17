@@ -496,6 +496,10 @@ namespace Player.Vm.Api.Features.Vms
         {
             var teams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
 
+            // View doesn't exist in Player API
+            if (teams == null)
+                return null;
+
             var retTeams = new List<SimpleTeam>();
             foreach (var team in teams)
             {
