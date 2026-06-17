@@ -39,9 +39,10 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<string> UploadFileToVm(Guid id, string username, string password, string filepath, Stream fileStream);
         Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath);
         Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subFolder);
-        // Uploads an ISO to the vSphere datastore on all enabled/connected hosts.
-        // Returns messages for hosts that failed (empty => uploaded to every host). Throws only if all hosts fail.
-        Task<IReadOnlyList<string>> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
+        // Uploads an ISO to the vSphere datastore on all enabled/connected hosts. Returns counts only
+        // (per-host failure detail is logged, never returned, so host identifiers can't leak to users).
+        // Throws only if all hosts fail.
+        Task<IsoUploadOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
         Task<string> SetResolution(Guid id, int width, int height);
         Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation);
         Task<Dictionary<Guid, string>> BulkShutdown(Guid[] ids);
@@ -1066,7 +1067,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return list;
         }
 
-        public async Task<IReadOnlyList<string>> UploadIso(string viewId, string scopeId, string filename, string localFilePath)
+        public async Task<IsoUploadOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath)
         {
             // Upload to all enabled/connected hosts so the ISO is available wherever the VM runs
             // (mirrors the shared-storage semantics of the NFS path).
@@ -1096,13 +1097,16 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
             }));
 
+            // Host addresses/reasons stay server-side (logs only) and are never returned to the caller,
+            // so they can't leak to app users. Callers receive counts only.
             var failures = results.Where(r => r != null).ToList();
 
             // Idempotent re-upload heals any missed host (deterministic path + PUT overwrite),
             // so report partial failures rather than aborting. Throw only if every host failed.
             if (failures.Count == connections.Count)
             {
-                throw new Exception($"ISO upload failed on all hosts: {string.Join("; ", failures)}");
+                _logger.LogError("ISO {File} failed to upload on all {Count} hosts: {Failures}", filename, connections.Count, string.Join("; ", failures));
+                throw new Exception("ISO upload failed on all hosts. Contact an administrator.");
             }
 
             if (failures.Any())
@@ -1110,7 +1114,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 _logger.LogWarning("ISO {File} uploaded with partial failures: {Failures}", filename, string.Join("; ", failures));
             }
 
-            return failures;
+            return new IsoUploadOutcome
+            {
+                FailedHostCount = failures.Count,
+                TotalHostCount = connections.Count
+            };
         }
 
         private async Task UploadIsoToConnection(VsphereConnection connection, string viewId, string scopeId, string filename, string localFilePath)
@@ -1211,7 +1219,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             var datacenters = tree.FindType("Datacenter");
             var datastores = tree.FindType("Datastore");
 
-            // Prefer the datacenter that actually contains the named datastore.
+            // Return the datacenter that actually contains the named datastore.
             foreach (var dc in datacenters)
             {
                 var dsRefs = dc.GetProperty("datastore") as ManagedObjectReference[] ?? Array.Empty<ManagedObjectReference>();
@@ -1226,9 +1234,10 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
             }
 
-            // Fallback: single-datacenter deployments (or datastore not matched) - use the first datacenter.
-            var fallback = datacenters.FirstOrDefault();
-            return fallback != null ? ToDatacenterInfo(fallback) : null;
+            // No datacenter contains the configured datastore. Return null rather than guessing the
+            // first datacenter (which would upload against the wrong dcPath); the caller surfaces this
+            // as a clear per-host failure so a misconfigured DsName / stale inventory is visible.
+            return null;
         }
 
         private static DatacenterInfo ToDatacenterInfo(VimClient.ObjectContent dc)

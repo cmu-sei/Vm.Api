@@ -39,7 +39,7 @@ namespace Player.Vm.Api.Features.Files
         }
 
         [HttpPost("views/{uuid}/isos"), DisableRequestSizeLimit]
-        [ProducesResponseType((int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(IsoUploadResult), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "uploadFileAsIso")]
         public async Task<IActionResult> Upload(Guid uuid)
         {
@@ -100,7 +100,7 @@ namespace Player.Vm.Api.Features.Files
                 }
             }
 
-            return Json("ISO was uploaded");
+            return Json(new IsoUploadResult { Message = "ISO was uploaded" });
         }
 
         // Stage the upload as an ISO locally, then stream it directly to the vSphere datastore(s).
@@ -134,14 +134,24 @@ namespace Player.Vm.Api.Features.Files
                     }
                 }
 
-                var failures = await _vsphereService.UploadIso(viewId, scopeId, isoName, tempPath);
+                var outcome = await _vsphereService.UploadIso(viewId, scopeId, isoName, tempPath);
 
-                if (failures.Any())
+                if (outcome.FailedHostCount > 0)
                 {
-                    return Json($"ISO uploaded, but failed on: {string.Join("; ", failures)}");
+                    // Generic, admin-safe message - which hosts failed is in the server logs, not here.
+                    return Json(new IsoUploadResult
+                    {
+                        Message = $"ISO uploaded, but failed on {outcome.FailedHostCount} of {outcome.TotalHostCount} hosts. Contact an administrator.",
+                        FailedHostCount = outcome.FailedHostCount,
+                        TotalHostCount = outcome.TotalHostCount
+                    });
                 }
 
-                return Json("ISO was uploaded");
+                return Json(new IsoUploadResult
+                {
+                    Message = "ISO was uploaded",
+                    TotalHostCount = outcome.TotalHostCount
+                });
             }
             finally
             {
