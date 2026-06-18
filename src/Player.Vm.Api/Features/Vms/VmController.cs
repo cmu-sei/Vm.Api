@@ -330,10 +330,16 @@ namespace Player.Vm.Api.Features.Vms
         /// <param name="ct"></param>
         [HttpGet("views/maps/viewMaps/{viewId}")]
         [ProducesResponseType(typeof(IEnumerable<VmMap>), (int)HttpStatusCode.OK)]
+        [ProducesResponseType((int)HttpStatusCode.NotFound)]
         [SwaggerOperation(OperationId = "getViewMaps")]
         public async Task<IActionResult> GetViewMaps([FromRoute] Guid viewId, CancellationToken ct)
         {
-            return Ok(await _vmService.GetViewMapsAsync(viewId, ct));
+            var maps = await _vmService.GetViewMapsAsync(viewId, ct);
+
+            if (maps == null)
+                return NotFound(new { title = "View not found", status = 404 });
+
+            return Ok(maps);
         }
 
         /// <summary>
@@ -411,10 +417,15 @@ namespace Player.Vm.Api.Features.Vms
         /// <param name="ct"></param>
         [HttpGet("views/{viewId}/teams")]
         [ProducesResponseType(typeof(IEnumerable<SimpleTeam>), (int)HttpStatusCode.OK)]
+        [ProducesResponseType((int)HttpStatusCode.NotFound)]
         [SwaggerOperation(OperationId = "getTeams")]
         public async Task<IActionResult> GetTeams([FromRoute] Guid viewId, CancellationToken ct)
         {
             var teams = await _vmService.GetTeamsAsync(viewId, ct);
+
+            if (teams == null)
+                return NotFound(new { title = "View not found", status = 404 });
+
             return Ok(teams);
         }
     }
