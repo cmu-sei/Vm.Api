@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.IO;
@@ -43,6 +44,10 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         // (per-host failure detail is logged, never returned, so host identifiers can't leak to users).
         // Throws only if all hosts fail.
         Task<IsoUploadOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
+        // Deletes an ISO from the vSphere datastore on all enabled/connected hosts. Returns counts only
+        // (per-host failure detail is logged, never returned, so host identifiers can't leak to users).
+        // A missing file on a host counts as success (idempotent); throws only if all hosts fail.
+        Task<IsoDeleteOutcome> DeleteIso(string viewId, string scopeId, string filename);
         Task<string> SetResolution(Guid id, int width, int height);
         Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation);
         Task<Dictionary<Guid, string>> BulkShutdown(Guid[] ids);
@@ -1173,6 +1178,102 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             var folder = string.Join("/", folderPath.Split('/').Select(Uri.EscapeDataString));
             return $"https://{host}/folder/{folder}/{Uri.EscapeDataString(file)}"
                  + $"?dcPath={Uri.EscapeDataString(dcName)}&dsName={Uri.EscapeDataString(dsName)}";
+        }
+
+        public async Task<IsoDeleteOutcome> DeleteIso(string viewId, string scopeId, string filename)
+        {
+            // Delete from all enabled/connected hosts so the ISO is removed wherever it was uploaded
+            // (mirrors UploadIso, which writes to every host).
+            var connections = _connectionService.GetAllConnections()
+                .Where(c => c.Enabled && c.Connected && c.Client != null)
+                .ToList();
+
+            if (!connections.Any())
+            {
+                throw new InvalidOperationException("No connected vSphere hosts available for ISO delete.");
+            }
+
+            // Delete on every host concurrently; per-host failures are captured (never faulting the
+            // whole batch). A missing file is treated as success inside DeleteIsoFromConnection.
+            var results = await Task.WhenAll(connections.Select(async connection =>
+            {
+                try
+                {
+                    await DeleteIsoFromConnection(connection, viewId, scopeId, filename);
+                    return (string)null;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to delete ISO {File} from {Host}", filename, connection.Address);
+                    return $"{connection.Address}: {ex.Message}";
+                }
+            }));
+
+            // Host addresses/reasons stay server-side (logs only) and are never returned to the caller,
+            // so they can't leak to app users. Callers receive counts only.
+            var failures = results.Where(r => r != null).ToList();
+
+            if (failures.Count == connections.Count)
+            {
+                _logger.LogError("ISO {File} failed to delete on all {Count} hosts: {Failures}", filename, connections.Count, string.Join("; ", failures));
+                throw new Exception("ISO delete failed on all hosts. Contact an administrator.");
+            }
+
+            if (failures.Any())
+            {
+                _logger.LogWarning("ISO {File} deleted with partial failures: {Failures}", filename, string.Join("; ", failures));
+            }
+
+            return new IsoDeleteOutcome
+            {
+                FailedHostCount = failures.Count,
+                TotalHostCount = connections.Count
+            };
+        }
+
+        private async Task DeleteIsoFromConnection(VsphereConnection connection, string viewId, string scopeId, string filename)
+        {
+            var dsName = connection.Host.DsName;
+
+            // Same datastore-relative folder layout as upload/search so we target the right file.
+            var folderPath = BuildIsoFolderRelative(connection.Host.BaseFolder, viewId, scopeId);
+
+            var datacenter = await GetDatacenterForDatastore(dsName, connection);
+            if (datacenter == null)
+            {
+                throw new InvalidOperationException($"Could not resolve datacenter for datastore {dsName} on {connection.Address}");
+            }
+
+            // Same /folder/...?dcPath=&dsName= URL as the PUT upload; the datastore HTTP file API
+            // accepts DELETE on it.
+            var url = BuildDatastoreUploadUrl(connection.Address, folderPath, filename, datacenter.Name, dsName);
+
+            var client = _httpClientFactory.CreateClient("vSphereDatastore");
+
+            // HTTP Basic auth (not the SOAP session cookie) - matches the upload implementation.
+            var credentials = Convert.ToBase64String(
+                Encoding.UTF8.GetBytes($"{connection.Host.Username}:{connection.Host.Password}"));
+
+            using (var request = new HttpRequestMessage(HttpMethod.Delete, url))
+            {
+                request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
+
+                _logger.LogDebug("Deleting ISO from datastore: {Url}", url);
+
+                var response = await client.SendAsync(request);
+
+                // Already gone => idempotent success (lets a re-delete or partially-uploaded ISO clear cleanly).
+                if (response.StatusCode == HttpStatusCode.NotFound)
+                {
+                    return;
+                }
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    throw new Exception($"Datastore DELETE failed ({(int)response.StatusCode}): {body}");
+                }
+            }
         }
 
         private async Task EnsureDatastoreDirectory(VsphereConnection connection, DatacenterInfo datacenter, string dsName, string folderPath)
