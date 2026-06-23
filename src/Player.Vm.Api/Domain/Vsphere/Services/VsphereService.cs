@@ -40,6 +40,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<string> UploadFileToVm(Guid id, string username, string password, string filepath, Stream fileStream);
         Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath);
         Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subFolder);
+        // View-scoped ISO listing: resolves a connection from the pool (no vmId required).
+        Task<IEnumerable<IsoFile>> GetIsosForScope(string viewId, string scopeId);
         // Uploads an ISO to the vSphere datastore on all enabled/connected hosts. Returns counts only
         // (per-host failure detail is logged, never returned, so host identifiers can't leak to users).
         // Throws only if all hosts fail.
@@ -1022,8 +1024,27 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         public async Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subfolder)
         {
             var aggregate = await this.GetVm(vmId);
-            var connection = aggregate.Connection;
+            return await GetIsosFromConnection(aggregate.Connection, viewId, subfolder);
+        }
 
+        // View-scoped ISO listing with no specific VM: resolve a connection from the connection pool
+        // (any enabled/connected host - all hosts share the same ISO layout) rather than from a vmId.
+        public async Task<IEnumerable<IsoFile>> GetIsosForScope(string viewId, string scopeId)
+        {
+            var connection = _connectionService.GetAllConnections()
+                .FirstOrDefault(c => c.Enabled && c.Connected && c.Client != null);
+
+            if (connection == null)
+            {
+                _logger.LogError("No connected vSphere hosts available to list ISOs.");
+                return new List<IsoFile>();
+            }
+
+            return await GetIsosFromConnection(connection, viewId, scopeId);
+        }
+
+        private async Task<IEnumerable<IsoFile>> GetIsosFromConnection(VsphereConnection connection, string viewId, string subfolder)
+        {
             List<IsoFile> list = new List<IsoFile>();
             var dsName = connection.Host.DsName;
             var filepath = $"[{dsName}] {BuildIsoFolderRelative(connection.Host.BaseFolder, viewId, subfolder)}";

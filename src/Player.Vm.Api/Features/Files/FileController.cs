@@ -10,8 +10,11 @@ using DiscUtils.Iso9660;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using System.Collections.Generic;
+using System.Threading;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Domain.Vsphere.Services;
+using Player.Vm.Api.Features.Vsphere;
 using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Options;
 using Swashbuckle.AspNetCore.Annotations;
@@ -90,6 +93,59 @@ namespace Player.Vm.Api.Features.Files
             return Json(new IsoUploadResult { Message = "ISO was uploaded" });
         }
 
+        // View-scoped ISO listing for the management UI. Returns the view-wide (public) ISOs plus the
+        // ISOs for each relevant team: all teams in the View for a view-admin (UploadViewIsos), else
+        // just the caller's own teams.
+        [HttpGet("views/{uuid}/isos")]
+        [ProducesResponseType(typeof(GetIsos.IsoResult), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getViewIsos")]
+        public async Task<IActionResult> List(Guid uuid, CancellationToken ct)
+        {
+            var canManageView = await _playerService.Can([], [uuid], [], [AppViewPermission.UploadViewIsos], [], ct);
+
+            if (!canManageView)
+            {
+                // Caller must at least be able to upload team ISOs in this View to see the listing.
+                var ownTeamsForCheck = (await _playerService.GetTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToArray();
+                if (!await _playerService.Can(ownTeamsForCheck, [], [], [], [AppTeamPermission.UploadTeamIsos], ct))
+                    throw new InvalidOperationException("You do not have permission to view ISOs for this View");
+            }
+
+            // View-admins see every team; everyone else sees only their own teams.
+            var teams = canManageView
+                ? (await _playerService.GetAllTeamsByViewIdAsync(uuid, ct)).ToList()
+                : (await _playerService.GetTeamsByViewIdAsync(uuid, ct)).ToList();
+
+            var view = await _playerService.GetViewByIdAsync(uuid, ct);
+
+            // View-wide ISOs (scopeId == viewId) plus one task per team scope, run concurrently.
+            var viewIsosTask = _vsphereService.GetIsosForScope(uuid.ToString(), uuid.ToString());
+            var teamIsoTasks = teams.ToDictionary(
+                team => team,
+                team => _vsphereService.GetIsosForScope(uuid.ToString(), team.Id.ToString()));
+
+            await Task.WhenAll(new List<Task> { viewIsosTask }.Concat(teamIsoTasks.Values));
+
+            var result = new GetIsos.IsoResult
+            {
+                ViewId = view.Id,
+                ViewName = view.Name,
+                Isos = viewIsosTask.Result.ToArray()
+            };
+
+            foreach (var kvp in teamIsoTasks)
+            {
+                result.TeamIsoResults.Add(new GetIsos.TeamIsoResult
+                {
+                    TeamId = kvp.Key.Id,
+                    TeamName = kvp.Key.Name,
+                    Isos = kvp.Value.Result.ToArray()
+                });
+            }
+
+            return Json(result);
+        }
+
         [HttpDelete("views/{uuid}/isos")]
         [ProducesResponseType(typeof(IsoUploadResult), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "deleteIso")]
@@ -98,7 +154,7 @@ namespace Player.Vm.Api.Features.Files
             // Sanitize before the name touches a filesystem/URL path (guards against ../ traversal).
             filename = SanitizeFilename(filename);
 
-            var scopeId = await ResolveScopeId(uuid, scope);
+            var scopeId = await ResolveDeleteScopeId(uuid, scope, teamId);
 
             if (_isoUploadOptions.UploadToDatastore)
             {
@@ -138,8 +194,8 @@ namespace Player.Vm.Api.Features.Files
             return Json(new IsoUploadResult { Message = "ISO was deleted" });
         }
 
-        // Enforces the ISO scope permissions (identical for upload and delete) and returns the
-        // scopeId the ISO folder is keyed on: the view id for "view" scope, else the primary team id.
+        // Enforces the ISO UPLOAD permissions and returns the scopeId the ISO folder is keyed on:
+        // the view id for "view" scope, else the primary team id.
         private async Task<string> ResolveScopeId(Guid uuid, string scope)
         {
             var team = await _playerService.GetPrimaryTeamByViewIdAsync(uuid, new System.Threading.CancellationToken());
@@ -147,15 +203,56 @@ namespace Player.Vm.Api.Features.Files
             if (scope == "view")
             {
                 if (!await _playerService.Can([team.Id], [], [], [AppViewPermission.UploadViewIsos], [], new System.Threading.CancellationToken()))
-                    throw new InvalidOperationException("You do not have permission to manage public files for this View");
+                    throw new InvalidOperationException("You do not have permission to upload public files for this View");
             }
             else
             {
                 if (!await _playerService.Can([team.Id], [], [], [AppViewPermission.UploadViewIsos], [AppTeamPermission.UploadTeamIsos], new System.Threading.CancellationToken()))
-                    throw new InvalidOperationException("You do not have permission to manage files for this Team");
+                    throw new InvalidOperationException("You do not have permission to upload files for this Team");
             }
 
             return (scope == "view") ? uuid.ToString() : team.Id.ToString();
+        }
+
+        // Enforces the ISO DELETE permissions and returns the scopeId to delete from.
+        //  - "view" scope: requires DeleteViewIsos; scopeId is the view id.
+        //  - "team" scope: target team is teamId (validated to belong to the View) or the primary team
+        //    when teamId is absent. Allowed if the caller has DeleteViewIsos (any team) or DeleteTeamIsos
+        //    on that team. scopeId is the team id.
+        private async Task<string> ResolveDeleteScopeId(Guid uuid, string scope, Guid? teamId)
+        {
+            var ct = new System.Threading.CancellationToken();
+
+            if (scope == "view")
+            {
+                if (!await _playerService.Can([], [uuid], [], [AppViewPermission.DeleteViewIsos], [], ct))
+                    throw new InvalidOperationException("You do not have permission to delete public files for this View");
+
+                return uuid.ToString();
+            }
+
+            // Resolve the target team: an explicit teamId (must belong to the View) else the primary team.
+            Guid targetTeamId;
+            if (teamId.HasValue)
+            {
+                var viewTeamIds = (await _playerService.GetAllTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToHashSet();
+                if (!viewTeamIds.Contains(teamId.Value))
+                    throw new InvalidOperationException("The specified team is not part of this View");
+
+                targetTeamId = teamId.Value;
+            }
+            else
+            {
+                var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(uuid, ct);
+                targetTeamId = primaryTeam.Id;
+            }
+
+            // DeleteViewIsos lets a view-admin delete any team's ISO; otherwise DeleteTeamIsos on the
+            // target team is required.
+            if (!await _playerService.Can([targetTeamId], [uuid], [], [AppViewPermission.DeleteViewIsos], [AppTeamPermission.DeleteTeamIsos], ct))
+                throw new InvalidOperationException("You do not have permission to delete files for this Team");
+
+            return targetTeamId.ToString();
         }
 
         // Stage the upload as an ISO locally, then stream it directly to the vSphere datastore(s).

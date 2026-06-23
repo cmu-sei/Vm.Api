@@ -18,6 +18,7 @@ namespace Player.Vm.Api.Domain.Services
     public interface IPlayerService
     {
         Task<IEnumerable<Team>> GetTeamsByViewIdAsync(Guid viewId, CancellationToken ct);
+        Task<IEnumerable<Team>> GetAllTeamsByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct);
         Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct);
@@ -193,6 +194,13 @@ namespace Player.Vm.Api.Domain.Services
         public async Task<IEnumerable<Team>> GetTeamsByViewIdAsync(Guid viewId, CancellationToken ct)
         {
             var teams = await _playerApiClient.GetUserViewTeamsAsync(viewId, _userId, ct);
+            return teams;
+        }
+
+        public async Task<IEnumerable<Team>> GetAllTeamsByViewIdAsync(Guid viewId, CancellationToken ct)
+        {
+            // All teams in the View (not just the caller's) - used for the view-admin ISO listing.
+            var teams = await _playerApiClient.GetViewTeamsAsync(viewId, ct);
             return teams;
         }
 
