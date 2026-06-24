@@ -9,7 +9,8 @@ public enum AppSystemPermission
     ManageViews,
     EditViews,
     ViewNetworks,
-    ManageNetworks
+    ManageNetworks,
+    DeleteIsos
 }
 
 public enum AppViewPermission

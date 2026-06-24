@@ -22,6 +22,7 @@ namespace Player.Vm.Api.Domain.Services
         Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct);
         Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct);
+        Task<IEnumerable<View>> GetAllViewsAsync(CancellationToken ct);
         Task<Team> GetTeamById(Guid id);
         Task<User> GetUserById(Guid id, CancellationToken ct);
         Task<IEnumerable<User>> GetUsersByTeamId(Guid teamId, CancellationToken ct);
@@ -259,6 +260,12 @@ namespace Player.Vm.Api.Domain.Services
         public async Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct)
         {
             return await _playerApiClient.GetViewAsync(viewId, ct);
+        }
+
+        public async Task<IEnumerable<View>> GetAllViewsAsync(CancellationToken ct)
+        {
+            // Every View in the system - gated by SystemPermission.ViewViews in player.api.
+            return await _playerApiClient.GetViewsAsync(ct);
         }
 
         public async Task<User> GetUserById(Guid id, CancellationToken ct)

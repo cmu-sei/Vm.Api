@@ -7,6 +7,7 @@ using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using DiscUtils.Iso9660;
+using Player.Api.Client;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
@@ -141,11 +142,53 @@ namespace Player.Vm.Api.Features.Files
 
             var view = await _playerService.GetViewByIdAsync(uuid, ct);
 
-            // View-wide ISOs (scopeId == viewId) plus one task per team scope, run concurrently.
-            var viewIsosTask = _vsphereService.GetIsosForScope(uuid.ToString(), uuid.ToString());
+            return Json(await BuildViewIsoResult(view, teams, ct));
+        }
+
+        // System-wide ISO listing for the management UI's "all views" mode. Returns one IsoResult per
+        // View in the system (view-wide + every team's ISOs). Gated by a system permission so it can
+        // surface Views/teams the caller is not a member of - read access only; deletion is enforced
+        // separately by ResolveDeleteScopeId (which requires the DeleteIsos system permission to remove
+        // an ISO the caller has no specific Delete*Isos permission for).
+        [HttpGet("isos")]
+        [ProducesResponseType(typeof(GetIsos.IsoResult[]), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getAllIsos")]
+        public async Task<IActionResult> ListAll(CancellationToken ct)
+        {
+            if (!await _playerService.Can([], [], [AppSystemPermission.ViewViews, AppSystemPermission.ManageViews], [], [], ct))
+                throw new InvalidOperationException("You do not have permission to view ISOs across all Views");
+
+            var views = (await _playerService.GetAllViewsAsync(ct)).ToList();
+
+            // This is views * (1 + teams) datastore-browser round-trips over a single pooled vSphere
+            // connection, so cap the per-View fan-out to avoid overwhelming it on large systems.
+            using var throttle = new SemaphoreSlim(4);
+
+            var results = await Task.WhenAll(views.Select(async view =>
+            {
+                await throttle.WaitAsync(ct);
+                try
+                {
+                    var teams = (await _playerService.GetAllTeamsByViewIdAsync(view.Id, ct)).ToList();
+                    return await BuildViewIsoResult(view, teams, ct);
+                }
+                finally
+                {
+                    throttle.Release();
+                }
+            }));
+
+            return Json(results);
+        }
+
+        // Assemble the view-wide + per-team ISO listing for a single View. View-wide ISOs are keyed on
+        // the view id; each team's on the team id. All scopes are listed concurrently.
+        private async Task<GetIsos.IsoResult> BuildViewIsoResult(View view, IReadOnlyCollection<Team> teams, CancellationToken ct)
+        {
+            var viewIsosTask = _vsphereService.GetIsosForScope(view.Id.ToString(), view.Id.ToString());
             var teamIsoTasks = teams.ToDictionary(
                 team => team,
-                team => _vsphereService.GetIsosForScope(uuid.ToString(), team.Id.ToString()));
+                team => _vsphereService.GetIsosForScope(view.Id.ToString(), team.Id.ToString()));
 
             await Task.WhenAll(new List<Task> { viewIsosTask }.Concat(teamIsoTasks.Values));
 
@@ -166,18 +209,18 @@ namespace Player.Vm.Api.Features.Files
                 });
             }
 
-            return Json(result);
+            return result;
         }
 
         [HttpDelete("views/{uuid}/isos")]
         [ProducesResponseType(typeof(IsoUploadResult), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "deleteIso")]
-        public async Task<IActionResult> Delete(Guid uuid, [FromQuery] string scope, [FromQuery] string filename, [FromQuery] Guid? teamId = null)
+        public async Task<IActionResult> Delete(Guid uuid, [FromQuery] string scope, [FromQuery] string filename, [FromQuery] Guid? teamId = null, CancellationToken ct = default)
         {
             // Sanitize before the name touches a filesystem/URL path (guards against ../ traversal).
             filename = SanitizeFilename(filename);
 
-            var scopeId = await ResolveDeleteScopeId(uuid, scope, teamId);
+            var scopeId = await ResolveDeleteScopeId(uuid, scope, teamId, ct);
 
             if (_isoUploadOptions.UploadToDatastore)
             {
@@ -288,12 +331,19 @@ namespace Player.Vm.Api.Features.Files
         //  - "team" scope: target team is teamId (validated to belong to the View) or the primary team
         //    when teamId is absent. Allowed if the caller has DeleteViewIsos (any team) or DeleteTeamIsos
         //    on that team. scopeId is the team id.
-        private async Task<string> ResolveDeleteScopeId(Guid uuid, string scope, Guid? teamId)
+        // The system-level DeleteIsos permission additionally authorizes deleting an ISO in ANY
+        // View/team - including ones the caller is not a member of (the "all views" management mode).
+        private async Task<string> ResolveDeleteScopeId(Guid uuid, string scope, Guid? teamId, CancellationToken ct)
         {
-            var ct = new System.Threading.CancellationToken();
+            // DeleteIsos is the only permission that lets a caller delete an ISO they have no specific
+            // Delete*Isos permission for; checked up front so it can short-circuit the per-scope checks.
+            var hasSystemDeleteIsos = await _playerService.Can([], [], [AppSystemPermission.DeleteIsos], [], [], ct);
 
             if (scope == "view")
             {
+                if (hasSystemDeleteIsos)
+                    return uuid.ToString();
+
                 if (!await _playerService.Can([], [uuid], [], [AppViewPermission.DeleteViewIsos], [], ct))
                     throw new InvalidOperationException("You do not have permission to delete public files for this View");
 
@@ -304,10 +354,12 @@ namespace Player.Vm.Api.Features.Files
             Guid targetTeamId;
             if (teamId.HasValue)
             {
-                // The caller's own teams (all teams for a view-admin) - avoids the privileged
-                // GetViewTeams call that 403s for team-only users. The per-team Can(...) check below
-                // remains the authoritative permission gate.
-                var viewTeamIds = (await _playerService.GetTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToHashSet();
+                // Validate the team belongs to the View. A system DeleteIsos caller is generally not a
+                // member, so validate against ALL teams in the View; otherwise the caller's own teams
+                // (which also avoids a privileged GetViewTeams call that 403s for team-only users).
+                var viewTeamIds = hasSystemDeleteIsos
+                    ? (await _playerService.GetAllTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToHashSet()
+                    : (await _playerService.GetTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToHashSet();
                 if (!viewTeamIds.Contains(teamId.Value))
                     throw new InvalidOperationException("The specified team is not part of this View");
 
@@ -318,6 +370,9 @@ namespace Player.Vm.Api.Features.Files
                 var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(uuid, ct);
                 targetTeamId = primaryTeam.Id;
             }
+
+            if (hasSystemDeleteIsos)
+                return targetTeamId.ToString();
 
             // DeleteViewIsos lets a view-admin delete any team's ISO; otherwise DeleteTeamIsos on the
             // target team is required.
