@@ -255,7 +255,10 @@ namespace Player.Vm.Api.Features.Files
             List<Guid> targetTeamIds;
             if (teamIds.Count > 0)
             {
-                var viewTeamIds = (await _playerService.GetAllTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToHashSet();
+                // The caller's own teams (all teams for a view-admin). Using this instead of the
+                // view-wide team list avoids a privileged GetViewTeams call that 403s for team-only
+                // users; the per-team Can(...) check below remains the authoritative permission gate.
+                var viewTeamIds = (await _playerService.GetTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToHashSet();
                 foreach (var teamId in teamIds)
                 {
                     if (!viewTeamIds.Contains(teamId))
@@ -301,7 +304,10 @@ namespace Player.Vm.Api.Features.Files
             Guid targetTeamId;
             if (teamId.HasValue)
             {
-                var viewTeamIds = (await _playerService.GetAllTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToHashSet();
+                // The caller's own teams (all teams for a view-admin) - avoids the privileged
+                // GetViewTeams call that 403s for team-only users. The per-team Can(...) check below
+                // remains the authoritative permission gate.
+                var viewTeamIds = (await _playerService.GetTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToHashSet();
                 if (!viewTeamIds.Contains(teamId.Value))
                     throw new InvalidOperationException("The specified team is not part of this View");
 
