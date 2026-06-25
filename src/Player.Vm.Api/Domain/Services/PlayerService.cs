@@ -18,10 +18,22 @@ namespace Player.Vm.Api.Domain.Services
     public interface IPlayerService
     {
         Task<IEnumerable<Team>> GetTeamsByViewIdAsync(Guid viewId, CancellationToken ct);
+
+        /// <summary>
+        /// All teams in the View, regardless of the caller's membership (unlike
+        /// <see cref="GetTeamsByViewIdAsync"/>, which returns only the caller's teams). Backed by the
+        /// privileged player.api GetViewTeams endpoint, so the caller must be authorized for it
+        /// (e.g. a view-admin or system operator); use for the view-admin / all-views ISO listing.
+        /// </summary>
         Task<IEnumerable<Team>> GetAllTeamsByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct);
         Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct);
+
+        /// <summary>
+        /// Every View in the system. Gated by SystemPermission.ViewViews in player.api, so the caller
+        /// must be a system operator; use for the system-wide "all views" ISO listing.
+        /// </summary>
         Task<IEnumerable<View>> GetAllViewsAsync(CancellationToken ct);
         Task<Team> GetTeamById(Guid id);
         Task<User> GetUserById(Guid id, CancellationToken ct);

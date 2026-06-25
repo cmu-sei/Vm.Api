@@ -1083,7 +1083,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             {
                 if (result != null && result.file != null && result.file.Length > 0)
                 {
-                    foreach (var fileInfo in result.file.Where(x => x.path.EndsWith(".iso")))
+                    foreach (var fileInfo in result.file.Where(x => IsoFileNaming.IsIsoFile(x.path)))
                     {
                         list.Add(new IsoFile(result.folderPath, fileInfo.path));
                     }
@@ -1097,9 +1097,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         {
             // Upload to all enabled/connected hosts so the ISO is available wherever the VM runs
             // (mirrors the shared-storage semantics of the NFS path).
-            var connections = _connectionService.GetAllConnections()
-                .Where(c => c.Enabled && c.Connected && c.Client != null)
-                .ToList();
+            var connections = GetEnabledConnections();
 
             if (!connections.Any())
             {
@@ -1109,6 +1107,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             // Upload to every host concurrently; each host streams its own FileStream off the staged
             // file, so the PUTs are independent. Per-host failures are captured (never faulting the
             // whole batch) so wall-clock is ~the slowest host rather than the sum.
+            // Idempotent re-upload heals any missed host (deterministic path + PUT overwrite), so we
+            // report partial failures rather than aborting; AggregateHostResults throws only if all fail.
             var results = await Task.WhenAll(connections.Select(async connection =>
             {
                 try
@@ -1123,28 +1123,44 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
             }));
 
-            // Host addresses/reasons stay server-side (logs only) and are never returned to the caller,
-            // so they can't leak to app users. Callers receive counts only.
+            var (failedHostCount, totalHostCount) = AggregateHostResults(results, connections.Count, "upload", filename);
+
+            return new IsoUploadOutcome
+            {
+                FailedHostCount = failedHostCount,
+                TotalHostCount = totalHostCount
+            };
+        }
+
+        // Enabled, connected hosts with a live client - the set ISO uploads/deletes fan out across.
+        private List<VsphereConnection> GetEnabledConnections()
+        {
+            return _connectionService.GetAllConnections()
+                .Where(c => c.Enabled && c.Connected && c.Client != null)
+                .ToList();
+        }
+
+        // Tally per-host outcomes from a fan-out (a null entry is success; a non-null entry is a
+        // server-side failure detail). Host addresses/reasons stay in the logs and are never returned
+        // to the caller, so they can't leak to app users - callers receive counts only. Throws when
+        // every host failed; logs a warning on partial failure.
+        private (int failedHostCount, int totalHostCount) AggregateHostResults(
+            IReadOnlyList<string> results, int totalHostCount, string operation, string filename)
+        {
             var failures = results.Where(r => r != null).ToList();
 
-            // Idempotent re-upload heals any missed host (deterministic path + PUT overwrite),
-            // so report partial failures rather than aborting. Throw only if every host failed.
-            if (failures.Count == connections.Count)
+            if (failures.Count == totalHostCount)
             {
-                _logger.LogError("ISO {File} failed to upload on all {Count} hosts: {Failures}", filename, connections.Count, string.Join("; ", failures));
-                throw new Exception("ISO upload failed on all hosts. Contact an administrator.");
+                _logger.LogError("ISO {File} failed to {Operation} on all {Count} hosts: {Failures}", filename, operation, totalHostCount, string.Join("; ", failures));
+                throw new Exception($"ISO {operation} failed on all hosts. Contact an administrator.");
             }
 
             if (failures.Any())
             {
-                _logger.LogWarning("ISO {File} uploaded with partial failures: {Failures}", filename, string.Join("; ", failures));
+                _logger.LogWarning("ISO {File} {Operation} completed with partial failures: {Failures}", filename, operation, string.Join("; ", failures));
             }
 
-            return new IsoUploadOutcome
-            {
-                FailedHostCount = failures.Count,
-                TotalHostCount = connections.Count
-            };
+            return (failures.Count, totalHostCount);
         }
 
         private async Task UploadIsoToConnection(VsphereConnection connection, string viewId, string scopeId, string filename, string localFilePath)
@@ -1205,9 +1221,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         {
             // Delete from all enabled/connected hosts so the ISO is removed wherever it was uploaded
             // (mirrors UploadIso, which writes to every host).
-            var connections = _connectionService.GetAllConnections()
-                .Where(c => c.Enabled && c.Connected && c.Client != null)
-                .ToList();
+            var connections = GetEnabledConnections();
 
             if (!connections.Any())
             {
@@ -1230,25 +1244,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
             }));
 
-            // Host addresses/reasons stay server-side (logs only) and are never returned to the caller,
-            // so they can't leak to app users. Callers receive counts only.
-            var failures = results.Where(r => r != null).ToList();
-
-            if (failures.Count == connections.Count)
-            {
-                _logger.LogError("ISO {File} failed to delete on all {Count} hosts: {Failures}", filename, connections.Count, string.Join("; ", failures));
-                throw new Exception("ISO delete failed on all hosts. Contact an administrator.");
-            }
-
-            if (failures.Any())
-            {
-                _logger.LogWarning("ISO {File} deleted with partial failures: {Failures}", filename, string.Join("; ", failures));
-            }
+            var (failedHostCount, totalHostCount) = AggregateHostResults(results, connections.Count, "delete", filename);
 
             return new IsoDeleteOutcome
             {
-                FailedHostCount = failures.Count,
-                TotalHostCount = connections.Count
+                FailedHostCount = failedHostCount,
+                TotalHostCount = totalHostCount
             };
         }
 

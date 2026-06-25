@@ -14,9 +14,11 @@ using Microsoft.AspNetCore.Mvc;
 using System.Collections.Generic;
 using System.Threading;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vsphere;
 using Player.Vm.Api.Infrastructure.Authorization;
+using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Infrastructure.Options;
 using Swashbuckle.AspNetCore.Annotations;
 
@@ -47,55 +49,50 @@ namespace Player.Vm.Api.Features.Files
         [SwaggerOperation(OperationId = "uploadFileAsIso")]
         public async Task<IActionResult> Upload(Guid uuid, CancellationToken ct)
         {
+            if (Request.Form.Files.Count == 0)
+            {
+                throw new BadRequestException("A file is required.");
+            }
+
             var formFile = Request.Form.Files[0];
             var filename = SanitizeFilename(formFile.Name);
-            var scope = Request.Form["scope"][0];
-            var size = Convert.ToInt64(Request.Form["size"][0]);
+
+            var scope = Request.Form["scope"].FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(scope))
+            {
+                throw new BadRequestException("A scope is required.");
+            }
+
+            if (!long.TryParse(Request.Form["size"].FirstOrDefault(), out var size))
+            {
+                throw new BadRequestException("A valid size is required.");
+            }
+
             var teamIds = ParseTeamIds(Request.Form["teamIds"]);
 
             // Cheap pre-flight check on the client-reported size, plus an authoritative check on the
             // actual uploaded byte count - the form value is client-controlled and must not be trusted.
             if (size > _isoUploadOptions.MaxFileSize || formFile.Length > _isoUploadOptions.MaxFileSize)
             {
-                throw new Exception($"File exceeds the {_isoUploadOptions.MaxFileSize} byte maximum size.");
+                throw new BadRequestException($"File exceeds the {_isoUploadOptions.MaxFileSize} byte maximum size.");
             }
 
             // One or more target folders the ISO is written to (view id for "view" scope, else each
             // selected team id - or the primary team when none were specified). Permissions enforced here.
             var scopeIds = await ResolveUploadScopeIds(uuid, scope, teamIds, ct);
 
-            if (_isoUploadOptions.UploadToDatastore)
-            {
-                return await UploadToDatastore(uuid.ToString(), scopeIds, filename, formFile);
-            }
-
-            // Stage the (possibly converted) ISO once, then copy it into every target folder in parallel.
-            var isIso = filename.ToLower().EndsWith(".iso");
-            var destName = isIso ? filename : filename + ".iso";
-
-            var stagingDir = string.IsNullOrWhiteSpace(_isoUploadOptions.TempStagingPath)
-                ? Path.GetTempPath()
-                : _isoUploadOptions.TempStagingPath;
-            Directory.CreateDirectory(stagingDir);
-            var tempPath = Path.Combine(stagingDir, Guid.NewGuid().ToString() + ".iso");
+            // Stage the (possibly converted) ISO once locally; both the datastore and NFS paths copy
+            // from this single staged file into each target scope.
+            var (tempPath, destName) = await StageIsoAsync(formFile, filename, ct);
 
             try
             {
-                using (var sourceStream = formFile.OpenReadStream())
+                if (_isoUploadOptions.UploadToDatastore)
                 {
-                    if (isIso)
-                    {
-                        using (var destStream = System.IO.File.Create(tempPath))
-                        {
-                            await sourceStream.CopyToAsync(destStream, ct);
-                        }
-                    }
-                    else
-                    {
-                        BuildIso(sourceStream, filename, tempPath);
-                    }
+                    return await UploadToDatastore(uuid.ToString(), scopeIds, destName, tempPath);
                 }
 
+                // NFS path: copy the staged ISO into every target folder in parallel.
                 await Task.WhenAll(scopeIds.Select(async scopeId =>
                 {
                     var destPath = Path.Combine(_isoUploadOptions.BasePath, uuid.ToString(), scopeId);
@@ -132,7 +129,7 @@ namespace Player.Vm.Api.Features.Files
                 // Caller must at least be able to upload team ISOs in this View to see the listing.
                 var ownTeamsForCheck = (await _playerService.GetTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToArray();
                 if (!await _playerService.Can(ownTeamsForCheck, [], [], [], [AppTeamPermission.UploadTeamIsos], ct))
-                    throw new InvalidOperationException("You do not have permission to view ISOs for this View");
+                    throw new ForbiddenException("You do not have permission to view ISOs for this View");
             }
 
             // View-admins see every team; everyone else sees only their own teams.
@@ -156,7 +153,7 @@ namespace Player.Vm.Api.Features.Files
         public async Task<IActionResult> ListAll(CancellationToken ct)
         {
             if (!await _playerService.Can([], [], [AppSystemPermission.ViewViews, AppSystemPermission.ManageViews], [], [], ct))
-                throw new InvalidOperationException("You do not have permission to view ISOs across all Views");
+                throw new ForbiddenException("You do not have permission to view ISOs across all Views");
 
             var views = (await _playerService.GetAllViewsAsync(ct)).ToList();
 
@@ -289,7 +286,7 @@ namespace Player.Vm.Api.Features.Files
             if (scope == "view")
             {
                 if (!await _playerService.Can([], [uuid], [], [AppViewPermission.UploadViewIsos], [], ct))
-                    throw new InvalidOperationException("You do not have permission to upload public files for this View");
+                    throw new ForbiddenException("You do not have permission to upload public files for this View");
 
                 return new[] { uuid.ToString() };
             }
@@ -305,7 +302,7 @@ namespace Player.Vm.Api.Features.Files
                 foreach (var teamId in teamIds)
                 {
                     if (!viewTeamIds.Contains(teamId))
-                        throw new InvalidOperationException("The specified team is not part of this View");
+                        throw new BadRequestException("The specified team is not part of this View");
                 }
                 targetTeamIds = teamIds.ToList();
             }
@@ -320,7 +317,7 @@ namespace Player.Vm.Api.Features.Files
             foreach (var targetTeamId in targetTeamIds)
             {
                 if (!await _playerService.Can([targetTeamId], [uuid], [], [AppViewPermission.UploadViewIsos], [AppTeamPermission.UploadTeamIsos], ct))
-                    throw new InvalidOperationException("You do not have permission to upload files for this Team");
+                    throw new ForbiddenException("You do not have permission to upload files for this Team");
             }
 
             return targetTeamIds.Select(id => id.ToString()).ToList();
@@ -345,7 +342,7 @@ namespace Player.Vm.Api.Features.Files
                     return uuid.ToString();
 
                 if (!await _playerService.Can([], [uuid], [], [AppViewPermission.DeleteViewIsos], [], ct))
-                    throw new InvalidOperationException("You do not have permission to delete public files for this View");
+                    throw new ForbiddenException("You do not have permission to delete public files for this View");
 
                 return uuid.ToString();
             }
@@ -361,7 +358,7 @@ namespace Player.Vm.Api.Features.Files
                     ? (await _playerService.GetAllTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToHashSet()
                     : (await _playerService.GetTeamsByViewIdAsync(uuid, ct)).Select(t => t.Id).ToHashSet();
                 if (!viewTeamIds.Contains(teamId.Value))
-                    throw new InvalidOperationException("The specified team is not part of this View");
+                    throw new BadRequestException("The specified team is not part of this View");
 
                 targetTeamId = teamId.Value;
             }
@@ -377,75 +374,70 @@ namespace Player.Vm.Api.Features.Files
             // DeleteViewIsos lets a view-admin delete any team's ISO; otherwise DeleteTeamIsos on the
             // target team is required.
             if (!await _playerService.Can([targetTeamId], [uuid], [], [AppViewPermission.DeleteViewIsos], [AppTeamPermission.DeleteTeamIsos], ct))
-                throw new InvalidOperationException("You do not have permission to delete files for this Team");
+                throw new ForbiddenException("You do not have permission to delete files for this Team");
 
             return targetTeamId.ToString();
         }
 
-        // Stage the upload as an ISO locally, then stream it directly to the vSphere datastore(s) for
-        // each target scope in parallel. Used for VMware Cloud on AWS SDDC environments that lack NFS
-        // datastores. Each scope's UploadIso internally fans out across all enabled+connected hosts.
-        private async Task<IActionResult> UploadToDatastore(string viewId, IReadOnlyList<string> scopeIds, string filename, IFormFile formFile)
+        // Resolve the staging directory, normalize the destination name to "*.iso", and stage the
+        // upload as an ISO locally. Real ISOs are streamed to disk directly; any other file is wrapped
+        // into a single-file ISO. The datastore filename matches the NFS naming so GetIsos/MountIso
+        // resolve it identically. The caller owns deleting the returned tempPath.
+        private async Task<(string tempPath, string isoName)> StageIsoAsync(IFormFile formFile, string filename, CancellationToken ct)
         {
             var stagingDir = string.IsNullOrWhiteSpace(_isoUploadOptions.TempStagingPath)
                 ? Path.GetTempPath()
                 : _isoUploadOptions.TempStagingPath;
             Directory.CreateDirectory(stagingDir);
 
-            var isIso = filename.ToLower().EndsWith(".iso");
-            // datastore filename matches the NFS naming so GetIsos/MountIso resolve it identically
-            var isoName = isIso ? filename : filename + ".iso";
-            var tempPath = Path.Combine(stagingDir, Guid.NewGuid().ToString() + ".iso");
+            var isIso = IsoFileNaming.IsIsoFile(filename);
+            var isoName = isIso ? filename : filename + IsoFileNaming.Extension;
+            var tempPath = Path.Combine(stagingDir, Guid.NewGuid().ToString() + IsoFileNaming.Extension);
 
-            try
+            using (var sourceStream = formFile.OpenReadStream())
             {
-                using (var sourceStream = formFile.OpenReadStream())
+                if (isIso)
                 {
-                    if (isIso)
-                    {
-                        using (var destStream = System.IO.File.Create(tempPath))
-                        {
-                            await sourceStream.CopyToAsync(destStream);
-                        }
-                    }
-                    else
-                    {
-                        BuildIso(sourceStream, filename, tempPath);
-                    }
+                    using var destStream = System.IO.File.Create(tempPath);
+                    await sourceStream.CopyToAsync(destStream, ct);
                 }
-
-                var outcomes = await Task.WhenAll(
-                    scopeIds.Select(scopeId => _vsphereService.UploadIso(viewId, scopeId, isoName, tempPath)));
-
-                // Aggregate per-host counts across every target scope. Detail (which hosts) stays in
-                // the logs - the response carries only admin-safe counts.
-                var failedHostCount = outcomes.Sum(o => o.FailedHostCount);
-                var totalHostCount = outcomes.Sum(o => o.TotalHostCount);
-
-                if (failedHostCount > 0)
+                else
                 {
-                    return Json(new IsoUploadResult
-                    {
-                        Message = $"ISO uploaded, but failed on {failedHostCount} of {totalHostCount} hosts. Contact an administrator.",
-                        FailedHostCount = failedHostCount,
-                        TotalHostCount = totalHostCount
-                    });
+                    BuildIso(sourceStream, filename, tempPath);
                 }
+            }
 
+            return (tempPath, isoName);
+        }
+
+        // Stream the already-staged ISO directly to the vSphere datastore(s) for each target scope in
+        // parallel. Used for VMware Cloud on AWS SDDC environments that lack NFS datastores. Each
+        // scope's UploadIso internally fans out across all enabled+connected hosts.
+        private async Task<IActionResult> UploadToDatastore(string viewId, IReadOnlyList<string> scopeIds, string isoName, string tempPath)
+        {
+            var outcomes = await Task.WhenAll(
+                scopeIds.Select(scopeId => _vsphereService.UploadIso(viewId, scopeId, isoName, tempPath)));
+
+            // Aggregate per-host counts across every target scope. Detail (which hosts) stays in
+            // the logs - the response carries only admin-safe counts.
+            var failedHostCount = outcomes.Sum(o => o.FailedHostCount);
+            var totalHostCount = outcomes.Sum(o => o.TotalHostCount);
+
+            if (failedHostCount > 0)
+            {
                 return Json(new IsoUploadResult
                 {
-                    Message = "ISO was uploaded",
+                    Message = $"ISO uploaded, but failed on {failedHostCount} of {totalHostCount} hosts. Contact an administrator.",
+                    FailedHostCount = failedHostCount,
                     TotalHostCount = totalHostCount
                 });
             }
-            finally
+
+            return Json(new IsoUploadResult
             {
-                if (System.IO.File.Exists(tempPath))
-                {
-                    try { System.IO.File.Delete(tempPath); }
-                    catch { /* best-effort cleanup */ }
-                }
-            }
+                Message = "ISO was uploaded",
+                TotalHostCount = totalHostCount
+            });
         }
 
         // Wrap an arbitrary uploaded file into a single-file ISO at destPath (Joliet, "PlayerIso" volume).
