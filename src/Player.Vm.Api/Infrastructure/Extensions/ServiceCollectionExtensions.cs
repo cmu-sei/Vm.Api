@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.OpenApi;
 using Player.Api.Client;
+using Player.Vm.Api.Features.Shared.Interfaces;
 using Player.Vm.Api.Infrastructure.HttpHandlers;
 using Player.Vm.Api.Infrastructure.OperationFilters;
 using Player.Vm.Api.Infrastructure.Options;
@@ -13,6 +14,7 @@ using Swashbuckle.AspNetCore.SwaggerGen;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
@@ -140,6 +142,30 @@ namespace Player.Vm.Api.Infrastructure.Extensions
 
                 return playerApiClient;
             });
+        }
+
+        #endregion
+
+        #region Feature Handlers
+
+        /// <summary>
+        /// Finds all non-abstract IFeatureHandler implementations in this assembly and registers each
+        /// as a Scoped service by its concrete type. New per-endpoint handlers are picked up
+        /// automatically - implementing IFeatureHandler is the only registration step required.
+        /// </summary>
+        public static void AddFeatureHandlers(this IServiceCollection services)
+        {
+            var handlerTypes = Assembly.GetExecutingAssembly()
+                .GetTypes()
+                .Where(t => !t.IsAbstract
+                    && !t.IsInterface
+                    && !t.IsGenericTypeDefinition
+                    && typeof(IFeatureHandler).IsAssignableFrom(t));
+
+            foreach (var handlerType in handlerTypes)
+            {
+                services.AddScoped(handlerType);
+            }
         }
 
         #endregion
