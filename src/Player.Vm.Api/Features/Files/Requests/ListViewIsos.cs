@@ -2,12 +2,13 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Player.Api.Client;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Shared.Interfaces;
-using Player.Vm.Api.Features.Vsphere;
 using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Exceptions;
 
@@ -49,13 +50,14 @@ namespace Player.Vm.Api.Features.Files.Requests
             }
 
             // Whole-View readers see every team; everyone else sees only their own teams.
-            var teams = canViewWholeView
+            IReadOnlyCollection<Team> teams = canViewWholeView
                 ? (await _playerService.GetAllTeamsByViewIdAsync(viewId, ct)).ToList()
                 : (await _playerService.GetTeamsByViewIdAsync(viewId, ct)).ToList();
 
             var view = await _playerService.GetViewByIdAsync(viewId, ct);
 
-            return await _isoService.BuildViewIsoResultAsync(view, teams, ct);
+            var results = await _isoService.BuildViewIsoResultsAsync(new[] { new ViewTeams(view, teams) }, ct);
+            return results[0];
         }
     }
 }

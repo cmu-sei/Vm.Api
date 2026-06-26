@@ -12,12 +12,14 @@ using Player.Api.Client;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Services;
-using Player.Vm.Api.Features.Vsphere;
 using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Exceptions;
 
 namespace Player.Vm.Api.Features.Files
 {
+    // A View and the teams within it to render an ISO listing for.
+    public record ViewTeams(View View, IReadOnlyCollection<Team> Teams);
+
     // Shared ISO logic used by more than one of the Files request handlers: permission/scope
     // resolution for upload and delete, assembling the per-View listing, plus the pure filename/
     // teamId parsing helpers. Per-endpoint orchestration lives in the Requests/* handlers.
@@ -25,8 +27,7 @@ namespace Player.Vm.Api.Features.Files
     {
         Task<IReadOnlyList<string>> ResolveUploadScopeIdsAsync(Guid viewId, string scope, IReadOnlyList<Guid> teamIds, CancellationToken ct);
         Task<string> ResolveDeleteScopeIdAsync(Guid viewId, string scope, Guid? teamId, CancellationToken ct);
-        Task<IsoResult> BuildViewIsoResultAsync(View view, IReadOnlyCollection<Team> teams, CancellationToken ct);
-        Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<(View view, IReadOnlyCollection<Team> teams)> views, CancellationToken ct);
+        Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
         string SanitizeFilename(string filename);
         IReadOnlyList<Guid> ParseTeamIds(StringValues values);
     }
@@ -147,50 +148,41 @@ namespace Player.Vm.Api.Features.Files
             return targetTeamId.ToString();
         }
 
-        // Assemble the view-wide + per-team ISO listing for a single View. View-wide ISOs are keyed on
-        // the view id; each team's on the team id. A single recursive datastore-browser task enumerates
-        // every scope under the View folder.
-        public async Task<IsoResult> BuildViewIsoResultAsync(View view, IReadOnlyCollection<Team> teams, CancellationToken ct)
+        // Assemble the view-wide + per-team ISO listing for one or more Views. View-wide ISOs are keyed
+        // on the view id; each team's on the team id. A SINGLE recursive datastore-browser task lists
+        // every scope: scoped to the one View when a single View is requested, else rooted at the base
+        // folder for all Views.
+        public async Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct)
         {
-            var isosByScope = await _vsphereService.GetIsosByScopeForView(view.Id.ToString());
-            return AssembleViewIsoResult(view, teams, isosByScope);
-        }
+            // Scope the search to the single View when only one is requested (smaller search); otherwise
+            // enumerate every View in one pass.
+            var scopeViewId = views.Count == 1 ? views.First().View.Id : (Guid?)null;
+            var isosByScope = await _vsphereService.ListIsos(scopeViewId);
 
-        // Same as BuildViewIsoResultAsync but for many Views. Each View is enumerated by its own single
-        // recursive datastore-browser task; the tasks run concurrently (no per-team fan-out, so no
-        // throttling needed).
-        public async Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<(View view, IReadOnlyCollection<Team> teams)> views, CancellationToken ct)
-        {
-            var tasks = views.Select(async pair =>
-            {
-                var isosByScope = await _vsphereService.GetIsosByScopeForView(pair.view.Id.ToString());
-                return AssembleViewIsoResult(pair.view, pair.teams, isosByScope);
-            });
-
-            return await Task.WhenAll(tasks);
+            return views.Select(v => AssembleViewIsoResult(v, isosByScope)).ToArray();
         }
 
         // Bucket the scope-keyed ISO listing into the view-wide + per-team shape. View-wide ISOs are
         // keyed on the view id; each team's on the team id. Scopes with no ISOs yield empty arrays.
-        private static IsoResult AssembleViewIsoResult(View view, IReadOnlyCollection<Team> teams, IReadOnlyDictionary<string, List<IsoFile>> isosByScope)
+        private static IsoResult AssembleViewIsoResult(ViewTeams viewTeams, IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>> isosByScope)
         {
-            IsoFile[] IsosFor(string scopeId) =>
+            IsoFile[] IsosFor(Guid scopeId) =>
                 isosByScope.TryGetValue(scopeId, out var isos) ? isos.ToArray() : Array.Empty<IsoFile>();
 
             var result = new IsoResult
             {
-                ViewId = view.Id,
-                ViewName = view.Name,
-                Isos = IsosFor(view.Id.ToString())
+                ViewId = viewTeams.View.Id,
+                ViewName = viewTeams.View.Name,
+                Isos = IsosFor(viewTeams.View.Id)
             };
 
-            foreach (var team in teams)
+            foreach (var team in viewTeams.Teams)
             {
                 result.TeamIsoResults.Add(new TeamIsoResult
                 {
                     TeamId = team.Id,
                     TeamName = team.Name,
-                    Isos = IsosFor(team.Id.ToString())
+                    Isos = IsosFor(team.Id)
                 });
             }
 

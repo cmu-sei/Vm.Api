@@ -41,19 +41,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<string> UploadFileToVm(Guid id, string username, string password, string filepath, Stream fileStream);
         Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath);
         Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subFolder);
-        // View-scoped ISO listing: resolves a connection from the pool (no vmId required).
-        Task<IEnumerable<IsoFile>> GetIsosForScope(string viewId, string scopeId);
-        // Lists every scope's ISOs under a single View's folder in ONE recursive datastore-browser
-        // task, keyed by scope id (the view id for view-wide ISOs, else a team id). Replaces N
-        // per-scope GetIsosForScope calls.
-        Task<IReadOnlyDictionary<string, List<IsoFile>>> GetIsosByScopeForView(string viewId);
-        // Uploads an ISO to the vSphere datastore on all enabled/connected hosts. Returns counts only
-        // (per-host failure detail is logged, never returned, so host identifiers can't leak to users).
-        // Throws only if all hosts fail.
+        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsos(Guid? viewId = null);
         Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
-        // Deletes an ISO from the vSphere datastore on all enabled/connected hosts. Returns counts only
-        // (per-host failure detail is logged, never returned, so host identifiers can't leak to users).
-        // A missing file on a host counts as success (idempotent); throws only if all hosts fail.
         Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename);
         Task<string> SetResolution(Guid id, int width, int height);
         Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation);
@@ -1032,22 +1021,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return await GetIsosFromConnection(aggregate.Connection, viewId, subfolder);
         }
 
-        // View-scoped ISO listing with no specific VM: resolve a connection from the connection pool
-        // (any enabled/connected host - all hosts share the same ISO layout) rather than from a vmId.
-        public async Task<IEnumerable<IsoFile>> GetIsosForScope(string viewId, string scopeId)
-        {
-            var connection = _connectionService.GetAllConnections()
-                .FirstOrDefault(c => c.Enabled && c.Connected && c.Client != null);
-
-            if (connection == null)
-            {
-                _logger.LogError("No connected vSphere hosts available to list ISOs.");
-                return new List<IsoFile>();
-            }
-
-            return await GetIsosFromConnection(connection, viewId, scopeId);
-        }
-
         private async Task<IEnumerable<IsoFile>> GetIsosFromConnection(VsphereConnection connection, string viewId, string subfolder)
         {
             List<IsoFile> list = new List<IsoFile>();
@@ -1098,13 +1071,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return list;
         }
 
-        // Lists every scope's ISOs under a single View's folder (baseFolder/{viewId}/*) in ONE
-        // recursive datastore-browser task, returning them keyed by scope id (the trailing folder
-        // segment - the view id for view-wide ISOs, else a team id). Replaces the N per-scope
-        // SearchDatastore round-trips BuildViewIsoResultAsync would otherwise make for "all views".
-        public async Task<IReadOnlyDictionary<string, List<IsoFile>>> GetIsosByScopeForView(string viewId)
+        // Lists ISOs from the datastore in a SINGLE recursive datastore-browser task, keyed by scope id
+        // (the leaf folder name). Passing null roots the search at the base folder so every View is
+        // enumerated at once ("all views" mode); passing a viewId roots it at that View's folder.
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsos(Guid? viewId = null)
         {
-            var byScope = new Dictionary<string, List<IsoFile>>();
+            var byScope = new Dictionary<Guid, IReadOnlyList<IsoFile>>();
 
             var connection = _connectionService.GetAllConnections()
                 .FirstOrDefault(c => c.Enabled && c.Connected && c.Client != null);
@@ -1116,9 +1088,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
 
             var dsName = connection.Host.DsName;
-            // The View folder is one level above the per-scope folders; recurse it to enumerate every
-            // scope (view-wide + each team) in a single task.
-            var viewFolder = $"[{dsName}] {connection.Host.BaseFolder}/{viewId}";
+            // Root at the base folder for all Views, or the View folder for one View. Either way the
+            // leaf folders are baseFolder/{viewId}/{scopeId}, so the scope id is always the last segment.
+            var rootFolder = viewId.HasValue
+                ? $"[{dsName}] {connection.Host.BaseFolder}/{viewId}"
+                : $"[{dsName}] {connection.Host.BaseFolder}";
 
             var datastore = await GetDatastoreByName(dsName, connection);
             if (datastore == null)
@@ -1127,16 +1101,17 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 return byScope;
             }
 
-            var spec = new HostDatastoreBrowserSearchSpec { };
+            // Server-side filter to ISO files (matches TopoMojo's "*" + extension pattern).
+            var spec = new HostDatastoreBrowserSearchSpec { matchPattern = new[] { "*" + IsoFileNaming.Extension } };
             var results = new List<HostDatastoreBrowserSearchResults>();
-            var task = await connection.Client.SearchDatastoreSubFolders_TaskAsync(datastore.Browser, viewFolder, spec);
+            var task = await connection.Client.SearchDatastoreSubFolders_TaskAsync(datastore.Browser, rootFolder, spec);
             var info = await WaitForVimTask(task, connection);
             if (info.state == TaskInfoState.error)
             {
                 if (info.error.fault != null &&
                     info.error.fault.ToString().Equals("FileNotFound", StringComparison.CurrentCultureIgnoreCase))
                 {
-                    // View folder not present yet - no ISOs anywhere in this View.
+                    // Root folder not present yet - no ISOs.
                     return byScope;
                 }
                 _logger.LogError(info.error.localizedMessage);
@@ -1151,19 +1126,19 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 if (result?.file == null || result.file.Length == 0)
                     continue;
 
-                // folderPath is "[ds] baseFolder/viewId/scopeId"; the scope id is the trailing segment.
-                var scopeId = result.folderPath.TrimEnd('/').Split('/').Last();
+                // folderPath is "[ds] baseFolder/{viewId}/{scopeId}"; the scope id is the last segment.
+                // Skip anything that isn't a scope (Guid) folder - e.g. a stray file in the base/View dir.
+                var leaf = result.folderPath.TrimEnd('/').Split('/').Last();
+                if (!Guid.TryParse(leaf, out var scopeId))
+                    continue;
 
-                var isos = result.file
-                    .Where(x => IsoFileNaming.IsIsoFile(x.path))
-                    .Select(x => new IsoFile(result.folderPath, x.path));
-
-                if (!byScope.TryGetValue(scopeId, out var list))
+                if (!byScope.TryGetValue(scopeId, out var existing))
                 {
-                    list = new List<IsoFile>();
-                    byScope[scopeId] = list;
+                    existing = new List<IsoFile>();
+                    byScope[scopeId] = existing;
                 }
-                list.AddRange(isos);
+
+                ((List<IsoFile>)existing).AddRange(result.file.Select(x => new IsoFile(result.folderPath, x.path)));
             }
 
             return byScope;
