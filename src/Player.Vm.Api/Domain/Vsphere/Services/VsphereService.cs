@@ -19,6 +19,7 @@ using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
+using Player.Vm.Api.Features.Files;
 using Player.Vm.Api.Domain.Models;
 using System.Web;
 
@@ -42,14 +43,18 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subFolder);
         // View-scoped ISO listing: resolves a connection from the pool (no vmId required).
         Task<IEnumerable<IsoFile>> GetIsosForScope(string viewId, string scopeId);
+        // Lists every scope's ISOs under a single View's folder in ONE recursive datastore-browser
+        // task, keyed by scope id (the view id for view-wide ISOs, else a team id). Replaces N
+        // per-scope GetIsosForScope calls.
+        Task<IReadOnlyDictionary<string, List<IsoFile>>> GetIsosByScopeForView(string viewId);
         // Uploads an ISO to the vSphere datastore on all enabled/connected hosts. Returns counts only
         // (per-host failure detail is logged, never returned, so host identifiers can't leak to users).
         // Throws only if all hosts fail.
-        Task<IsoUploadOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
+        Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
         // Deletes an ISO from the vSphere datastore on all enabled/connected hosts. Returns counts only
         // (per-host failure detail is logged, never returned, so host identifiers can't leak to users).
         // A missing file on a host counts as success (idempotent); throws only if all hosts fail.
-        Task<IsoDeleteOutcome> DeleteIso(string viewId, string scopeId, string filename);
+        Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename);
         Task<string> SetResolution(Guid id, int width, int height);
         Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation);
         Task<Dictionary<Guid, string>> BulkShutdown(Guid[] ids);
@@ -1093,7 +1098,78 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return list;
         }
 
-        public async Task<IsoUploadOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath)
+        // Lists every scope's ISOs under a single View's folder (baseFolder/{viewId}/*) in ONE
+        // recursive datastore-browser task, returning them keyed by scope id (the trailing folder
+        // segment - the view id for view-wide ISOs, else a team id). Replaces the N per-scope
+        // SearchDatastore round-trips BuildViewIsoResultAsync would otherwise make for "all views".
+        public async Task<IReadOnlyDictionary<string, List<IsoFile>>> GetIsosByScopeForView(string viewId)
+        {
+            var byScope = new Dictionary<string, List<IsoFile>>();
+
+            var connection = _connectionService.GetAllConnections()
+                .FirstOrDefault(c => c.Enabled && c.Connected && c.Client != null);
+
+            if (connection == null)
+            {
+                _logger.LogError("No connected vSphere hosts available to list ISOs.");
+                return byScope;
+            }
+
+            var dsName = connection.Host.DsName;
+            // The View folder is one level above the per-scope folders; recurse it to enumerate every
+            // scope (view-wide + each team) in a single task.
+            var viewFolder = $"[{dsName}] {connection.Host.BaseFolder}/{viewId}";
+
+            var datastore = await GetDatastoreByName(dsName, connection);
+            if (datastore == null)
+            {
+                _logger.LogError($"Datastore {dsName} not found in {connection.Address}.");
+                return byScope;
+            }
+
+            var spec = new HostDatastoreBrowserSearchSpec { };
+            var results = new List<HostDatastoreBrowserSearchResults>();
+            var task = await connection.Client.SearchDatastoreSubFolders_TaskAsync(datastore.Browser, viewFolder, spec);
+            var info = await WaitForVimTask(task, connection);
+            if (info.state == TaskInfoState.error)
+            {
+                if (info.error.fault != null &&
+                    info.error.fault.ToString().Equals("FileNotFound", StringComparison.CurrentCultureIgnoreCase))
+                {
+                    // View folder not present yet - no ISOs anywhere in this View.
+                    return byScope;
+                }
+                _logger.LogError(info.error.localizedMessage);
+            }
+            else if (info.result != null)
+            {
+                results.AddRange((HostDatastoreBrowserSearchResults[])info.result);
+            }
+
+            foreach (var result in results)
+            {
+                if (result?.file == null || result.file.Length == 0)
+                    continue;
+
+                // folderPath is "[ds] baseFolder/viewId/scopeId"; the scope id is the trailing segment.
+                var scopeId = result.folderPath.TrimEnd('/').Split('/').Last();
+
+                var isos = result.file
+                    .Where(x => IsoFileNaming.IsIsoFile(x.path))
+                    .Select(x => new IsoFile(result.folderPath, x.path));
+
+                if (!byScope.TryGetValue(scopeId, out var list))
+                {
+                    list = new List<IsoFile>();
+                    byScope[scopeId] = list;
+                }
+                list.AddRange(isos);
+            }
+
+            return byScope;
+        }
+
+        public async Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath)
         {
             // Upload to all enabled/connected hosts so the ISO is available wherever the VM runs
             // (mirrors the shared-storage semantics of the NFS path).
@@ -1125,7 +1201,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             var (failedHostCount, totalHostCount) = AggregateHostResults(results, connections.Count, "upload", filename);
 
-            return new IsoUploadOutcome
+            return new IsoOperationOutcome
             {
                 FailedHostCount = failedHostCount,
                 TotalHostCount = totalHostCount
@@ -1165,6 +1241,33 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         private async Task UploadIsoToConnection(VsphereConnection connection, string viewId, string scopeId, string filename, string localFilePath)
         {
+            // Resolve the datastore HTTP file API target (and create the destination directory).
+            var client = await BuildDatastoreFileClient(connection, viewId, scopeId, filename, ensureDirectory: true);
+
+            using (var fileStream = System.IO.File.OpenRead(localFilePath))
+            {
+                var content = new StreamContent(fileStream);
+                content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                content.Headers.ContentLength = fileStream.Length;
+
+                _logger.LogDebug("Uploading ISO to datastore: {Url}", client.BaseAddress);
+
+                // Empty relative URI resolves to BaseAddress (the full /folder/...?dcPath=&dsName= URL).
+                var response = await client.PutAsync("", content);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    throw new Exception($"Datastore PUT failed ({(int)response.StatusCode}): {body}");
+                }
+            }
+        }
+
+        // Resolves dsName/folderPath/datacenter (incl. null-guard throw), optionally creates the
+        // destination directory (upload only), builds the datastore HTTP file API URL, and returns a
+        // "vSphereDatastore" HttpClient with that URL as BaseAddress and the per-host Basic-auth header
+        // set. Shared by ISO upload (PUT) and delete (DELETE) so the path/auth setup never diverges.
+        private async Task<HttpClient> BuildDatastoreFileClient(VsphereConnection connection, string viewId, string scopeId, string filename, bool ensureDirectory)
+        {
             var dsName = connection.Host.DsName;
 
             // datastore-relative folder (no "[ds]" prefix; that form is only used for search/mount/MakeDirectory paths)
@@ -1176,37 +1279,23 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 throw new InvalidOperationException($"Could not resolve datacenter for datastore {dsName} on {connection.Address}");
             }
 
-            // 1) ensure the destination directory exists (ignore "already exists")
-            await EnsureDatastoreDirectory(connection, datacenter, dsName, folderPath);
+            if (ensureDirectory)
+            {
+                // ensure the destination directory exists (ignore "already exists")
+                await EnsureDatastoreDirectory(connection, datacenter, dsName, folderPath);
+            }
 
-            // 2) HTTP PUT the file to the datastore HTTP file API
             var url = BuildDatastoreUploadUrl(connection.Address, folderPath, filename, datacenter.Name, dsName);
 
             var client = _httpClientFactory.CreateClient("vSphereDatastore");
+            client.BaseAddress = new Uri(url);
 
-            // HTTP Basic auth (not the SOAP session cookie) - matches the topomojo implementation
+            // HTTP Basic auth (not the SOAP session cookie) - matches the topomojo implementation.
             var credentials = Convert.ToBase64String(
                 Encoding.UTF8.GetBytes($"{connection.Host.Username}:{connection.Host.Password}"));
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
 
-            using (var fileStream = System.IO.File.OpenRead(localFilePath))
-            using (var request = new HttpRequestMessage(HttpMethod.Put, url))
-            {
-                request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
-
-                var content = new StreamContent(fileStream);
-                content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
-                content.Headers.ContentLength = fileStream.Length;
-                request.Content = content;
-
-                _logger.LogDebug("Uploading ISO to datastore: {Url}", url);
-
-                var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-                if (!response.IsSuccessStatusCode)
-                {
-                    var body = await response.Content.ReadAsStringAsync();
-                    throw new Exception($"Datastore PUT failed ({(int)response.StatusCode}): {body}");
-                }
-            }
+            return client;
         }
 
         private static string BuildDatastoreUploadUrl(string host, string folderPath, string file, string dcName, string dsName)
@@ -1217,7 +1306,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                  + $"?dcPath={Uri.EscapeDataString(dcName)}&dsName={Uri.EscapeDataString(dsName)}";
         }
 
-        public async Task<IsoDeleteOutcome> DeleteIso(string viewId, string scopeId, string filename)
+        public async Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename)
         {
             // Delete from all enabled/connected hosts so the ISO is removed wherever it was uploaded
             // (mirrors UploadIso, which writes to every host).
@@ -1246,7 +1335,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             var (failedHostCount, totalHostCount) = AggregateHostResults(results, connections.Count, "delete", filename);
 
-            return new IsoDeleteOutcome
+            return new IsoOperationOutcome
             {
                 FailedHostCount = failedHostCount,
                 TotalHostCount = totalHostCount
@@ -1255,46 +1344,25 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         private async Task DeleteIsoFromConnection(VsphereConnection connection, string viewId, string scopeId, string filename)
         {
-            var dsName = connection.Host.DsName;
+            // Same /folder/...?dcPath=&dsName= URL as the PUT upload; the datastore HTTP file API
+            // accepts DELETE on it. No directory creation needed for a delete.
+            var client = await BuildDatastoreFileClient(connection, viewId, scopeId, filename, ensureDirectory: false);
 
-            // Same datastore-relative folder layout as upload/search so we target the right file.
-            var folderPath = BuildIsoFolderRelative(connection.Host.BaseFolder, viewId, scopeId);
+            _logger.LogDebug("Deleting ISO from datastore: {Url}", client.BaseAddress);
 
-            var datacenter = await GetDatacenterForDatastore(dsName, connection);
-            if (datacenter == null)
+            // Empty relative URI resolves to BaseAddress (the full /folder/...?dcPath=&dsName= URL).
+            var response = await client.DeleteAsync("");
+
+            // Already gone => idempotent success (lets a re-delete or partially-uploaded ISO clear cleanly).
+            if (response.StatusCode == HttpStatusCode.NotFound)
             {
-                throw new InvalidOperationException($"Could not resolve datacenter for datastore {dsName} on {connection.Address}");
+                return;
             }
 
-            // Same /folder/...?dcPath=&dsName= URL as the PUT upload; the datastore HTTP file API
-            // accepts DELETE on it.
-            var url = BuildDatastoreUploadUrl(connection.Address, folderPath, filename, datacenter.Name, dsName);
-
-            var client = _httpClientFactory.CreateClient("vSphereDatastore");
-
-            // HTTP Basic auth (not the SOAP session cookie) - matches the upload implementation.
-            var credentials = Convert.ToBase64String(
-                Encoding.UTF8.GetBytes($"{connection.Host.Username}:{connection.Host.Password}"));
-
-            using (var request = new HttpRequestMessage(HttpMethod.Delete, url))
+            if (!response.IsSuccessStatusCode)
             {
-                request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
-
-                _logger.LogDebug("Deleting ISO from datastore: {Url}", url);
-
-                var response = await client.SendAsync(request);
-
-                // Already gone => idempotent success (lets a re-delete or partially-uploaded ISO clear cleanly).
-                if (response.StatusCode == HttpStatusCode.NotFound)
-                {
-                    return;
-                }
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    var body = await response.Content.ReadAsStringAsync();
-                    throw new Exception($"Datastore DELETE failed ({(int)response.StatusCode}): {body}");
-                }
+                var body = await response.Content.ReadAsStringAsync();
+                throw new Exception($"Datastore DELETE failed ({(int)response.StatusCode}): {body}");
             }
         }
 

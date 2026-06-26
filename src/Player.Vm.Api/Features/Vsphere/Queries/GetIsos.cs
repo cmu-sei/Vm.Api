@@ -14,6 +14,7 @@ using System.Collections.Generic;
 using Player.Vm.Api.Domain.Services;
 using System.Linq;
 using Player.Vm.Api.Domain.Vsphere.Models;
+using Player.Vm.Api.Features.Files;
 using Player.Api.Client;
 
 namespace Player.Vm.Api.Features.Vsphere
@@ -25,21 +26,6 @@ namespace Player.Vm.Api.Features.Vsphere
         {
             [JsonIgnore]
             public Guid Id { get; set; }
-        }
-
-        public class IsoResult
-        {
-            public Guid ViewId { get; set; }
-            public string ViewName { get; set; }
-            public IsoFile[] Isos { get; set; }
-            public List<TeamIsoResult> TeamIsoResults { get; set; } = new List<TeamIsoResult>();
-        }
-
-        public class TeamIsoResult
-        {
-            public Guid TeamId { get; set; }
-            public string TeamName { get; set; }
-            public IsoFile[] Isos { get; set; }
         }
 
         public class Handler : IRequestHandler<Query, IsoResult[]>

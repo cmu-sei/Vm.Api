@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.Primitives;
 using Player.Api.Client;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vsphere;
 using Player.Vm.Api.Infrastructure.Authorization;
@@ -24,7 +25,8 @@ namespace Player.Vm.Api.Features.Files
     {
         Task<IReadOnlyList<string>> ResolveUploadScopeIdsAsync(Guid viewId, string scope, IReadOnlyList<Guid> teamIds, CancellationToken ct);
         Task<string> ResolveDeleteScopeIdAsync(Guid viewId, string scope, Guid? teamId, CancellationToken ct);
-        Task<GetIsos.IsoResult> BuildViewIsoResultAsync(View view, IReadOnlyCollection<Team> teams, CancellationToken ct);
+        Task<IsoResult> BuildViewIsoResultAsync(View view, IReadOnlyCollection<Team> teams, CancellationToken ct);
+        Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<(View view, IReadOnlyCollection<Team> teams)> views, CancellationToken ct);
         string SanitizeFilename(string filename);
         IReadOnlyList<Guid> ParseTeamIds(StringValues values);
     }
@@ -146,30 +148,49 @@ namespace Player.Vm.Api.Features.Files
         }
 
         // Assemble the view-wide + per-team ISO listing for a single View. View-wide ISOs are keyed on
-        // the view id; each team's on the team id. All scopes are listed concurrently.
-        public async Task<GetIsos.IsoResult> BuildViewIsoResultAsync(View view, IReadOnlyCollection<Team> teams, CancellationToken ct)
+        // the view id; each team's on the team id. A single recursive datastore-browser task enumerates
+        // every scope under the View folder.
+        public async Task<IsoResult> BuildViewIsoResultAsync(View view, IReadOnlyCollection<Team> teams, CancellationToken ct)
         {
-            var viewIsosTask = _vsphereService.GetIsosForScope(view.Id.ToString(), view.Id.ToString());
-            var teamIsoTasks = teams.ToDictionary(
-                team => team,
-                team => _vsphereService.GetIsosForScope(view.Id.ToString(), team.Id.ToString()));
+            var isosByScope = await _vsphereService.GetIsosByScopeForView(view.Id.ToString());
+            return AssembleViewIsoResult(view, teams, isosByScope);
+        }
 
-            await Task.WhenAll(new List<Task> { viewIsosTask }.Concat(teamIsoTasks.Values));
+        // Same as BuildViewIsoResultAsync but for many Views. Each View is enumerated by its own single
+        // recursive datastore-browser task; the tasks run concurrently (no per-team fan-out, so no
+        // throttling needed).
+        public async Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<(View view, IReadOnlyCollection<Team> teams)> views, CancellationToken ct)
+        {
+            var tasks = views.Select(async pair =>
+            {
+                var isosByScope = await _vsphereService.GetIsosByScopeForView(pair.view.Id.ToString());
+                return AssembleViewIsoResult(pair.view, pair.teams, isosByScope);
+            });
 
-            var result = new GetIsos.IsoResult
+            return await Task.WhenAll(tasks);
+        }
+
+        // Bucket the scope-keyed ISO listing into the view-wide + per-team shape. View-wide ISOs are
+        // keyed on the view id; each team's on the team id. Scopes with no ISOs yield empty arrays.
+        private static IsoResult AssembleViewIsoResult(View view, IReadOnlyCollection<Team> teams, IReadOnlyDictionary<string, List<IsoFile>> isosByScope)
+        {
+            IsoFile[] IsosFor(string scopeId) =>
+                isosByScope.TryGetValue(scopeId, out var isos) ? isos.ToArray() : Array.Empty<IsoFile>();
+
+            var result = new IsoResult
             {
                 ViewId = view.Id,
                 ViewName = view.Name,
-                Isos = viewIsosTask.Result.ToArray()
+                Isos = IsosFor(view.Id.ToString())
             };
 
-            foreach (var kvp in teamIsoTasks)
+            foreach (var team in teams)
             {
-                result.TeamIsoResults.Add(new GetIsos.TeamIsoResult
+                result.TeamIsoResults.Add(new TeamIsoResult
                 {
-                    TeamId = kvp.Key.Id,
-                    TeamName = kvp.Key.Name,
-                    Isos = kvp.Value.Result.ToArray()
+                    TeamId = team.Id,
+                    TeamName = team.Name,
+                    Isos = IsosFor(team.Id.ToString())
                 });
             }
 

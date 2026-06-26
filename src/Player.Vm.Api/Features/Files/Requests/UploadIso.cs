@@ -9,7 +9,6 @@ using System.Threading;
 using System.Threading.Tasks;
 using DiscUtils.Iso9660;
 using Microsoft.AspNetCore.Http;
-using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Shared.Interfaces;
 using Player.Vm.Api.Infrastructure.Exceptions;

@@ -3,10 +3,10 @@
 
 namespace Player.Vm.Api.Domain.Vsphere.Models
 {
-    // Result of a datastore ISO upload across all targeted hosts. Carries only counts - the
-    // per-host failure detail (host addresses/reasons) is logged server-side and deliberately
-    // not surfaced to callers so it cannot leak to app users.
-    public class IsoUploadOutcome
+    // Result of a datastore ISO operation (upload or delete) across all targeted hosts. Carries only
+    // counts - the per-host failure detail (host addresses/reasons) is logged server-side and
+    // deliberately not surfaced to callers so it cannot leak to app users.
+    public class IsoOperationOutcome
     {
         public int FailedHostCount { get; set; }
         public int TotalHostCount { get; set; }

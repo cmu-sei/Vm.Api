@@ -4,7 +4,7 @@
 using System;
 using System.IO;
 
-namespace Player.Vm.Api.Domain.Vsphere.Models
+namespace Player.Vm.Api.Features.Files
 {
     // Shared ISO filename conventions so upload staging, datastore enumeration, and NFS naming all
     // agree on what counts as an ISO and how the extension is spelled.
