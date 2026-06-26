@@ -40,7 +40,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<VirtualMachineToolsStatus> GetVmToolsStatus(Guid id);
         Task<string> UploadFileToVm(Guid id, string username, string password, string filepath, Stream fileStream);
         Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath);
-        Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subFolder);
         Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsos(Guid? viewId = null);
         Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
         Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename);
@@ -1013,62 +1012,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private static string BuildIsoFolderRelative(string baseFolder, string viewId, string scopeId)
         {
             return $"{baseFolder}/{viewId}/{scopeId}";
-        }
-
-        public async Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subfolder)
-        {
-            var aggregate = await this.GetVm(vmId);
-            return await GetIsosFromConnection(aggregate.Connection, viewId, subfolder);
-        }
-
-        private async Task<IEnumerable<IsoFile>> GetIsosFromConnection(VsphereConnection connection, string viewId, string subfolder)
-        {
-            List<IsoFile> list = new List<IsoFile>();
-            var dsName = connection.Host.DsName;
-            var filepath = $"[{dsName}] {BuildIsoFolderRelative(connection.Host.BaseFolder, viewId, subfolder)}";
-
-            var datastore = await GetDatastoreByName(dsName, connection);
-            if (datastore == null)
-            {
-                _logger.LogError($"Datastore {dsName} not found in {connection.Address}.");
-                return list;
-            }
-
-            var dsBrowser = datastore.Browser;
-
-            ManagedObjectReference task = null;
-            TaskInfo info = null;
-            HostDatastoreBrowserSearchSpec spec = new HostDatastoreBrowserSearchSpec { };
-            List<HostDatastoreBrowserSearchResults> results = new List<HostDatastoreBrowserSearchResults>();
-            task = await connection.Client.SearchDatastore_TaskAsync(dsBrowser, filepath, spec);
-            info = await WaitForVimTask(task, connection);
-            if (info.state == TaskInfoState.error)
-            {
-                if (info.error.fault != null &&
-                    info.error.fault.ToString().Equals("FileNotFound", StringComparison.CurrentCultureIgnoreCase))
-                {
-                    // folder not found, return empty
-                    return list;
-                }
-                _logger.LogError(info.error.localizedMessage);
-            }
-            else if (info.result != null)
-            {
-                results.Add((HostDatastoreBrowserSearchResults)info.result);
-            }
-
-            foreach (HostDatastoreBrowserSearchResults result in results)
-            {
-                if (result != null && result.file != null && result.file.Length > 0)
-                {
-                    foreach (var fileInfo in result.file.Where(x => IsoFileNaming.IsIsoFile(x.path)))
-                    {
-                        list.Add(new IsoFile(result.folderPath, fileInfo.path));
-                    }
-                }
-            }
-
-            return list;
         }
 
         // Lists ISOs from the datastore in a SINGLE recursive datastore-browser task, keyed by scope id

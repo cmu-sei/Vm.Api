@@ -8,14 +8,10 @@ using MediatR;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
 using Player.Vm.Api.Infrastructure.Exceptions;
-using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vms;
-using System.Collections.Generic;
 using Player.Vm.Api.Domain.Services;
 using System.Linq;
-using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Features.Files;
-using Player.Api.Client;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -31,20 +27,20 @@ namespace Player.Vm.Api.Features.Vsphere
         public class Handler : IRequestHandler<Query, IsoResult[]>
         {
             private readonly IVmService _vmService;
-            private readonly IVsphereService _vsphereService;
             private readonly IPlayerService _playerService;
             private readonly IViewService _viewService;
+            private readonly IIsoService _isoService;
 
             public Handler(
                 IVmService vmService,
-                IVsphereService vsphereService,
                 IPlayerService playerService,
-                IViewService viewService)
+                IViewService viewService,
+                IIsoService isoService)
             {
                 _vmService = vmService;
-                _vsphereService = vsphereService;
                 _playerService = playerService;
                 _viewService = viewService;
+                _isoService = isoService;
             }
 
             public async Task<IsoResult[]> Handle(Query request, CancellationToken cancellationToken)
@@ -54,88 +50,28 @@ namespace Player.Vm.Api.Features.Vsphere
                 if (vm == null)
                     throw new EntityNotFoundException<VsphereVirtualMachine>();
 
-                var results = new List<IsoResult>();
                 var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, cancellationToken);
 
-                var isoTasks = new List<Task<IsoResult>>();
-
-                foreach (var viewId in viewIds)
+                var viewTeamsTasks = viewIds.Select(async viewId =>
                 {
-                    isoTasks.Add(this.GetViewIsos(vm.Id, viewId, cancellationToken));
-                }
+                    var teams = (await _playerService.GetTeamsByViewIdAsync(viewId, cancellationToken)).ToList();
 
-                await Task.WhenAll(isoTasks);
+                    // No teams => caller has no access to this View; skip it.
+                    if (teams.Count == 0)
+                        return (ViewTeams)null;
 
-                foreach (var isoResult in isoTasks.Select(x => x.Result))
-                {
-                    if (isoResult != null)
-                    {
-                        results.Add(isoResult);
-                    }
-                }
+                    var view = await _playerService.GetViewByIdAsync(viewId, cancellationToken);
+                    return new ViewTeams(view, teams);
+                });
 
-                return results.ToArray();
-            }
+                var viewTeams = (await Task.WhenAll(viewTeamsTasks))
+                    .Where(vt => vt != null)
+                    .ToList();
 
-            private async Task<IsoResult> GetViewIsos(Guid vmId, Guid viewId, CancellationToken cancellationToken)
-            {
-                var teams = await _playerService.GetTeamsByViewIdAsync(viewId, cancellationToken);
+                if (viewTeams.Count == 0)
+                    return Array.Empty<IsoResult>();
 
-                // User has access to this view
-                if (teams.Count() > 0)
-                {
-                    return await this.GetViewIsos(vmId, viewId, teams, cancellationToken);
-                }
-                else
-                {
-                    return null;
-                }
-            }
-
-            private async Task<IsoResult> GetViewIsos(Guid vmId, Guid viewId, IEnumerable<Team> teams, CancellationToken cancellationToken)
-            {
-                var viewTask = _playerService.GetViewByIdAsync(viewId, cancellationToken);
-
-                var isoTaskDict = new Dictionary<Guid, Task<IEnumerable<IsoFile>>>();
-                isoTaskDict.Add(viewId, _vsphereService.GetIsos(vmId, viewId.ToString(), viewId.ToString()));
-
-                foreach (var team in teams)
-                {
-                    isoTaskDict.Add(team.Id, _vsphereService.GetIsos(vmId, viewId.ToString(), team.Id.ToString()));
-                }
-
-                var tasks = new List<Task>();
-                tasks.Add(viewTask);
-                tasks.AddRange(isoTaskDict.Values);
-
-                await Task.WhenAll(tasks);
-
-                var view = viewTask.Result;
-
-                var isoResult = new IsoResult
-                {
-                    ViewId = view.Id,
-                    ViewName = view.Name
-                };
-
-                foreach (var kvp in isoTaskDict)
-                {
-                    if (kvp.Key == viewId)
-                    {
-                        isoResult.Isos = kvp.Value.Result.ToArray();
-                    }
-                    else
-                    {
-                        isoResult.TeamIsoResults.Add(new TeamIsoResult
-                        {
-                            Isos = kvp.Value.Result.ToArray(),
-                            TeamId = kvp.Key,
-                            TeamName = teams.Where(t => t.Id == kvp.Key).Select(x => x.Name).FirstOrDefault()
-                        });
-                    }
-                }
-
-                return isoResult;
+                return await _isoService.BuildViewIsoResultsAsync(viewTeams, cancellationToken);
             }
         }
     }
