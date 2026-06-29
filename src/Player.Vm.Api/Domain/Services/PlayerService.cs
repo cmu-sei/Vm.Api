@@ -51,7 +51,8 @@ namespace Player.Vm.Api.Domain.Services
                        AppSystemPermission[] requiredSystemPermissions,
                        AppViewPermission[] requiredViewPermissions,
                        AppTeamPermission[] requiredTeamPermissions,
-                       CancellationToken ct);
+                       CancellationToken ct,
+                       bool primaryTeamOnly = false);
     }
 
     public class PlayerService : IPlayerService
@@ -128,12 +129,18 @@ namespace Player.Vm.Api.Domain.Services
             return userTeamIds;
         }
 
+        // When primaryTeamOnly is true the team- and view-level checks are scoped to the caller's
+        // primary (active) team rather than "any team in the View" - used to make a listing follow
+        // the active team. System permissions are unaffected by the flag: a passed required system
+        // permission still short-circuits as normal (callers that don't want operator status to
+        // count simply pass none).
         public async Task<bool> Can(IEnumerable<Guid> teamIds,
                        IEnumerable<Guid> viewIds,
                        AppSystemPermission[] requiredSystemPermissions,
                        AppViewPermission[] requiredViewPermissions,
                        AppTeamPermission[] requiredTeamPermissions,
-                       CancellationToken ct)
+                       CancellationToken ct,
+                       bool primaryTeamOnly = false)
         {
             ICollection<string> systemPermissions;
 
@@ -168,8 +175,12 @@ namespace Player.Vm.Api.Domain.Services
 
                 if (teamPermissionsClaims != null)
                 {
-                    // Check View Permissions of all Teams in the View
-                    var appViewPermissions = teamPermissionsClaims
+                    // Check View Permissions of all Teams in the View (or just the primary team).
+                    var relevantClaims = primaryTeamOnly
+                        ? teamPermissionsClaims.Where(x => x.IsPrimary)
+                        : teamPermissionsClaims;
+
+                    var appViewPermissions = relevantClaims
                         .SelectMany(x => x.PermissionValues)
                         .Select(x => Enum.TryParse<AppViewPermission>(x, out var p) ? p : (AppViewPermission?)null)
                         .Where(p => p.HasValue)
@@ -190,6 +201,10 @@ namespace Player.Vm.Api.Domain.Services
 
                 if (teamPermissionClaim != null)
                 {
+                    // When scoped to the active team, ignore any specified team that isn't primary.
+                    if (primaryTeamOnly && !teamPermissionClaim.IsPrimary)
+                        continue;
+
                     // Check Team Permissions of just the specified Team
                     var appTeamPermissions = teamPermissionClaim?.PermissionValues
                         .Select(x => Enum.TryParse<AppTeamPermission>(x, out var p) ? p : (AppTeamPermission?)null)
