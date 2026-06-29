@@ -12,6 +12,7 @@ using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vms;
 using System.IO;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using AutoMapper;
 using Player.Vm.Api.Domain.Services;
 using System.Security.Principal;
@@ -26,6 +27,7 @@ namespace Player.Vm.Api.Features.Vsphere
         public class Command : IRequest<string>
         {
             [JsonIgnore]
+            [BindNever]
             public Guid Id { get; set; }
             public string Username { get; set; }
             public string Password { get; set; }

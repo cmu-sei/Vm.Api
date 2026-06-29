@@ -192,16 +192,11 @@ namespace Player.Vm.Api.Features.Vsphere
         [HttpPost("vms/vsphere/{id}/actions/upload-file"), DisableRequestSizeLimit]
         [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "uploadFileToVsphereVirtualMachine")]
-        public async Task<IActionResult> UploadFile([FromRoute] Guid id)
+        public async Task<IActionResult> UploadFile([FromRoute] Guid id, [FromForm] UploadFile.Command command)
         {
-            var result = await _mediator.Send(new UploadFile.Command
-            {
-                Id = id,
-                Files = Request.Form.Files,
-                FilePath = Request.Form["filepath"][0],
-                Password = Request.Form["password"][0],
-                Username = Request.Form["username"][0]
-            });
+            command.Id = id;
+            command.Files = Request.Form.Files;
+            var result = await _mediator.Send(command);
             return Json(result);
         }
 

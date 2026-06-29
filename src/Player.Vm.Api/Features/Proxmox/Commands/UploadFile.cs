@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc.ModelBinding;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
@@ -23,6 +24,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
         public class Command : IRequest<string>
         {
             [JsonIgnore]
+            [BindNever]
             public Guid Id { get; set; }
             public string Username { get; set; }
             public string Password { get; set; }
