@@ -39,18 +39,18 @@ jobs:
           cd ${{ steps.package_name.outputs.directory }}
           dotnet swagger tofile --output ../${{ steps.package_name.outputs.name }}/swagger.json bin/Release/*/${{ steps.package_name.outputs.dll_name }}.dll v1
 
-      - name: Run AutoRest
+      - name: Run NSwag
         run: |
           cd src/${{ steps.package_name.outputs.name }}
-          npm install autorest@3.0.6247
-          ./node_modules/.bin/autorest . --version=3.0.6274
+          npm install
+          ./node_modules/.bin/nswag run /runtime:Net100
 
       - name: Create NuGet Package
         run: |
           cd src/${{ steps.package_name.outputs.name }}
           dotnet pack -c Release /p:version=${{ github.event.inputs.clientVersion }}  \
           /p:authors="Carnegie Mellon University/Software Engineering Institute"      \
-          /p:description="AutoRest generated client for Crucible's ${{ steps.package_name.outputs.dll_name }}"   \
+          /p:description="NSwag generated client for Crucible's ${{ steps.package_name.outputs.dll_name }}"   \
           --include-source
 
           cd bin/Release

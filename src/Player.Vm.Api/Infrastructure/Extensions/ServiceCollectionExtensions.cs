@@ -63,6 +63,7 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                 c.CustomSchemaIds(schemaIdStrategy);
                 c.OperationFilter<DefaultResponseOperationFilter>();
                 c.OperationFilter<JsonIgnoreQueryOperationFilter>();
+                c.OperationFilter<JsonIgnoreFormDataOperationFilter>();
                 c.DocumentFilter<ModelDocumentFilter>();
             });
         }

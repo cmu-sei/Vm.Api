@@ -531,6 +531,901 @@
         }
       }
     },
+    "/api/vms/proxmox/{id}/actions/power-on": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Power on a proxmox virtual machine",
+        "operationId": "powerOnProxmoxVirtualMachine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/power-off": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Power off a proxmox virtual machine",
+        "operationId": "powerOffProxmoxVirtualMachine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/reboot": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Reboot a proxmox virtual machine",
+        "operationId": "rebootProxmoxVirtualMachine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/shutdown": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Shutdown a proxmox virtual machine",
+        "operationId": "shutdownProxmoxVirtualMachine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/run-guest-process": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Run a process inside the guest OS of a proxmox virtual machine via qemu-guest-agent and wait for completion",
+        "operationId": "runGuestProcessOnProxmoxVirtualMachine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunGuestProcessOnProxmoxVirtualMachine"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunGuestProcessOnProxmoxVirtualMachine"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunGuestProcessOnProxmoxVirtualMachine"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuestProcessResult"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuestProcessResult"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GuestProcessResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/run-guest-process-fast": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Start a process inside the guest OS of a proxmox virtual machine via qemu-guest-agent without waiting",
+        "operationId": "runGuestProcessFastOnProxmoxVirtualMachine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunGuestProcessFastOnProxmoxVirtualMachine"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunGuestProcessFastOnProxmoxVirtualMachine"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunGuestProcessFastOnProxmoxVirtualMachine"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "integer",
+                  "format": "int64"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/read-guest-file": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Read the contents of a file from the guest OS of a proxmox virtual machine via qemu-guest-agent",
+        "operationId": "readGuestFileFromProxmoxVirtualMachine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadGuestFileFromProxmoxVirtualMachine"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadGuestFileFromProxmoxVirtualMachine"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReadGuestFileFromProxmoxVirtualMachine"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/upload-file": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Upload a file to a proxmox virtual machine via qemu-guest-agent (limited to ~60 KiB per file)",
+        "operationId": "uploadFileToProxmoxVirtualMachine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "Username": {
+                    "type": "string"
+                  },
+                  "Password": {
+                    "type": "string"
+                  },
+                  "FilePath": {
+                    "type": "string"
+                  },
+                  "Files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "binary"
+                    }
+                  }
+                }
+              },
+              "encoding": {
+                "Id": {
+                  "style": "form"
+                },
+                "Username": {
+                  "style": "form"
+                },
+                "Password": {
+                  "style": "form"
+                },
+                "FilePath": {
+                  "style": "form"
+                },
+                "Files": {
+                  "style": "form"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/clone-from-template": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Clone a proxmox virtual machine from a template",
+        "operationId": "cloneProxmoxVirtualMachineFromTemplate",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloneProxmoxVirtualMachineFromTemplate"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloneProxmoxVirtualMachineFromTemplate"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/CloneProxmoxVirtualMachineFromTemplate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloneProxmoxVirtualMachineFromTemplateResponse"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloneProxmoxVirtualMachineFromTemplateResponse"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CloneProxmoxVirtualMachineFromTemplateResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/delete": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Delete a proxmox virtual machine",
+        "operationId": "deleteProxmoxVirtualMachine",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/snapshots": {
+      "get": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Get all snapshots for a proxmox virtual machine",
+        "operationId": "getProxmoxVirtualMachineSnapshots",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProxmoxSnapshot"
+                  }
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProxmoxSnapshot"
+                  }
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProxmoxSnapshot"
+                  }
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/snapshots": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Create a snapshot of a proxmox virtual machine",
+        "operationId": "createProxmoxVirtualMachineSnapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProxmoxVirtualMachineSnapshot"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProxmoxVirtualMachineSnapshot"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProxmoxVirtualMachineSnapshot"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/snapshots/{name}/revert": {
+      "post": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Revert a proxmox virtual machine to a specific snapshot",
+        "operationId": "revertProxmoxVirtualMachineSnapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/proxmox/{id}/actions/snapshots/{name}": {
+      "delete": {
+        "tags": [
+          "Proxmox"
+        ],
+        "summary": "Delete a snapshot of a proxmox virtual machine",
+        "operationId": "deleteProxmoxVirtualMachineSnapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/vms": {
       "get": {
         "tags": [
@@ -2795,6 +3690,137 @@
         }
       }
     },
+    "/api/vms/vsphere/{id}/actions/snapshots": {
+      "post": {
+        "tags": [
+          "Vsphere"
+        ],
+        "summary": "Create a snapshot of a vsphere virtual machine",
+        "operationId": "createVsphereVirtualMachineSnapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVsphereVirtualMachineSnapshot"
+              }
+            },
+            "text/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVsphereVirtualMachineSnapshot"
+              }
+            },
+            "application/*+json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateVsphereVirtualMachineSnapshot"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/vms/vsphere/{id}/actions/snapshots/{snapshotId}": {
+      "delete": {
+        "tags": [
+          "Vsphere"
+        ],
+        "summary": "Delete a snapshot of a vsphere virtual machine",
+        "operationId": "deleteVsphereVirtualMachineSnapshot",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          },
+          {
+            "name": "snapshotId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "application/json": {
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "text/json": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Problem response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/vms/vsphere/{id}/tools": {
       "get": {
         "tags": [
@@ -3007,6 +4033,50 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "Username": {
+                    "type": "string"
+                  },
+                  "Password": {
+                    "type": "string"
+                  },
+                  "FilePath": {
+                    "type": "string"
+                  },
+                  "Files": {
+                    "type": "array",
+                    "items": {
+                      "type": "string",
+                      "format": "binary"
+                    }
+                  }
+                }
+              },
+              "encoding": {
+                "Id": {
+                  "style": "form"
+                },
+                "Username": {
+                  "style": "form"
+                },
+                "Password": {
+                  "style": "form"
+                },
+                "FilePath": {
+                  "style": "form"
+                },
+                "Files": {
+                  "style": "form"
+                }
+              }
+            }
+          }
+        },
         "responses": {
           "200": {
             "description": "OK",
@@ -3740,6 +4810,29 @@
         },
         "additionalProperties": false
       },
+      "CloneProxmoxVirtualMachineFromTemplate": {
+        "type": "object",
+        "properties": {
+          "cloneName": {
+            "type": "string",
+            "nullable": true
+          },
+          "powerOn": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CloneProxmoxVirtualMachineFromTemplateResponse": {
+        "type": "object",
+        "properties": {
+          "vmId": {
+            "type": "integer",
+            "format": "int32"
+          }
+        },
+        "additionalProperties": false
+      },
       "CloneVsphereVirtualMachineFromTemplate": {
         "type": "object",
         "properties": {
@@ -3860,6 +4953,23 @@
         },
         "additionalProperties": false
       },
+      "CreateProxmoxVirtualMachineSnapshot": {
+        "type": "object",
+        "properties": {
+          "snapshotName": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "includeRam": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateViewNetworkForm": {
         "required": [
           "name",
@@ -3923,6 +5033,23 @@
           "sessionEnd": {
             "type": "string",
             "format": "date-time"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateVsphereVirtualMachineSnapshot": {
+        "type": "object",
+        "properties": {
+          "snapshotName": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "includeMemory": {
+            "type": "boolean"
           }
         },
         "additionalProperties": false
@@ -4162,6 +5289,32 @@
         },
         "additionalProperties": false
       },
+      "ProxmoxSnapshot": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "nullable": true
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "parent": {
+            "type": "string",
+            "nullable": true
+          },
+          "vmState": {
+            "type": "boolean"
+          },
+          "snapTime": {
+            "type": "integer",
+            "format": "int64",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "ProxmoxVmInfo": {
         "type": "object",
         "properties": {
@@ -4187,6 +5340,24 @@
           "LXC"
         ],
         "type": "string"
+      },
+      "ReadGuestFileFromProxmoxVirtualMachine": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "nullable": true
+          },
+          "password": {
+            "type": "string",
+            "nullable": true
+          },
+          "guestFilePath": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
       },
       "ReadGuestFileFromVsphereVirtualMachine": {
         "type": "object",
@@ -4216,6 +5387,32 @@
         },
         "additionalProperties": false
       },
+      "RunGuestProcessFastOnProxmoxVirtualMachine": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "nullable": true
+          },
+          "password": {
+            "type": "string",
+            "nullable": true
+          },
+          "programPath": {
+            "type": "string",
+            "nullable": true
+          },
+          "arguments": {
+            "type": "string",
+            "nullable": true
+          },
+          "workingDirectory": {
+            "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
       "RunGuestProcessFastOnVsphereVirtualMachine": {
         "type": "object",
         "properties": {
@@ -4237,6 +5434,37 @@
           },
           "workingDirectory": {
             "type": "string",
+            "nullable": true
+          }
+        },
+        "additionalProperties": false
+      },
+      "RunGuestProcessOnProxmoxVirtualMachine": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "nullable": true
+          },
+          "password": {
+            "type": "string",
+            "nullable": true
+          },
+          "programPath": {
+            "type": "string",
+            "nullable": true
+          },
+          "arguments": {
+            "type": "string",
+            "nullable": true
+          },
+          "workingDirectory": {
+            "type": "string",
+            "nullable": true
+          },
+          "timeoutSeconds": {
+            "type": "integer",
+            "format": "int32",
             "nullable": true
           }
         },
