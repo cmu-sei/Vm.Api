@@ -47,7 +47,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
                     ? TimeSpan.FromSeconds(request.TimeoutSeconds.Value)
                     : TimeSpan.FromMinutes(5);
 
-                return await _proxmoxService.RunGuestProcessAsync(
+                return await _proxmoxService.RunGuestProcess(
                     vm.ProxmoxVmInfo,
                     request.ProgramPath,
                     request.Arguments,

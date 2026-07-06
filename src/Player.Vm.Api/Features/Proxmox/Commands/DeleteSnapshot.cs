@@ -38,7 +38,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
             {
                 var vm = await GetVm(request.Id, [], [AppViewPermission.RevertVms], [], cancellationToken,
                     "You do not have permission to manage snapshots for this vm.");
-                return await _proxmoxService.DeleteSnapshotAsync(vm.ProxmoxVmInfo, request.SnapshotName);
+                return await _proxmoxService.DeleteSnapshot(vm.ProxmoxVmInfo, request.SnapshotName);
             }
         }
     }

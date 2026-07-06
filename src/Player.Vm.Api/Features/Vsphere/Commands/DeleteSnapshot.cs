@@ -46,7 +46,7 @@ namespace Player.Vm.Api.Features.Vsphere
             {
                 var vm = await base.GetVm(request.Id, [], [AppViewPermission.RevertVms], [], cancellationToken,
                     "You do not have permission to manage snapshots for this vm.");
-                return await _vsphereService.DeleteSnapshotAsync(vm.Id, request.SnapshotId);
+                return await _vsphereService.DeleteSnapshot(vm.Id, request.SnapshotId);
             }
         }
     }

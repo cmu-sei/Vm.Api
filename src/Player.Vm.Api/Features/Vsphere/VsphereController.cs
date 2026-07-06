@@ -192,9 +192,8 @@ namespace Player.Vm.Api.Features.Vsphere
         [HttpPost("vms/vsphere/{id}/actions/upload-file"), DisableRequestSizeLimit]
         [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "uploadFileToVsphereVirtualMachine")]
-        public async Task<IActionResult> UploadFile([FromRoute] Guid id, [FromForm] UploadFile.Command command)
+        public async Task<IActionResult> UploadFile([FromForm] UploadFile.Command command)
         {
-            command.Id = id;
             command.Files = Request.Form.Files;
             var result = await _mediator.Send(command);
             return Json(result);
@@ -286,31 +285,6 @@ namespace Player.Vm.Api.Features.Vsphere
         {
             command.Id = id;
             var result = await _mediator.Send(command);
-            return Json(result);
-        }
-
-        /// <summary>
-        /// Clone a vsphere virtual machine from a template
-        /// </summary>
-        [HttpPost("vms/vsphere/{id}/actions/clone-from-template")]
-        [ProducesResponseType(typeof(CloneVmFromTemplate.Response), (int)HttpStatusCode.OK)]
-        [SwaggerOperation(OperationId = "cloneVsphereVirtualMachineFromTemplate")]
-        public async Task<IActionResult> CloneFromTemplate([FromRoute] Guid id, [FromBody] CloneVmFromTemplate.Command command)
-        {
-            command.Id = id;
-            var result = await _mediator.Send(command);
-            return Json(result);
-        }
-
-        /// <summary>
-        /// Delete a vsphere virtual machine
-        /// </summary>
-        [HttpPost("vms/vsphere/{id}/actions/delete")]
-        [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
-        [SwaggerOperation(OperationId = "deleteVsphereVirtualMachine")]
-        public async Task<IActionResult> Delete([FromRoute] Guid id)
-        {
-            var result = await _mediator.Send(new DeleteVm.Command { Id = id });
             return Json(result);
         }
     }

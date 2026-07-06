@@ -9,7 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc.ModelBinding;
+using Microsoft.AspNetCore.Mvc;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
@@ -23,8 +23,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
         [DataContract(Name = "UploadFileToProxmoxVirtualMachine")]
         public class Command : IRequest<string>
         {
-            [JsonIgnore]
-            [BindNever]
+            [FromRoute(Name = "id")]
             public Guid Id { get; set; }
             public string Username { get; set; }
             public string Password { get; set; }
@@ -52,7 +51,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
                     using Stream fileStream = formFile.OpenReadStream();
                     try
                     {
-                        await _proxmoxService.UploadFileToGuestAsync(
+                        await _proxmoxService.UploadFileToGuest(
                             vm.ProxmoxVmInfo,
                             $"{request.FilePath}{formFile.FileName}",
                             fileStream);

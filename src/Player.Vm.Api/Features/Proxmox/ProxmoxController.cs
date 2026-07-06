@@ -133,36 +133,10 @@ public class ProxmoxController : Controller
     [HttpPost("vms/proxmox/{id}/actions/upload-file"), DisableRequestSizeLimit]
     [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
     [SwaggerOperation(OperationId = "uploadFileToProxmoxVirtualMachine")]
-    public async Task<IActionResult> UploadFile([FromRoute] Guid id, [FromForm] UploadFile.Command command)
+    public async Task<IActionResult> UploadFile([FromForm] UploadFile.Command command)
     {
-        command.Id = id;
         command.Files = Request.Form.Files;
         var result = await _mediator.Send(command);
-        return Json(result);
-    }
-
-    /// <summary>
-    /// Clone a proxmox virtual machine from a template
-    /// </summary>
-    [HttpPost("vms/proxmox/{id}/actions/clone-from-template")]
-    [ProducesResponseType(typeof(CloneVmFromTemplate.Response), (int)HttpStatusCode.OK)]
-    [SwaggerOperation(OperationId = "cloneProxmoxVirtualMachineFromTemplate")]
-    public async Task<IActionResult> CloneFromTemplate([FromRoute] Guid id, [FromBody] CloneVmFromTemplate.Command command)
-    {
-        command.Id = id;
-        var result = await _mediator.Send(command);
-        return Json(result);
-    }
-
-    /// <summary>
-    /// Delete a proxmox virtual machine
-    /// </summary>
-    [HttpPost("vms/proxmox/{id}/actions/delete")]
-    [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
-    [SwaggerOperation(OperationId = "deleteProxmoxVirtualMachine")]
-    public async Task<IActionResult> Delete([FromRoute] Guid id)
-    {
-        var result = await _mediator.Send(new DeleteVm.Command { Id = id });
         return Json(result);
     }
 

@@ -39,7 +39,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
             {
                 var vm = await GetVm(request.Id, [], [AppViewPermission.RevertVms], [], cancellationToken,
                     "You do not have permission to revert this vm.");
-                return await _proxmoxService.RevertSnapshotAsync(vm.ProxmoxVmInfo, request.SnapshotName);
+                return await _proxmoxService.RevertSnapshot(vm.ProxmoxVmInfo, request.SnapshotName);
             }
         }
     }

@@ -40,7 +40,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
             public async Task<long> Handle(Command request, CancellationToken cancellationToken)
             {
                 var vm = await GetVmForEditing(request.Id, cancellationToken);
-                return await _proxmoxService.RunGuestProcessFastAsync(
+                return await _proxmoxService.RunGuestProcessFast(
                     vm.ProxmoxVmInfo,
                     request.ProgramPath,
                     request.Arguments);

@@ -40,7 +40,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
             {
                 var vm = await GetVm(request.Id, [], [AppViewPermission.DownloadVmFiles], [], cancellationToken,
                     "You do not have permission to download files from this vm.");
-                return await _proxmoxService.ReadGuestFileAsync(vm.ProxmoxVmInfo, request.GuestFilePath);
+                return await _proxmoxService.ReadGuestFile(vm.ProxmoxVmInfo, request.GuestFilePath);
             }
         }
     }

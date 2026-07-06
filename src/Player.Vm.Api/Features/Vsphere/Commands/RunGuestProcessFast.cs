@@ -49,7 +49,7 @@ namespace Player.Vm.Api.Features.Vsphere
             {
                 var vm = await base.GetVmForEditing(request.Id, cancellationToken);
 
-                return await _vsphereService.RunGuestProcessFastAsync(
+                return await _vsphereService.RunGuestProcessFast(
                     vm.Id,
                     request.Username,
                     request.Password,

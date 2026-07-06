@@ -28,18 +28,15 @@ public interface IProxmoxService
     Task<string> RebootVm(ProxmoxVmInfo info);
     Task<string> ShutdownVm(ProxmoxVmInfo info);
 
-    Task<GuestProcessResult> RunGuestProcessAsync(ProxmoxVmInfo info, string command, string arguments, TimeSpan timeout);
-    Task<long> RunGuestProcessFastAsync(ProxmoxVmInfo info, string command, string arguments);
-    Task<string> ReadGuestFileAsync(ProxmoxVmInfo info, string guestFilePath);
-    Task<string> UploadFileToGuestAsync(ProxmoxVmInfo info, string guestFilePath, Stream content);
-
-    Task<int> CloneVmFromTemplateAsync(ProxmoxVmInfo sourceInfo, string cloneName, bool powerOn);
-    Task<string> DeleteVmAsync(ProxmoxVmInfo info);
+    Task<GuestProcessResult> RunGuestProcess(ProxmoxVmInfo info, string command, string arguments, TimeSpan timeout);
+    Task<long> RunGuestProcessFast(ProxmoxVmInfo info, string command, string arguments);
+    Task<string> ReadGuestFile(ProxmoxVmInfo info, string guestFilePath);
+    Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content);
 
     Task<List<ProxmoxSnapshot>> GetSnapshots(ProxmoxVmInfo info);
-    Task<string> CreateSnapshotAsync(ProxmoxVmInfo info, string snapshotName, string description, bool includeRam);
-    Task<string> RevertSnapshotAsync(ProxmoxVmInfo info, string snapshotName);
-    Task<string> DeleteSnapshotAsync(ProxmoxVmInfo info, string snapshotName);
+    Task<string> CreateSnapshot(ProxmoxVmInfo info, string snapshotName, string description, bool includeRam);
+    Task<string> RevertSnapshot(ProxmoxVmInfo info, string snapshotName);
+    Task<string> DeleteSnapshot(ProxmoxVmInfo info, string snapshotName);
 }
 
 public class ProxmoxService : IProxmoxService
@@ -190,9 +187,9 @@ public class ProxmoxService : IProxmoxService
         return $"vmid {info.Id} shutdown";
     }
 
-    public async Task<GuestProcessResult> RunGuestProcessAsync(ProxmoxVmInfo info, string command, string arguments, TimeSpan timeout)
+    public async Task<GuestProcessResult> RunGuestProcess(ProxmoxVmInfo info, string command, string arguments, TimeSpan timeout)
     {
-        EnsureQemu(info, nameof(RunGuestProcessAsync));
+        EnsureQemu(info, nameof(RunGuestProcess));
 
         var commandList = BuildAgentCommand(command, arguments);
         var execResult = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList);
@@ -201,7 +198,7 @@ public class ProxmoxService : IProxmoxService
 
         long pid = (long)execResult.Response.data.pid;
         var deadline = DateTime.UtcNow + timeout;
-        const int pollMs = 500;
+        var pollMs = _options.GuestProcessPollMs;
 
         while (true)
         {
@@ -242,9 +239,9 @@ public class ProxmoxService : IProxmoxService
         }
     }
 
-    public async Task<long> RunGuestProcessFastAsync(ProxmoxVmInfo info, string command, string arguments)
+    public async Task<long> RunGuestProcessFast(ProxmoxVmInfo info, string command, string arguments)
     {
-        EnsureQemu(info, nameof(RunGuestProcessFastAsync));
+        EnsureQemu(info, nameof(RunGuestProcessFast));
 
         var commandList = BuildAgentCommand(command, arguments);
         var execResult = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList);
@@ -254,9 +251,9 @@ public class ProxmoxService : IProxmoxService
         return (long)execResult.Response.data.pid;
     }
 
-    public async Task<string> ReadGuestFileAsync(ProxmoxVmInfo info, string guestFilePath)
+    public async Task<string> ReadGuestFile(ProxmoxVmInfo info, string guestFilePath)
     {
-        EnsureQemu(info, nameof(ReadGuestFileAsync));
+        EnsureQemu(info, nameof(ReadGuestFile));
 
         var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath);
         if (!result.IsSuccessStatusCode)
@@ -267,11 +264,11 @@ public class ProxmoxService : IProxmoxService
         return content;
     }
 
-    public async Task<string> UploadFileToGuestAsync(ProxmoxVmInfo info, string guestFilePath, Stream content)
+    public async Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content)
     {
-        EnsureQemu(info, nameof(UploadFileToGuestAsync));
+        EnsureQemu(info, nameof(UploadFileToGuest));
 
-        const int maxBytes = 60 * 1024;
+        var maxBytes = _options.FileUploadMaxBytes;
         using var ms = new MemoryStream();
         await content.CopyToAsync(ms);
         var buffer = ms.ToArray();
@@ -285,60 +282,6 @@ public class ProxmoxService : IProxmoxService
             throw new Exception($"QGA file-write failed for vmid={info.Id} path={guestFilePath}: {result.GetError()}");
 
         return $"wrote {buffer.Length} bytes to {guestFilePath} on vmid={info.Id}";
-    }
-
-    public async Task<int> CloneVmFromTemplateAsync(ProxmoxVmInfo sourceInfo, string cloneName, bool powerOn)
-    {
-        EnsureQemu(sourceInfo, nameof(CloneVmFromTemplateAsync));
-
-        var nextIdResult = await _pveClient.Cluster.Nextid.Nextid();
-        if (!nextIdResult.IsSuccessStatusCode)
-            throw new Exception($"Cluster.Nextid failed: {nextIdResult.GetError()}");
-
-        int newId = int.Parse((string)nextIdResult.Response.data);
-
-        var cloneResult = await _pveClient.Nodes[sourceInfo.Node].Qemu[sourceInfo.Id].Clone.CloneVm(
-            newid: newId,
-            name: cloneName,
-            full: true);
-        await WaitAndThrow(cloneResult, $"Clone vmid={sourceInfo.Id} -> {newId}");
-
-        if (powerOn)
-        {
-            var startResult = await _pveClient.Nodes[sourceInfo.Node].Qemu[newId].Status.Start.VmStart();
-            await WaitAndThrow(startResult, $"PowerOn cloned vmid={newId}");
-        }
-
-        _proxmoxStateService.CheckState();
-        return newId;
-    }
-
-    public async Task<string> DeleteVmAsync(ProxmoxVmInfo info)
-    {
-        Result task;
-
-        var statusResult = info.Type == ProxmoxVmType.LXC
-            ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Status.Current.VmStatus()
-            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Status.Current.VmStatus();
-
-        bool isRunning = statusResult.IsSuccessStatusCode &&
-            ((string)statusResult.Response.data.status) == "running";
-
-        if (isRunning)
-        {
-            task = info.Type == ProxmoxVmType.LXC
-                ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Status.Stop.VmStop()
-                : await _pveClient.Nodes[info.Node].Qemu[info.Id].Status.Stop.VmStop();
-            await WaitAndThrow(task, $"Stop before delete vmid={info.Id}");
-        }
-
-        task = info.Type == ProxmoxVmType.LXC
-            ? await _pveClient.Nodes[info.Node].Lxc[info.Id].DestroyVm()
-            : await _pveClient.Nodes[info.Node].Qemu[info.Id].DestroyVm();
-        await WaitAndThrow(task, $"Destroy vmid={info.Id}");
-
-        _proxmoxStateService.CheckState();
-        return $"vmid {info.Id} destroyed";
     }
 
     public async Task<List<ProxmoxSnapshot>> GetSnapshots(ProxmoxVmInfo info)
@@ -370,7 +313,7 @@ public class ProxmoxService : IProxmoxService
         return list;
     }
 
-    public async Task<string> CreateSnapshotAsync(ProxmoxVmInfo info, string snapshotName, string description, bool includeRam)
+    public async Task<string> CreateSnapshot(ProxmoxVmInfo info, string snapshotName, string description, bool includeRam)
     {
         Result result;
         if (info.Type == ProxmoxVmType.LXC)
@@ -387,7 +330,7 @@ public class ProxmoxService : IProxmoxService
         return $"snapshot {snapshotName} created on vmid {info.Id}";
     }
 
-    public async Task<string> RevertSnapshotAsync(ProxmoxVmInfo info, string snapshotName)
+    public async Task<string> RevertSnapshot(ProxmoxVmInfo info, string snapshotName)
     {
         var result = info.Type == ProxmoxVmType.LXC
             ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot[snapshotName].Rollback.Rollback()
@@ -398,7 +341,7 @@ public class ProxmoxService : IProxmoxService
         return $"snapshot {snapshotName} restored on vmid {info.Id}";
     }
 
-    public async Task<string> DeleteSnapshotAsync(ProxmoxVmInfo info, string snapshotName)
+    public async Task<string> DeleteSnapshot(ProxmoxVmInfo info, string snapshotName)
     {
         var result = info.Type == ProxmoxVmType.LXC
             ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot[snapshotName].Delsnapshot()

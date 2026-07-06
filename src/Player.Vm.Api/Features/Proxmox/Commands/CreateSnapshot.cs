@@ -40,7 +40,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
             {
                 var vm = await GetVm(request.Id, [], [AppViewPermission.RevertVms], [], cancellationToken,
                     "You do not have permission to manage snapshots for this vm.");
-                return await _proxmoxService.CreateSnapshotAsync(
+                return await _proxmoxService.CreateSnapshot(
                     vm.ProxmoxVmInfo,
                     request.SnapshotName,
                     request.Description,

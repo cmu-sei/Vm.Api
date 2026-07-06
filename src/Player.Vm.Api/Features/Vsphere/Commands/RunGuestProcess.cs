@@ -54,7 +54,7 @@ namespace Player.Vm.Api.Features.Vsphere
                     ? TimeSpan.FromSeconds(request.TimeoutSeconds.Value)
                     : TimeSpan.FromMinutes(5);
 
-                return await _vsphereService.RunGuestProcessAsync(
+                return await _vsphereService.RunGuestProcess(
                     vm.Id,
                     request.Username,
                     request.Password,

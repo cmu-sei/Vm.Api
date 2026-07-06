@@ -48,7 +48,7 @@ namespace Player.Vm.Api.Features.Vsphere
             {
                 await base.GetVm(request.Id, [], [AppViewPermission.DownloadVmFiles], [], cancellationToken, "You do not have permission to download files from this vm.");
 
-                return await _vsphereService.ReadGuestFileAsync(
+                return await _vsphereService.ReadGuestFile(
                     request.Id,
                     request.Username,
                     request.Password,

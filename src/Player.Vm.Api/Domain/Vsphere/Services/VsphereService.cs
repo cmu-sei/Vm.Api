@@ -46,13 +46,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task RevertToCurrentSnapshot(Guid vmId);
         Task<List<VmSnapshot>> GetSnapshots(Guid vmId);
         Task RevertToSnapshot(Guid vmId, string snapshotMoRefValue);
-        Task<string> CreateSnapshotAsync(Guid vmId, string snapshotName, string description, bool includeMemory);
-        Task<string> DeleteSnapshotAsync(Guid vmId, string snapshotMoRefValue);
-        Task<GuestProcessResult> RunGuestProcessAsync(Guid vmId, string username, string password, string command, string arguments, string workingDirectory, TimeSpan timeout);
-        Task<long> RunGuestProcessFastAsync(Guid vmId, string username, string password, string command, string arguments, string workingDirectory);
-        Task<string> ReadGuestFileAsync(Guid vmId, string username, string password, string guestFilePath);
-        Task<Guid> CloneVmFromTemplateAsync(Guid sourceVmId, string cloneName, bool powerOn);
-        Task<string> DeleteVmAsync(Guid vmId);
+        Task<string> CreateSnapshot(Guid vmId, string snapshotName, string description, bool includeMemory);
+        Task<string> DeleteSnapshot(Guid vmId, string snapshotMoRefValue);
+        Task<GuestProcessResult> RunGuestProcess(Guid vmId, string username, string password, string command, string arguments, string workingDirectory, TimeSpan timeout);
+        Task<long> RunGuestProcessFast(Guid vmId, string username, string password, string command, string arguments, string workingDirectory);
+        Task<string> ReadGuestFile(Guid vmId, string username, string password, string guestFilePath);
     }
 
     public class VsphereService : IVsphereService
@@ -687,16 +685,17 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             var aggregate = await GetVm(id);
 
             // GetVm returns null when the VM isn't in the connection cache yet (e.g. between connect-loop
-            // refreshes). Guard against it so we surface a clear, retryable message instead of NRE-ing on
-            // aggregate.MachineReference below.
-            if (aggregate?.MachineReference == null)
+            // refreshes), so null-condition the reference and bail with a clear, retryable message instead
+            // of NRE-ing below.
+            var vmReference = aggregate?.MachineReference;
+
+            if (vmReference == null)
             {
                 var errorMessage = $"could not upload file, vmReference is null";
                 _logger.LogDebug(errorMessage);
                 return errorMessage;
             }
 
-            var vmReference = aggregate.MachineReference;
             //retrieve the properties specificied
             RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
                 aggregate.Connection.Props,
@@ -1343,7 +1342,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _logger.LogInformation("RevertToSnapshot vm {vmId} reverted to snapshot '{MoRef}'", vmId, snapshotMoRefValue);
         }
 
-        public async Task<string> CreateSnapshotAsync(Guid vmId, string snapshotName, string description, bool includeMemory)
+        public async Task<string> CreateSnapshot(Guid vmId, string snapshotName, string description, bool includeMemory)
         {
             var aggregate = await this.GetVm(vmId);
             // quiesce=false matches the existing RevertToSnapshot conservatism — let the caller add VM Tools quiesce later if needed.
@@ -1357,7 +1356,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return $"snapshot {snapshotName} created on vm {vmId}";
         }
 
-        public async Task<string> DeleteSnapshotAsync(Guid vmId, string snapshotIdentifier)
+        public async Task<string> DeleteSnapshot(Guid vmId, string snapshotIdentifier)
         {
             var aggregate = await this.GetVm(vmId);
             var snapshotMoRefValue = await ResolveSnapshotMoRefValue(vmId, snapshotIdentifier);
@@ -1449,9 +1448,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return (aggregate, auth, processManager, fileManager);
         }
 
-        public async Task<long> RunGuestProcessFastAsync(Guid vmId, string username, string password, string command, string arguments, string workingDirectory)
+        public async Task<long> RunGuestProcessFast(Guid vmId, string username, string password, string command, string arguments, string workingDirectory)
         {
-            _logger.LogDebug("RunGuestProcessFastAsync called for vm {vmId}", vmId);
+            _logger.LogDebug("RunGuestProcessFast called for vm {vmId}", vmId);
 
             var (aggregate, auth, processManager, _) = await PrepareGuestOperations(vmId, username, password);
 
@@ -1465,9 +1464,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return await aggregate.Connection.Client.StartProgramInGuestAsync(processManager, aggregate.MachineReference, auth, spec);
         }
 
-        public async Task<GuestProcessResult> RunGuestProcessAsync(Guid vmId, string username, string password, string command, string arguments, string workingDirectory, TimeSpan timeout)
+        public async Task<GuestProcessResult> RunGuestProcess(Guid vmId, string username, string password, string command, string arguments, string workingDirectory, TimeSpan timeout)
         {
-            _logger.LogDebug("RunGuestProcessAsync called for vm {vmId}", vmId);
+            _logger.LogDebug("RunGuestProcess called for vm {vmId}", vmId);
 
             var capturedStdoutPath = $"/tmp/player-vm-api-stdout-{Guid.NewGuid():N}";
             var redirectedArgs = $"{arguments ?? string.Empty} > {capturedStdoutPath} 2>&1".Trim();
@@ -1524,9 +1523,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             };
         }
 
-        public async Task<string> ReadGuestFileAsync(Guid vmId, string username, string password, string guestFilePath)
+        public async Task<string> ReadGuestFile(Guid vmId, string username, string password, string guestFilePath)
         {
-            _logger.LogDebug("ReadGuestFileAsync called for vm {vmId}", vmId);
+            _logger.LogDebug("ReadGuestFile called for vm {vmId}", vmId);
 
             var (aggregate, auth, _, fileManager) = await PrepareGuestOperations(vmId, username, password);
             return await ReadGuestFileInternal(aggregate, fileManager, auth, guestFilePath);
@@ -1566,120 +1565,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             client.Timeout = TimeSpan.FromMinutes(timeoutMinutes);
 
             return await client.GetStringAsync(url);
-        }
-
-        #endregion
-
-        #region Lifecycle
-
-        public async Task<Guid> CloneVmFromTemplateAsync(Guid sourceVmId, string cloneName, bool powerOn)
-        {
-            _logger.LogDebug("CloneVmFromTemplateAsync called for source vm {sourceVmId} cloneName {cloneName}", sourceVmId, cloneName);
-
-            var aggregate = await GetVm(sourceVmId);
-            if (aggregate?.MachineReference == null)
-                throw new Exception("Could not get source vm reference");
-
-            // Retrieve source VM's parent folder + resourcePool
-            var response = await aggregate.Connection.Client.RetrievePropertiesAsync(
-                aggregate.Connection.Props,
-                VmFilter(aggregate.MachineReference, "parent resourcePool runtime.host"));
-
-            var oc = response.returnval[0];
-            var parentFolder = oc.propSet.FirstOrDefault(p => p.name == "parent")?.val as ManagedObjectReference;
-            var resourcePool = oc.propSet.FirstOrDefault(p => p.name == "resourcePool")?.val as ManagedObjectReference;
-            var host = oc.propSet.FirstOrDefault(p => p.name == "runtime.host")?.val as ManagedObjectReference;
-
-            if (parentFolder == null)
-                throw new Exception("Could not determine parent folder for source vm");
-
-            var cloneSpec = new VirtualMachineCloneSpec
-            {
-                location = new VirtualMachineRelocateSpec
-                {
-                    pool = resourcePool,
-                    host = host
-                },
-                powerOn = powerOn,
-                template = false
-            };
-
-            var task = await aggregate.Connection.Client.CloneVM_TaskAsync(aggregate.MachineReference, parentFolder, cloneName, cloneSpec);
-            var info = await WaitForVimTask(task, aggregate.Connection);
-
-            if (info.state == TaskInfoState.error)
-                throw new Exception(info.error.localizedMessage);
-
-            var clonedRef = info.result as ManagedObjectReference;
-            if (clonedRef == null)
-                throw new Exception("Clone task succeeded but did not return a vm reference");
-
-            // Read config.uuid off the cloned vm to return its Guid
-            var cloneProps = await aggregate.Connection.Client.RetrievePropertiesAsync(
-                aggregate.Connection.Props,
-                VmFilter(clonedRef, "config.uuid"));
-            var uuidProp = cloneProps.returnval[0].propSet.FirstOrDefault(p => p.name == "config.uuid");
-
-            if (uuidProp == null || !Guid.TryParse(uuidProp.val?.ToString(), out var cloneId))
-                throw new Exception("Could not read uuid of cloned vm");
-
-            return cloneId;
-        }
-
-        public async Task<string> DeleteVmAsync(Guid vmId)
-        {
-            _logger.LogInformation("DeleteVmAsync called for vm {vmId}", vmId);
-
-            var aggregate = await GetVm(vmId);
-            if (aggregate?.MachineReference == null)
-            {
-                _logger.LogWarning("DeleteVmAsync could not resolve a machine reference for vm {vmId}", vmId);
-                return "vm not found";
-            }
-
-            // Power off if running. vSphere refuses to destroy a powered-on VM, so this must complete
-            // (or the VM must already be off) before the destroy below.
-            var state = await GetPowerState(vmId);
-            _logger.LogInformation("DeleteVmAsync vm {vmId} power state is {State}", vmId, state);
-            if (state == "on")
-            {
-                try
-                {
-                    _logger.LogInformation("DeleteVmAsync powering off vm {vmId} before destroy", vmId);
-                    var powerOffTask = await aggregate.Connection.Client.PowerOffVM_TaskAsync(aggregate.MachineReference);
-                    var powerOffInfo = await WaitForVimTask(powerOffTask, aggregate.Connection);
-                    if (powerOffInfo.state == TaskInfoState.error)
-                    {
-                        // Surface the failure instead of swallowing it: destroy will fail on a still-on VM,
-                        // and the old code hid the real reason behind that secondary failure.
-                        throw new Exception(powerOffInfo.error?.localizedMessage ?? "Power off task failed");
-                    }
-                    _logger.LogInformation("DeleteVmAsync powered off vm {vmId}", vmId);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "DeleteVmAsync power off before delete failed for vm {vmId}", vmId);
-                    throw;
-                }
-            }
-
-            // Destroy_Task is the ManagedEntity operation valid for a VirtualMachine; it removes the VM
-            // from inventory AND deletes its files from the datastore. The previous call,
-            // UnregisterAndDestroy_Task, is a Folder operation, so vCenter rejected it for a VirtualMachine
-            // MoRef with "The request refers to an unexpected or unknown type."
-            _logger.LogInformation("DeleteVmAsync issuing Destroy for vm {vmId}", vmId);
-            var task = await aggregate.Connection.Client.Destroy_TaskAsync(aggregate.MachineReference);
-            var info = await WaitForVimTask(task, aggregate.Connection);
-
-            if (info.state == TaskInfoState.error)
-            {
-                var message = info.error?.localizedMessage ?? "Destroy task failed";
-                _logger.LogError("DeleteVmAsync destroy task for vm {vmId} failed: {Message}", vmId, message);
-                throw new Exception(message);
-            }
-
-            _logger.LogInformation("DeleteVmAsync destroyed vm {vmId}", vmId);
-            return "deleted";
         }
 
         #endregion

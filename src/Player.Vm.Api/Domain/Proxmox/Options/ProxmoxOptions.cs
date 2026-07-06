@@ -10,5 +10,13 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
         public int Port { get; set; }
         public string Token { get; set; }
         public int StateRefreshIntervalSeconds { get; set; }
+
+        // Maximum payload accepted by UploadFileToGuest. The QEMU guest agent's file-write is limited
+        // (~64 KiB per call), so this defaults to 60 KiB to stay safely under that ceiling.
+        public int FileUploadMaxBytes { get; set; } = 61440;
+
+        // Interval, in milliseconds, between guest-agent exec-status polls while waiting for a
+        // RunGuestProcess command to finish.
+        public int GuestProcessPollMs { get; set; } = 500;
     }
 }
