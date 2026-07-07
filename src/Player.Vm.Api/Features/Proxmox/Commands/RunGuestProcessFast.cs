@@ -20,8 +20,6 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
         {
             [JsonIgnore]
             public Guid Id { get; set; }
-            public string Username { get; set; }
-            public string Password { get; set; }
             public string ProgramPath { get; set; }
             public string Arguments { get; set; }
             public string WorkingDirectory { get; set; }

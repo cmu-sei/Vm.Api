@@ -25,8 +25,6 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
         {
             [FromRoute(Name = "id")]
             public Guid Id { get; set; }
-            public string Username { get; set; }
-            public string Password { get; set; }
             public string FilePath { get; set; }
             public IFormFileCollection Files { get; set; }
         }

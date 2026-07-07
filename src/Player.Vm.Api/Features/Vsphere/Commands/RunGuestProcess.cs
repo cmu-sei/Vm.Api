@@ -8,6 +8,7 @@ using MediatR;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
 using AutoMapper;
+using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Domain.Services;
@@ -34,9 +35,11 @@ namespace Player.Vm.Api.Features.Vsphere
         public class Handler : BaseHandler, IRequestHandler<Command, GuestProcessResult>
         {
             private readonly IVsphereService _vsphereService;
+            private readonly VsphereOptions _options;
 
             public Handler(
                 IVsphereService vsphereService,
+                VsphereOptions options,
                 IVmService vmService,
                 IMapper mapper,
                 IPlayerService playerService,
@@ -45,6 +48,7 @@ namespace Player.Vm.Api.Features.Vsphere
                 base(mapper, vsphereService, playerService, principal, vmService, viewService)
             {
                 _vsphereService = vsphereService;
+                _options = options;
             }
 
             public async Task<GuestProcessResult> Handle(Command request, CancellationToken cancellationToken)
@@ -52,7 +56,7 @@ namespace Player.Vm.Api.Features.Vsphere
                 var vm = await base.GetVmForEditing(request.Id, cancellationToken);
                 var timeout = request.TimeoutSeconds.HasValue
                     ? TimeSpan.FromSeconds(request.TimeoutSeconds.Value)
-                    : TimeSpan.FromMinutes(5);
+                    : TimeSpan.FromSeconds(_options.GuestProcessDefaultTimeoutSeconds);
 
                 return await _vsphereService.RunGuestProcess(
                     vm.Id,

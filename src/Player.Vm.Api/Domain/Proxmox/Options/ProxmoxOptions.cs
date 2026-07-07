@@ -18,5 +18,7 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
         // Interval, in milliseconds, between guest-agent exec-status polls while waiting for a
         // RunGuestProcess command to finish.
         public int GuestProcessPollMs { get; set; } = 500;
+
+        public int GuestProcessDefaultTimeoutSeconds { get; set; } = 300;
     }
 }

@@ -1667,9 +1667,9 @@ namespace Player.Vm.Api
         /// </summary>
         /// <returns>OK</returns>
         /// <exception cref="ApiException">A server side error occurred.</exception>
-        public virtual System.Threading.Tasks.Task<string> UploadFileToProxmoxVirtualMachineAsync(System.Guid id, string username, string password, string filePath, System.Collections.Generic.IEnumerable<FileParameter> files)
+        public virtual System.Threading.Tasks.Task<string> UploadFileToProxmoxVirtualMachineAsync(System.Guid id, string filePath, System.Collections.Generic.IEnumerable<FileParameter> files)
         {
-            return UploadFileToProxmoxVirtualMachineAsync(id, username, password, filePath, files, System.Threading.CancellationToken.None);
+            return UploadFileToProxmoxVirtualMachineAsync(id, filePath, files, System.Threading.CancellationToken.None);
         }
 
         /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
@@ -1678,7 +1678,7 @@ namespace Player.Vm.Api
         /// </summary>
         /// <returns>OK</returns>
         /// <exception cref="ApiException">A server side error occurred.</exception>
-        public virtual async System.Threading.Tasks.Task<string> UploadFileToProxmoxVirtualMachineAsync(System.Guid id, string username, string password, string filePath, System.Collections.Generic.IEnumerable<FileParameter> files, System.Threading.CancellationToken cancellationToken)
+        public virtual async System.Threading.Tasks.Task<string> UploadFileToProxmoxVirtualMachineAsync(System.Guid id, string filePath, System.Collections.Generic.IEnumerable<FileParameter> files, System.Threading.CancellationToken cancellationToken)
         {
             if (id == null)
                 throw new System.ArgumentNullException("id");
@@ -1693,20 +1693,6 @@ namespace Player.Vm.Api
                     var content_ = new System.Net.Http.MultipartFormDataContent(boundary_);
                     content_.Headers.Remove("Content-Type");
                     content_.Headers.TryAddWithoutValidation("Content-Type", "multipart/form-data; boundary=" + boundary_);
-
-                    if (username == null)
-                        throw new System.ArgumentNullException("username");
-                    else
-                    {
-                        content_.Add(new System.Net.Http.StringContent(ConvertToString(username, System.Globalization.CultureInfo.InvariantCulture)), "Username");
-                    }
-
-                    if (password == null)
-                        throw new System.ArgumentNullException("password");
-                    else
-                    {
-                        content_.Add(new System.Net.Http.StringContent(ConvertToString(password, System.Globalization.CultureInfo.InvariantCulture)), "Password");
-                    }
 
                     if (filePath == null)
                         throw new System.ArgumentNullException("filePath");

@@ -356,7 +356,9 @@ public class ProxmoxService : IProxmoxService
         if (!result.IsSuccessStatusCode)
             throw new Exception($"{operation} failed: {result.GetError()}");
 
-        await _pveClient.WaitForTaskToFinishAsync(result);
+        var finished = await Extensions.ProxmoxExtensions.WaitForTaskToFinish(_pveClient, result);
+        if (!finished)
+            throw new TimeoutException($"{operation} timed out waiting for the Proxmox task to finish.");
     }
 
     private static void EnsureQemu(ProxmoxVmInfo info, string operation)

@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Net.Http;
 using System.IO;
@@ -63,10 +64,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private readonly IConfiguration _configuration;
         private readonly IConnectionService _connectionService;
         private readonly IMapper _mapper;
+        private readonly VsphereOptions _vsphereOptions;
 
         public VsphereService(
                 IOptions<RewriteHostOptions> rewriteHostOptions,
                 ILogger<VsphereService> logger,
+                VsphereOptions vsphereOptions,
                 IConfiguration configuration,
                 IConnectionService connectionService,
                 IMapper mapper
@@ -77,6 +80,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _connectionService = connectionService;
             _configuration = configuration;
             _mapper = mapper;
+            _vsphereOptions = vsphereOptions;
         }
 
         public async Task<string> GetConsoleUrl(VsphereVirtualMachine machine)
@@ -745,21 +749,14 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                         fileTransferUrl = "https://" + hostName + fileTransferUrl.Substring(s);
                     }
 
-                    // http put to url. ESXi hosts present a self-signed cert, so bypass cert
-                    // validation here exactly as ReadGuestFileInternal does for the download side;
-                    // without this the PUT fails with "The SSL connection could not be established."
-                    using (var httpClientHandler = new HttpClientHandler
-                    {
-                        ServerCertificateCustomValidationCallback = (_, _, _, _) => true
-                    })
+                    using (var httpClientHandler = CreateGuestFileHttpClientHandler())
                     {
                         using (var httpClient = new HttpClient(httpClientHandler))
                         {
                             httpClient.DefaultRequestHeaders.Accept.Clear();
                             using (MemoryStream ms = new MemoryStream())
                             {
-                                var timeout = _configuration.GetSection("vmOptions").GetValue("Timeout", 3);
-                                httpClient.Timeout = TimeSpan.FromMinutes(timeout);
+                                httpClient.Timeout = GetGuestFileTransferTimeout();
                                 fileStream.CopyTo(ms);
                                 var fileContent = new ByteArrayContent(ms.ToArray());
                                 _logger.LogDebug("UploadFileToVm Upload URL:  " + fileTransferUrl);
@@ -864,12 +861,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         private async Task<TaskInfo> WaitForVimTask(ManagedObjectReference task, VsphereConnection connection)
         {
-            // Bound how long we will poll a vCenter task. Without this the loop ran forever whenever a
-            // task stayed queued/running (the old "timeout" counter was never checked), so a stuck
-            // PowerOff/Destroy would hang the request until the caller gave up. Configurable via
-            // vmOptions:TaskTimeoutMinutes; defaults to 10 minutes.
-            var timeoutMinutes = _configuration.GetSection("vmOptions").GetValue("TaskTimeoutMinutes", 10);
-            var deadline = DateTime.UtcNow.AddMinutes(timeoutMinutes);
+            var timeoutMinutes = _vsphereOptions.TaskTimeoutMinutes;
+            var hasTimeout = timeoutMinutes > 0;
+            var deadline = hasTimeout ? DateTime.UtcNow.AddMinutes(timeoutMinutes) : DateTime.MaxValue;
 
             var taskKey = task?.Value;
             TaskInfo info = new TaskInfo();
@@ -882,7 +876,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 info = await GetVimTaskInfo(task, connection);
                 polls++;
 
-                if (DateTime.UtcNow >= deadline &&
+                if (hasTimeout && DateTime.UtcNow >= deadline &&
                     (info.state == TaskInfoState.running || info.state == TaskInfoState.queued))
                 {
                     _logger.LogWarning(
@@ -1468,7 +1462,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         {
             _logger.LogDebug("RunGuestProcess called for vm {vmId}", vmId);
 
-            var capturedStdoutPath = $"/tmp/player-vm-api-stdout-{Guid.NewGuid():N}";
+            var capturedStdoutPath = CombineGuestTempPath($"player-vm-api-stdout-{Guid.NewGuid():N}");
             var redirectedArgs = $"{arguments ?? string.Empty} > {capturedStdoutPath} 2>&1".Trim();
 
             var (aggregate, auth, processManager, fileManager) = await PrepareGuestOperations(vmId, username, password);
@@ -1556,15 +1550,38 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 url = "https://" + hostName + url.Substring(s);
             }
 
-            using var handler = new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = (_, _, _, _) => true
-            };
+            using var handler = CreateGuestFileHttpClientHandler();
             using var client = new HttpClient(handler);
-            var timeoutMinutes = _configuration.GetSection("vmOptions").GetValue("Timeout", 3);
-            client.Timeout = TimeSpan.FromMinutes(timeoutMinutes);
+            client.Timeout = GetGuestFileTransferTimeout();
 
             return await client.GetStringAsync(url);
+        }
+
+        private HttpClientHandler CreateGuestFileHttpClientHandler()
+        {
+            var handler = new HttpClientHandler();
+            if (_vsphereOptions.SkipGuestFileCertificateValidation)
+                handler.ServerCertificateCustomValidationCallback = (_, _, _, _) => true;
+
+            return handler;
+        }
+
+        private TimeSpan GetGuestFileTransferTimeout()
+        {
+            return _vsphereOptions.GuestFileTransferTimeoutMinutes > 0
+                ? TimeSpan.FromMinutes(_vsphereOptions.GuestFileTransferTimeoutMinutes)
+                : Timeout.InfiniteTimeSpan;
+        }
+
+        private string CombineGuestTempPath(string fileName)
+        {
+            var tempPath = string.IsNullOrWhiteSpace(_vsphereOptions.GuestProcessTempPath)
+                ? Path.GetTempPath()
+                : _vsphereOptions.GuestProcessTempPath;
+
+            tempPath = tempPath.TrimEnd('/', '\\');
+            var separator = tempPath.Contains('\\') ? "\\" : "/";
+            return $"{tempPath}{separator}{fileName}";
         }
 
         #endregion

@@ -302,7 +302,7 @@ namespace Player.Vm.Api
         /// </summary>
         /// <returns>OK</returns>
         /// <exception cref="ApiException">A server side error occurred.</exception>
-        System.Threading.Tasks.Task<string> UploadFileToProxmoxVirtualMachineAsync(System.Guid id, string username, string password, string filePath, System.Collections.Generic.IEnumerable<FileParameter> files);
+        System.Threading.Tasks.Task<string> UploadFileToProxmoxVirtualMachineAsync(System.Guid id, string filePath, System.Collections.Generic.IEnumerable<FileParameter> files);
 
         /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
         /// <summary>
@@ -310,7 +310,7 @@ namespace Player.Vm.Api
         /// </summary>
         /// <returns>OK</returns>
         /// <exception cref="ApiException">A server side error occurred.</exception>
-        System.Threading.Tasks.Task<string> UploadFileToProxmoxVirtualMachineAsync(System.Guid id, string username, string password, string filePath, System.Collections.Generic.IEnumerable<FileParameter> files, System.Threading.CancellationToken cancellationToken);
+        System.Threading.Tasks.Task<string> UploadFileToProxmoxVirtualMachineAsync(System.Guid id, string filePath, System.Collections.Generic.IEnumerable<FileParameter> files, System.Threading.CancellationToken cancellationToken);
 
         /// <summary>
         /// Clone a proxmox virtual machine from a template
@@ -1924,12 +1924,6 @@ namespace Player.Vm.Api
     public partial class ReadGuestFileFromProxmoxVirtualMachine
     {
 
-        [System.Text.Json.Serialization.JsonPropertyName("username")]
-        public string Username { get; set; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("password")]
-        public string Password { get; set; }
-
         [System.Text.Json.Serialization.JsonPropertyName("guestFilePath")]
         public string GuestFilePath { get; set; }
 
@@ -1962,12 +1956,6 @@ namespace Player.Vm.Api
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.7.1.0 (NJsonSchema v11.6.1.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class RunGuestProcessFastOnProxmoxVirtualMachine
     {
-
-        [System.Text.Json.Serialization.JsonPropertyName("username")]
-        public string Username { get; set; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("password")]
-        public string Password { get; set; }
 
         [System.Text.Json.Serialization.JsonPropertyName("programPath")]
         public string ProgramPath { get; set; }
@@ -2004,12 +1992,6 @@ namespace Player.Vm.Api
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.7.1.0 (NJsonSchema v11.6.1.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class RunGuestProcessOnProxmoxVirtualMachine
     {
-
-        [System.Text.Json.Serialization.JsonPropertyName("username")]
-        public string Username { get; set; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("password")]
-        public string Password { get; set; }
 
         [System.Text.Json.Serialization.JsonPropertyName("programPath")]
         public string ProgramPath { get; set; }

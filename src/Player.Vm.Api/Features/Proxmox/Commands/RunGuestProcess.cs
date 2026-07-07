@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using Player.Vm.Api.Data;
+using Player.Vm.Api.Domain.Proxmox.Options;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Domain.Vsphere.Models;
@@ -21,9 +22,6 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
         {
             [JsonIgnore]
             public Guid Id { get; set; }
-            // Username/Password retained for vSphere parity; QGA runs as root and ignores them.
-            public string Username { get; set; }
-            public string Password { get; set; }
             public string ProgramPath { get; set; }
             public string Arguments { get; set; }
             public string WorkingDirectory { get; set; }
@@ -33,11 +31,13 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
         public class Handler : BaseHandler, IRequestHandler<Command, GuestProcessResult>
         {
             private readonly IProxmoxService _proxmoxService;
+            private readonly ProxmoxOptions _options;
 
-            public Handler(VmContext db, IPlayerService playerService, IProxmoxService proxmoxService)
+            public Handler(VmContext db, IPlayerService playerService, IProxmoxService proxmoxService, ProxmoxOptions options)
                 : base(db, playerService)
             {
                 _proxmoxService = proxmoxService;
+                _options = options;
             }
 
             public async Task<GuestProcessResult> Handle(Command request, CancellationToken cancellationToken)
@@ -45,7 +45,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
                 var vm = await GetVmForEditing(request.Id, cancellationToken);
                 var timeout = request.TimeoutSeconds.HasValue
                     ? TimeSpan.FromSeconds(request.TimeoutSeconds.Value)
-                    : TimeSpan.FromMinutes(5);
+                    : TimeSpan.FromSeconds(_options.GuestProcessDefaultTimeoutSeconds);
 
                 return await _proxmoxService.RunGuestProcess(
                     vm.ProxmoxVmInfo,
