@@ -17,6 +17,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
         public bool SkipGuestFileCertificateValidation { get; set; } = false;
         public int GuestFileTransferTimeoutMinutes { get; set; } = 3;
         public int TaskTimeoutMinutes { get; set; } = 10;
+        public int TaskInfoUnavailableTimeoutSeconds { get; set; } = 30;
         public string GuestProcessTempPath { get; set; }
         public int GuestProcessDefaultTimeoutSeconds { get; set; } = 300;
 

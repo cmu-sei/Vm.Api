@@ -183,7 +183,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             string state = null;
 
             var aggregate = await this.GetVm(id);
-            vmReference = aggregate.MachineReference;
+            vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -234,7 +234,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             string state = null;
 
             var aggregate = await this.GetVm(id);
-            vmReference = aggregate.MachineReference;
+            vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -286,7 +286,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             foreach (var id in ids)
             {
                 var aggregate = await this.GetVm(id);
-                var vmReference = aggregate.MachineReference;
+                var vmReference = aggregate?.MachineReference;
 
                 if (vmReference == null)
                 {
@@ -332,7 +332,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             ManagedObjectReference task;
 
             var aggregate = await this.GetVm(id);
-            vmReference = aggregate.MachineReference;
+            vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -370,7 +370,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             string state = null;
 
             var aggregate = await this.GetVm(id);
-            vmReference = aggregate.MachineReference;
+            vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -411,7 +411,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             foreach (var id in ids)
             {
                 var aggregate = await this.GetVm(id);
-                var vmReference = aggregate.MachineReference;
+                var vmReference = aggregate?.MachineReference;
 
                 if (vmReference == null)
                 {
@@ -457,7 +457,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             foreach (var id in ids)
             {
                 var aggregate = await this.GetVm(id);
-                var vmReference = aggregate.MachineReference;
+                var vmReference = aggregate?.MachineReference;
 
                 if (vmReference == null)
                 {
@@ -558,7 +558,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _logger.LogDebug("GetPowerState called");
 
             var aggregate = await this.GetVm(id);
-            var vmReference = aggregate.MachineReference;
+            var vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -581,7 +581,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             foreach (var id in machineIds)
             {
                 var aggregate = await this.GetVm(id);
-                var vmReference = aggregate.MachineReference;
+                var vmReference = aggregate?.MachineReference;
 
                 if (vmReference != null)
                 {
@@ -672,7 +672,13 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         public async Task<VirtualMachineToolsStatus> GetVmToolsStatus(Guid id)
         {
             var aggregate = await GetVm(id);
-            var vmReference = aggregate.MachineReference;
+            var vmReference = aggregate?.MachineReference;
+
+            if (vmReference == null)
+            {
+                _logger.LogDebug($"could not get tools status, vmReference is null");
+                return VirtualMachineToolsStatus.toolsNotRunning;
+            }
 
             //retrieve the properties specificied
             RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
@@ -772,7 +778,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         public async Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath)
         {
             var aggregate = await GetVm(id);
-            var vmReference = aggregate.MachineReference;
+            var vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -868,6 +874,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             var taskKey = task?.Value;
             TaskInfo info = new TaskInfo();
             int polls = 0;
+            int missingTaskInfoPolls = 0;
+            int missingTaskInfoTimeoutSeconds = _vsphereOptions.TaskInfoUnavailableTimeoutSeconds > 0
+                ? _vsphereOptions.TaskInfoUnavailableTimeoutSeconds
+                : 30;
+            int maxMissingTaskInfoPolls = Math.Max(1, (int)Math.Ceiling(TimeSpan.FromSeconds(missingTaskInfoTimeoutSeconds).TotalMilliseconds / _pollInterval));
 
             //poll until the task reaches a terminal state or we hit the deadline
             do
@@ -875,6 +886,26 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 await Task.Delay(_pollInterval);
                 info = await GetVimTaskInfo(task, connection);
                 polls++;
+
+                if (info == null)
+                {
+                    missingTaskInfoPolls++;
+
+                    if (missingTaskInfoPolls >= maxMissingTaskInfoPolls)
+                    {
+                        _logger.LogWarning(
+                            "vCenter task {TaskKey} info was not available from the property collector within {TimeoutSeconds} second(s) after {Polls} polls. Abandoning wait.",
+                            taskKey, missingTaskInfoTimeoutSeconds, missingTaskInfoPolls);
+                        throw new TimeoutException(
+                            $"vCenter task {taskKey} info was not available from the property collector within {missingTaskInfoTimeoutSeconds} second(s).");
+                    }
+
+                    info = new TaskInfo { state = TaskInfoState.running };
+                }
+                else
+                {
+                    missingTaskInfoPolls = 0;
+                }
 
                 if (hasTimeout && DateTime.UtcNow >= deadline &&
                     (info.state == TaskInfoState.running || info.state == TaskInfoState.queued))
@@ -901,13 +932,13 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 TaskFilter(task));
 
             // A task that has not yet been registered in the property collector (or a transient empty
-            // read) returns no objects/props. Treat that as "still running" so the caller keeps polling
-            // rather than NullReference/IndexOutOfRange-ing out of the wait loop.
+            // read) returns no objects/props. Let the caller retry briefly without masking a task that
+            // never becomes visible.
             var oc = response?.returnval;
             if (oc == null || oc.Length == 0 || oc[0].propSet == null || oc[0].propSet.Length == 0)
             {
-                _logger.LogDebug("Task {TaskKey} info not yet available from property collector; treating as running.", task?.Value);
-                return new TaskInfo { state = TaskInfoState.running };
+                _logger.LogDebug("Task {TaskKey} info not yet available from property collector.", task?.Value);
+                return null;
             }
 
             return (TaskInfo)oc[0].propSet[0].val;
@@ -1207,14 +1238,15 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         public async Task<string> SetResolution(Guid id, int width, int height)
         {
             var aggregate = await this.GetVm(id);
-            var vmReference = aggregate.MachineReference;
-            string state = await GetPowerState(id);
+            var vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
                 _logger.LogDebug($"Could not get vm reference");
                 return "error";
             }
+
+            string state = await GetPowerState(id);
 
             _logger.LogDebug($"Set Resolution vm {id} requested - {width}x{height}");
 
