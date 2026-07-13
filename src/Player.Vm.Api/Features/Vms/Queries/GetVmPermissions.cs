@@ -45,16 +45,16 @@ public class GetVmPermissions
 
             await Task.WhenAll(tasks);
 
-            var primaryPermissions = tasks
-                .SelectMany(x => x.Result.Where(y => y.IsPrimary))
+            var relevantPermissions = tasks
+                .SelectMany(x => x.Result.Where(y => y.IsPrimary || teamIds.Contains(y.TeamId)))
                 .SelectMany(x => x.PermissionValues);
 
-            var appViewPermissions = primaryPermissions
+            var appViewPermissions = relevantPermissions
                 .Select(x => Enum.TryParse<AppViewPermission>(x, out var p) ? p : (AppViewPermission?)null)
                 .Where(p => p.HasValue)
                 .Select(p => p.Value);
 
-            var appTeamPermissions = primaryPermissions
+            var appTeamPermissions = relevantPermissions
                 .Select(x => Enum.TryParse<AppTeamPermission>(x, out var p) ? p : (AppTeamPermission?)null)
                 .Where(p => p.HasValue)
                 .Select(p => p.Value);

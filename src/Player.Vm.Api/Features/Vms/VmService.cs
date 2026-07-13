@@ -159,16 +159,20 @@ namespace Player.Vm.Api.Features.Vms
         {
             List<Domain.Models.Vm> vmList = new List<Domain.Models.Vm>();
             var teams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
+            if (teams == null)
+                return [];
+
             var teamIds = teams.Select(t => t.Id);
 
             if (onlyMine)
             {
                 var vmQuery = _context.VmTeams
-                .Include(v => v.Vm)
-                .Where(v => teamIds.Contains(v.TeamId))
-                .Where(v => v.Vm.UserId.HasValue && v.Vm.UserId == _user.GetId());
+                    .Include(v => v.Vm)
+                    .ThenInclude(v => v.VmTeams)
+                    .Where(v => teamIds.Contains(v.TeamId))
+                    .Where(v => v.Vm.UserId.HasValue && v.Vm.UserId == _user.GetId());
 
-                var vmTeams = await vmQuery.ToListAsync();
+                var vmTeams = await vmQuery.ToListAsync(ct);
                 vmList = vmTeams.Select(v => v.Vm).Distinct().ToList();
 
                 if (vmList.Count > 1)
@@ -205,17 +209,14 @@ namespace Player.Vm.Api.Features.Vms
                 {
                     var personalVms = vmList.Where(v => v.UserId.HasValue).ToList();
 
-                    if (personalVms.Any())
+                    foreach (var userVm in personalVms)
                     {
-                        if (!await _playerService.Can(teamIds, [], [AppSystemPermission.ViewViews], [AppViewPermission.ViewView], [], ct))
+                        var userVmTeamIds = userVm.VmTeams.Select(x => x.TeamId);
+
+                        if (userVm.UserId.Value != _user.GetId()
+                            && !await _playerService.Can(userVmTeamIds, [], [AppSystemPermission.ViewViews], [AppViewPermission.ViewView], [], ct))
                         {
-                            foreach (var userVm in personalVms)
-                            {
-                                if (userVm.UserId.Value != _user.GetId())
-                                {
-                                    vmList.Remove(userVm);
-                                }
-                            }
+                            vmList.Remove(userVm);
                         }
                     }
                 }
@@ -387,10 +388,10 @@ namespace Player.Vm.Api.Features.Vms
             if (maps == null)
                 return null;
 
-            var primTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, ct);
+            var teams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
 
-            // If primTeam is null, view doesn't exist in Player API
-            if (primTeam == null)
+            // If teams is null, view doesn't exist in Player API
+            if (teams == null)
                 return null;
 
             // Only return the maps user has access to
@@ -545,14 +546,14 @@ namespace Player.Vm.Api.Features.Vms
             if (teamIDs != null && teamIDs.Count > 0)
             {
                 // Make sure all teams exist and are part of this view
-                var viewTeamsModels = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
-                var viewTeams = viewTeamsModels.Select(t => t.Id).ToList();
                 foreach (Guid teamId in teamIDs)
                 {
-                    if (await _playerService.GetTeamById(teamId) == null)
+                    var team = await _playerService.GetTeamById(teamId);
+
+                    if (team == null)
                         throw new ForbiddenException("Team with id " + teamId + " does not exist");
 
-                    if (!viewTeams.Contains(teamId))
+                    if (team.ViewId != viewId)
                         throw new ForbiddenException("Team with id " + teamId + " is not a member of the specified view");
                 }
 
