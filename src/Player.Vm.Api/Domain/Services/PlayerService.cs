@@ -19,6 +19,9 @@ namespace Player.Vm.Api.Domain.Services
     {
         Task<IEnumerable<Team>> GetTeamsByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct);
+        Task<VisibilityContext> GetVisibilityContextAsync(Guid viewId, CancellationToken ct);
+        Task<VisibilityContext> GetVisibilityContextForTeamAsync(Guid teamId, CancellationToken ct);
+        Task<bool> IsTeamVisibleAsync(Guid teamId, CancellationToken ct);
         Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct);
         Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct);
         Task<Team> GetTeamById(Guid id);
@@ -67,12 +70,24 @@ namespace Player.Vm.Api.Domain.Services
 
         public async Task<bool> CanManageTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
         {
-            return await Can(teamIds, null, [AppSystemPermission.ManageViews], [AppViewPermission.ManageView], [], ct);
+            return await Can(
+                teamIds,
+                null,
+                [AppSystemPermission.ManageViews],
+                [AppViewPermission.ManageView],
+                [AppTeamPermission.ManageTeam],
+                ct);
         }
 
         public async Task<bool> CanViewTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
         {
-            return await Can(teamIds, null, [AppSystemPermission.ViewViews], [AppViewPermission.ViewView], [AppTeamPermission.ViewTeam], ct);
+            return await Can(
+                teamIds,
+                null,
+                [AppSystemPermission.ViewViews, AppSystemPermission.ManageViews],
+                [AppViewPermission.ViewView, AppViewPermission.ManageView],
+                [AppTeamPermission.ViewTeam, AppTeamPermission.ManageTeam],
+                ct);
         }
 
         public async Task<bool> CanEditTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
@@ -196,7 +211,8 @@ namespace Player.Vm.Api.Domain.Services
             try
             {
                 var teams = await GetUserViewTeamsByViewIdAsync(viewId, ct);
-                return teams;
+                var visibility = await GetVisibilityContextAsync(viewId, ct);
+                return teams.Where(x => visibility.TeamIds.Contains(x.Id));
             }
             catch (Player.Api.Client.ApiException ex) when (ex.StatusCode == 404)
             {
@@ -210,10 +226,8 @@ namespace Player.Vm.Api.Domain.Services
             try
             {
                 var teams = await GetUserViewTeamsByViewIdAsync(viewId, ct);
-
-                return teams
-                    .Where(t => t.IsPrimary)
-                    .FirstOrDefault();
+                var visibility = await GetVisibilityContextAsync(viewId, ct);
+                return teams.FirstOrDefault(x => x.Id == visibility.PrimaryTeamId);
             }
             catch (Player.Api.Client.ApiException ex) when (ex.StatusCode == 404)
             {
@@ -224,11 +238,11 @@ namespace Player.Vm.Api.Domain.Services
 
         public async Task<IEnumerable<Guid>> GetGroupIdsForViewAsync(Guid viewId, CancellationToken ct)
         {
-            if (await Can([], [viewId], [AppSystemPermission.ViewViews], [AppViewPermission.ViewView], [], ct))
+            var visibility = await GetVisibilityContextAsync(viewId, ct);
+            if (visibility.CanViewAllTeams)
                 return [viewId];
 
-            var teams = await GetTeamsByViewIdAsync(viewId, ct);
-            return teams?.Select(x => x.Id).Distinct().ToArray() ?? [];
+            return visibility.TeamIds;
         }
 
         public async Task<Team> GetTeamById(Guid id)
@@ -245,7 +259,62 @@ namespace Player.Vm.Api.Domain.Services
 
         public async Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct)
         {
-            return (await GetGroupIdsForViewAsync(viewId, ct)).FirstOrDefault();
+            var visibility = await GetVisibilityContextAsync(viewId, ct);
+            if (!visibility.PrimaryTeamId.HasValue)
+                return null;
+
+            if (visibility.CanViewAllTeams)
+                return viewId;
+
+            return visibility.PrimaryTeamId;
+        }
+
+        public async Task<VisibilityContext> GetVisibilityContextAsync(Guid viewId, CancellationToken ct)
+        {
+            var permissions = await GetTeamPermissionsByViewIdAsync(viewId, ct);
+            var primaryPermission = permissions.FirstOrDefault(x => x.IsPrimary);
+
+            if (primaryPermission == null)
+                return VisibilityContext.Empty;
+
+            var directViewPermissions = ParsePermissions<AppViewPermission>(primaryPermission.DirectPermissionValues);
+            var directTeamPermissions = ParsePermissions<AppTeamPermission>(primaryPermission.DirectPermissionValues);
+            var canViewAllTeams =
+                directViewPermissions.Contains(AppViewPermission.ViewView) ||
+                directViewPermissions.Contains(AppViewPermission.ManageView);
+            var visibleTeamIds = new HashSet<Guid> { primaryPermission.TeamId };
+
+            if (canViewAllTeams)
+            {
+                var teams = await GetUserViewTeamsByViewIdAsync(viewId, ct);
+                visibleTeamIds.UnionWith(teams.Select(x => x.Id));
+            }
+            else if (
+                directTeamPermissions.Contains(AppTeamPermission.ViewTeam) ||
+                directTeamPermissions.Contains(AppTeamPermission.ManageTeam))
+            {
+                visibleTeamIds.UnionWith(permissions
+                    .Where(x => x.SourceTeamIds?.Contains(primaryPermission.TeamId) ?? false)
+                    .Select(x => x.TeamId));
+            }
+
+            visibleTeamIds.Remove(Guid.Empty);
+            return new VisibilityContext(primaryPermission.TeamId, canViewAllTeams, visibleTeamIds);
+        }
+
+        public async Task<bool> IsTeamVisibleAsync(Guid teamId, CancellationToken ct)
+        {
+            var visibility = await GetVisibilityContextForTeamAsync(teamId, ct);
+            return visibility.TeamIds.Contains(teamId);
+        }
+
+        public async Task<VisibilityContext> GetVisibilityContextForTeamAsync(Guid teamId, CancellationToken ct)
+        {
+            var viewId = await _viewService.GetViewIdForTeam(teamId, ct);
+            if (!viewId.HasValue)
+                return VisibilityContext.Empty;
+
+            return await GetVisibilityContextAsync(viewId.Value, ct);
         }
 
         public async Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct)
@@ -306,6 +375,16 @@ namespace Player.Vm.Api.Domain.Services
                 .Any();
         }
 
+        private static HashSet<TPermission> ParsePermissions<TPermission>(IEnumerable<string> permissionValues)
+            where TPermission : struct, Enum
+        {
+            return (permissionValues ?? [])
+                .Select(x => Enum.TryParse<TPermission>(x, out var permission) ? permission : (TPermission?)null)
+                .Where(p => p.HasValue)
+                .Select(p => p.Value)
+                .ToHashSet();
+        }
+
         private static bool HasTeamPermission(ICollection<TeamPermissionsClaim> claims, IEnumerable<Guid> teamIds, AppTeamPermission[] requiredPermissions)
         {
             return claims
@@ -317,5 +396,21 @@ namespace Player.Vm.Api.Domain.Services
                 .Intersect(requiredPermissions)
                 .Any();
         }
+    }
+
+    public sealed class VisibilityContext
+    {
+        public static VisibilityContext Empty { get; } = new(null, false, []);
+
+        public VisibilityContext(Guid? primaryTeamId, bool canViewAllTeams, HashSet<Guid> teamIds)
+        {
+            PrimaryTeamId = primaryTeamId;
+            CanViewAllTeams = canViewAllTeams;
+            TeamIds = teamIds;
+        }
+
+        public Guid? PrimaryTeamId { get; }
+        public bool CanViewAllTeams { get; }
+        public IReadOnlySet<Guid> TeamIds { get; }
     }
 }
