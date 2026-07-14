@@ -121,10 +121,11 @@ namespace Player.Vm.Api.Features.Vms
             if (!visibility.TeamIds.Contains(teamId))
                 throw new ForbiddenException();
 
-            var vmQuery = _context.VmTeams
+            IQueryable<Domain.Models.Vm> vmQuery = _context.VmTeams
                 .Where(v => v.TeamId == teamId)
                 .Select(v => v.Vm)
-                .Distinct();
+                .Distinct()
+                .Include(v => v.VmTeams);
 
             if (onlyMine)
             {
@@ -160,7 +161,7 @@ namespace Player.Vm.Api.Features.Vms
                 }
             }
 
-            return _mapper.Map<IEnumerable<Vm>>(vmList);
+            return MapVisibleCollection(vmList, visibility.TeamIds);
         }
 
         public async Task<IEnumerable<Vm>> GetByViewIdAsync(Guid viewId, string name, bool includePersonal, bool onlyMine, CancellationToken ct)
@@ -229,7 +230,23 @@ namespace Player.Vm.Api.Features.Vms
                 }
             }
 
-            return _mapper.Map<IEnumerable<Vm>>(vmList);
+            return MapVisibleCollection(vmList, visibility.TeamIds);
+        }
+
+        private IEnumerable<Vm> MapVisibleCollection(
+            IEnumerable<Domain.Models.Vm> vmEntities,
+            IReadOnlySet<Guid> visibleTeamIds)
+        {
+            var models = _mapper.Map<IEnumerable<Vm>>(vmEntities).ToArray();
+
+            foreach (var model in models)
+            {
+                model.TeamIds = (model.TeamIds ?? [])
+                    .Where(visibleTeamIds.Contains)
+                    .ToArray();
+            }
+
+            return models;
         }
 
         public async Task<Vm> CreateAsync(VmCreateForm form, CancellationToken ct)

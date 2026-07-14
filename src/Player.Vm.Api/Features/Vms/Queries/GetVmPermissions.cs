@@ -25,14 +25,12 @@ public class GetVmPermissions
         public Guid Id { get; set; }
     }
 
-    public class Handler(VmContext db, IViewService viewService, IPlayerApiClient playerApiClient) : IRequestHandler<Query, VmPermissionResult>
+    public class Handler(IVmService vmService, IViewService viewService, IPlayerApiClient playerApiClient) : IRequestHandler<Query, VmPermissionResult>
     {
         public async Task<VmPermissionResult> Handle(Query request, CancellationToken cancellationToken)
         {
-            var teamIds = await db.VmTeams
-                .Where(x => x.VmId == request.Id)
-                .Select(x => x.TeamId)
-                .ToArrayAsync(cancellationToken);
+            var vm = await vmService.GetAsync(request.Id, cancellationToken);
+            var teamIds = vm.TeamIds.ToArray();
 
             var viewIds = await viewService.GetViewIdsForTeams(teamIds, cancellationToken);
 
@@ -40,24 +38,30 @@ public class GetVmPermissions
 
             foreach (var viewId in viewIds)
             {
-                tasks.Add(playerApiClient.GetMyTeamPermissionsAsync(viewId, null, true));
+                tasks.Add(playerApiClient.GetMyTeamPermissionsAsync(viewId, null, true, cancellationToken));
             }
 
             await Task.WhenAll(tasks);
 
-            var relevantPermissions = tasks
-                .SelectMany(x => x.Result.Where(y => y.IsPrimary || teamIds.Contains(y.TeamId)))
-                .SelectMany(x => x.PermissionValues);
+            var claims = tasks.SelectMany(x => x.Result);
+            var targetPermissionValues = claims
+                .Where(x => teamIds.Contains(x.TeamId))
+                .SelectMany(x => x.PermissionValues ?? []);
+            var directViewPermissionValues = claims
+                .SelectMany(x => x.DirectPermissionValues ?? []);
 
-            var appViewPermissions = relevantPermissions
+            var appViewPermissions = targetPermissionValues
+                .Concat(directViewPermissionValues)
                 .Select(x => Enum.TryParse<AppViewPermission>(x, out var p) ? p : (AppViewPermission?)null)
                 .Where(p => p.HasValue)
-                .Select(p => p.Value);
+                .Select(p => p.Value)
+                .Distinct();
 
-            var appTeamPermissions = relevantPermissions
+            var appTeamPermissions = targetPermissionValues
                 .Select(x => Enum.TryParse<AppTeamPermission>(x, out var p) ? p : (AppTeamPermission?)null)
                 .Where(p => p.HasValue)
-                .Select(p => p.Value);
+                .Select(p => p.Value)
+                .Distinct();
 
             return new VmPermissionResult
             {
