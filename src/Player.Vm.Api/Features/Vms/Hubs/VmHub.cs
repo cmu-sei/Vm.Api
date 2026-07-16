@@ -44,9 +44,8 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
         public async Task JoinView(Guid viewId)
         {
-            var groupId = await _playerService.GetGroupIdForViewAsync(viewId, Context.ConnectionAborted);
-
-            if (groupId.HasValue)
+            var groupIds = await _playerService.GetGroupIdsForViewAsync(viewId, Context.ConnectionAborted);
+            foreach (var groupId in groupIds)
             {
                 await Groups.AddToGroupAsync(Context.ConnectionId, groupId.ToString());
             }
@@ -54,9 +53,8 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
         public async Task LeaveView(Guid viewId)
         {
-            var groupId = await _playerService.GetGroupIdForViewAsync(viewId, Context.ConnectionAborted);
-
-            if (groupId.HasValue)
+            var groupIds = await _playerService.GetGroupIdsForViewAsync(viewId, Context.ConnectionAborted);
+            foreach (var groupId in groupIds)
             {
                 await Groups.RemoveFromGroupAsync(Context.ConnectionId, groupId.ToString());
             }
@@ -65,16 +63,21 @@ namespace Player.Vm.Api.Features.Vms.Hubs
         public async Task<IEnumerable<VmUserTeam>> JoinViewUsers(Guid viewId)
         {
             var vmUserTeams = new List<VmUserTeam>();
-            var groupId = await _playerService.GetGroupIdForViewAsync(viewId, Context.ConnectionAborted);
+            var groupIds = await _playerService.GetGroupIdsForViewAsync(viewId, Context.ConnectionAborted);
 
-            if (!groupId.HasValue)
+            if (!groupIds.Any())
             {
                 return vmUserTeams;
             }
 
-            await Groups.AddToGroupAsync(Context.ConnectionId, GetGroup(groupId.Value));
+            foreach (var groupId in groupIds)
+            {
+                await Groups.AddToGroupAsync(Context.ConnectionId, GetGroup(groupId));
+            }
 
             var teams = await _playerService.GetTeamsByViewIdAsync(viewId, Context.ConnectionAborted);
+            if (teams == null)
+                return vmUserTeams;
 
             var teamTaskDict = new Dictionary<Guid, Task<IEnumerable<User>>>();
 
@@ -124,37 +127,38 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
         public async Task LeaveViewUsers(Guid viewId)
         {
-            var groupId = await _playerService.GetGroupIdForViewAsync(viewId, Context.ConnectionAborted);
-
-            if (groupId.HasValue)
+            var groupIds = await _playerService.GetGroupIdsForViewAsync(viewId, Context.ConnectionAborted);
+            foreach (var groupId in groupIds)
             {
-                await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroup(groupId.Value));
+                await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroup(groupId));
             }
         }
 
         public async Task<VmUser> JoinUser(Guid userId, Guid viewId, Guid teamId)
         {
+            var visibility = await _playerService.GetVisibilityContextAsync(viewId, Context.ConnectionAborted);
+            if (!visibility.TeamIds.Contains(teamId))
+                throw new HubException("You do not have access to this team");
+
             var activeVm = _activeVirtualMachineService.GetActiveVirtualMachineForUser(userId);
             Guid? activeVmId = null;
+            var groupId = visibility.CanViewAllTeams ? viewId : teamId;
 
-            var groupId = await _playerService.GetGroupIdForViewAsync(viewId, Context.ConnectionAborted);
+            await Groups.AddToGroupAsync(Context.ConnectionId, GetGroup(groupId, userId));
 
-            if (groupId.HasValue)
+            if (activeVm != null)
             {
-                if (groupId == viewId)
+                if (visibility.CanViewAllTeams)
                 {
-                    await Groups.AddToGroupAsync(Context.ConnectionId, GetGroup(viewId, userId));
-                    activeVmId = activeVm?.VmId;
-                }
-                else
-                {
-                    // Check if this user's team is allowed to see the target user's activeVm
-                    if (activeVm != null && activeVm.TeamIds.Contains(groupId.Value))
-                    {
+                    var activeViewIds = await _viewService.GetViewIdsForTeams(
+                        activeVm.TeamIds,
+                        Context.ConnectionAborted);
+                    if (activeViewIds.Contains(viewId))
                         activeVmId = activeVm.VmId;
-                    }
-
-                    await Groups.AddToGroupAsync(Context.ConnectionId, GetGroup(groupId.Value, userId));
+                }
+                else if (activeVm.TeamIds.Contains(teamId))
+                {
+                    activeVmId = activeVm.VmId;
                 }
             }
 
@@ -168,8 +172,11 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
         public async Task LeaveUser(Guid userId, Guid viewId)
         {
-            var groupId = await _playerService.GetGroupIdForViewAsync(viewId, Context.ConnectionAborted);
-            await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroup(groupId.Value, userId));
+            var groupIds = await _playerService.GetGroupIdsForViewAsync(viewId, Context.ConnectionAborted);
+            foreach (var groupId in groupIds)
+            {
+                await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroup(groupId, userId));
+            }
         }
 
         public async Task JoinVm(Guid vmId)
@@ -186,30 +193,33 @@ namespace Player.Vm.Api.Features.Vms.Hubs
         {
             var vm = await _vmService.GetAsync(vmId, Context.ConnectionAborted);
             var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, Context.ConnectionAborted);
-
-            var teams = new List<Team>();
+            var groupIds = new HashSet<Guid>();
 
             foreach (var viewId in viewIds)
             {
-                var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, Context.ConnectionAborted);
+                var visibility = await _playerService.GetVisibilityContextAsync(viewId, Context.ConnectionAborted);
+                if (!vm.TeamIds.Any(visibility.TeamIds.Contains))
+                    continue;
 
-                if (primaryTeam != null)
+                if (visibility.CanViewAllTeams)
                 {
-                    teams.Add(primaryTeam);
-                }
-            }
-
-            foreach (var team in teams)
-            {
-                var groupId = await _playerService.GetGroupIdForViewAsync(team.ViewId, Context.ConnectionAborted);
-
-                if (join)
-                {
-                    await Groups.AddToGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId.Value, vmId));
+                    groupIds.Add(viewId);
                 }
                 else
                 {
-                    await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId.Value, vmId));
+                    groupIds.UnionWith(visibility.TeamIds);
+                }
+            }
+
+            foreach (var groupId in groupIds)
+            {
+                if (join)
+                {
+                    await Groups.AddToGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId, vmId));
+                }
+                else
+                {
+                    await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetCurrentVmUsersChannelName(groupId, vmId));
                 }
             }
         }
@@ -222,21 +232,25 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
             var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, Context.ConnectionAborted);
 
-            var teams = new List<Team>();
+            var teamIds = new HashSet<Guid>();
+            var visibleViewIds = new HashSet<Guid>();
 
             foreach (var viewId in viewIds)
             {
-                var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, Context.ConnectionAborted);
+                var visibility = await _playerService.GetVisibilityContextAsync(viewId, Context.ConnectionAborted);
 
-                if (primaryTeam != null)
+                if (visibility.PrimaryTeamId.HasValue &&
+                    vm.TeamIds.Any(visibility.TeamIds.Contains))
                 {
-                    teams.Add(primaryTeam);
+                    teamIds.Add(visibility.PrimaryTeamId.Value);
+                    visibleViewIds.Add(viewId);
                 }
             }
 
-            var teamIds = teams.Select(x => x.Id);
-            var groups = GetGroups(teams.Select(x => x.Id), viewIds, userId, vmId);
+            var groups = GetGroups(teamIds, visibleViewIds, userId, vmId);
 
+            // Presence remains scoped to the user's primary/view context so elevated
+            // VM access does not expose a non-member user to a team.
             var newVmId = await _activeVirtualMachineService.SetActiveVirtualMachineForUser(userId, Context.User.GetName(), vm, Context.ConnectionId, teamIds, Context.ConnectionAborted);
 
             await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, newVmId, userId, DateTimeOffset.UtcNow, teamIds);
@@ -246,11 +260,15 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
             foreach (var kvp in userNamesByGroup)
             {
-                await Clients.Groups(GetCurrentVmUsersChannelName(kvp.Key, vmId)).SendAsync(VmHubMethods.CurrentVirtualMachineUsers, vmId, kvp.Value);
+                await Clients.Groups(GetCurrentVmUsersChannelName(kvp.Key, vmId)).SendAsync(
+                    VmHubMethods.CurrentVirtualMachineUsers,
+                    vmId,
+                    kvp.Value,
+                    kvp.Key);
             }
 
             await _vmUsageLoggingService.CreateVmLogEntry(userId, vmId, teamIds, CancellationToken.None);
-            await UpdateVmUser(userId, vmId, teams.Select(x => x.Id));
+            await UpdateVmUser(userId, vmId, teamIds);
         }
 
         public async Task UnsetActiveVirtualMachine()
@@ -274,27 +292,24 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             {
                 var viewIds = await _viewService.GetViewIdsForTeams(activeVirtualMachine.TeamIds, cancellationToken);
 
-                var teams = new List<Team>();
-
-                foreach (var viewId in viewIds)
-                {
-                    var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, Context.ConnectionAborted);
-
-                    if (primaryTeam != null)
-                    {
-                        teams.Add(primaryTeam);
-                    }
-                }
-
                 var groups = GetGroups(activeVirtualMachine.TeamIds, viewIds, userId, activeVirtualMachine.VmId);
-                await Clients.Groups(groups).SendAsync(VmHubMethods.ActiveVirtualMachine, null, userId, null, teams.Select(x => x.Id));
+                await Clients.Groups(groups).SendAsync(
+                    VmHubMethods.ActiveVirtualMachine,
+                    null,
+                    userId,
+                    null,
+                    activeVirtualMachine.TeamIds);
 
                 // Begin Handling of displaying current users connected to an individual VM
                 var userNamesByGroup = await _activeVirtualMachineService.GetActiveVirtualMachineUsersByGroup(activeVirtualMachine.VmId, activeVirtualMachine, cancellationToken);
 
                 foreach (var kvp in userNamesByGroup)
                 {
-                    await Clients.Groups(GetCurrentVmUsersChannelName(kvp.Key, activeVirtualMachine.VmId)).SendAsync(VmHubMethods.CurrentVirtualMachineUsers, activeVirtualMachine.VmId, kvp.Value);
+                    await Clients.Groups(GetCurrentVmUsersChannelName(kvp.Key, activeVirtualMachine.VmId)).SendAsync(
+                        VmHubMethods.CurrentVirtualMachineUsers,
+                        activeVirtualMachine.VmId,
+                        kvp.Value,
+                        kvp.Key);
                 }
 
                 await _vmUsageLoggingService.CloseVmLogEntry(userId, activeVirtualMachine.VmId, cancellationToken);

@@ -21,9 +21,8 @@ namespace Player.Vm.Api.Hubs
 
         public async Task JoinView(Guid viewId)
         {
-            var groupId = await _playerService.GetGroupIdForViewAsync(viewId, Context.ConnectionAborted);
-
-            if (groupId.HasValue)
+            var groupIds = await _playerService.GetGroupIdsForViewAsync(viewId, Context.ConnectionAborted);
+            foreach (var groupId in groupIds)
             {
                 await Groups.AddToGroupAsync(Context.ConnectionId, groupId.ToString());
             }
@@ -31,9 +30,8 @@ namespace Player.Vm.Api.Hubs
 
         public async Task LeaveView(Guid viewId)
         {
-            var groupId = await _playerService.GetGroupIdForViewAsync(viewId, Context.ConnectionAborted);
-
-            if (groupId.HasValue)
+            var groupIds = await _playerService.GetGroupIdsForViewAsync(viewId, Context.ConnectionAborted);
+            foreach (var groupId in groupIds)
             {
                 await Groups.RemoveFromGroupAsync(Context.ConnectionId, groupId.ToString());
             }
