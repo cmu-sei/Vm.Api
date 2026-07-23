@@ -125,6 +125,31 @@ namespace Player.Vm.Api.Features.Vsphere
         }
 
         /// <summary>
+        /// Create a snapshot of a vsphere virtual machine
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/snapshots")]
+        [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "createVsphereVirtualMachineSnapshot")]
+        public async Task<IActionResult> CreateSnapshot([FromRoute] Guid id, [FromBody] CreateSnapshot.Command command)
+        {
+            command.Id = id;
+            var result = await _mediator.Send(command);
+            return Json(result);
+        }
+
+        /// <summary>
+        /// Delete a snapshot of a vsphere virtual machine
+        /// </summary>
+        [HttpDelete("vms/vsphere/{id}/actions/snapshots/{snapshotId}")]
+        [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "deleteVsphereVirtualMachineSnapshot")]
+        public async Task<IActionResult> DeleteSnapshot([FromRoute] Guid id, [FromRoute] string snapshotId)
+        {
+            var result = await _mediator.Send(new DeleteSnapshot.Command { Id = id, SnapshotId = snapshotId });
+            return Json(result);
+        }
+
+        /// <summary>
         /// Get tools status of a vsphere virtual machine
         /// </summary>
         [HttpGet("vms/vsphere/{id}/tools")]
@@ -168,16 +193,10 @@ namespace Player.Vm.Api.Features.Vsphere
         [HttpPost("vms/vsphere/{id}/actions/upload-file"), DisableRequestSizeLimit]
         [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "uploadFileToVsphereVirtualMachine")]
-        public async Task<IActionResult> UploadFile([FromRoute] Guid id)
+        public async Task<IActionResult> UploadFile([FromForm] UploadFile.Command command)
         {
-            var result = await _mediator.Send(new UploadFile.Command
-            {
-                Id = id,
-                Files = Request.Form.Files,
-                FilePath = Request.Form["filepath"][0],
-                Password = Request.Form["password"][0],
-                Username = Request.Form["username"][0]
-            });
+            command.Files = Request.Form.Files;
+            var result = await _mediator.Send(command);
             return Json(result);
         }
 
@@ -225,6 +244,45 @@ namespace Player.Vm.Api.Features.Vsphere
         [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "setVsphereVirtualMachineResolution")]
         public async Task<IActionResult> SetResolution([FromRoute] Guid id, [FromBody] SetResolution.Command command)
+        {
+            command.Id = id;
+            var result = await _mediator.Send(command);
+            return Json(result);
+        }
+
+        /// <summary>
+        /// Run a process inside the guest OS of a vsphere virtual machine and wait for completion
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/run-guest-process")]
+        [ProducesResponseType(typeof(GuestProcessResult), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "runGuestProcessOnVsphereVirtualMachine")]
+        public async Task<IActionResult> RunGuestProcess([FromRoute] Guid id, [FromBody] RunGuestProcess.Command command)
+        {
+            command.Id = id;
+            var result = await _mediator.Send(command);
+            return Json(result);
+        }
+
+        /// <summary>
+        /// Start a process inside the guest OS of a vsphere virtual machine without waiting for completion
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/run-guest-process-fast")]
+        [ProducesResponseType(typeof(long), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "runGuestProcessFastOnVsphereVirtualMachine")]
+        public async Task<IActionResult> RunGuestProcessFast([FromRoute] Guid id, [FromBody] RunGuestProcessFast.Command command)
+        {
+            command.Id = id;
+            var result = await _mediator.Send(command);
+            return Json(result);
+        }
+
+        /// <summary>
+        /// Read the contents of a file from the guest OS of a vsphere virtual machine
+        /// </summary>
+        [HttpPost("vms/vsphere/{id}/actions/read-guest-file")]
+        [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "readGuestFileFromVsphereVirtualMachine")]
+        public async Task<IActionResult> ReadGuestFile([FromRoute] Guid id, [FromBody] ReadGuestFile.Command command)
         {
             command.Id = id;
             var result = await _mediator.Send(command);

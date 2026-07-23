@@ -14,6 +14,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
         public int CheckTaskProgressIntervalMilliseconds { get; set; }
         public int ReCheckTaskProgressIntervalMilliseconds { get; set; }
         public int HealthAllowanceSeconds { get; set; }
+        public bool SkipGuestFileCertificateValidation { get; set; } = false;
+        public int GuestFileTransferTimeoutMinutes { get; set; } = 3;
+        public int TaskTimeoutMinutes { get; set; } = 10;
+        public int TaskInfoUnavailableTimeoutSeconds { get; set; } = 30;
+        public string GuestProcessTempPath { get; set; }
+        public int GuestProcessDefaultTimeoutSeconds { get; set; } = 300;
 
         public VsphereHost[] Hosts { get; set; }
     }

@@ -83,6 +83,12 @@ namespace Player.Vm.Api.Infrastructure.Exceptions.Middleware
                 statusCode = (exception as IApiException).GetStatusCode();
                 _logger.LogDebug($"API Exception: {exception}");
             }
+            else if (exception is Player.Api.Client.ApiException playerApiException
+                && playerApiException.StatusCode == (int)HttpStatusCode.NotFound)
+            {
+                statusCode = HttpStatusCode.NotFound;
+                _logger.LogDebug($"Player API resource not found: {exception}");
+            }
             else
             {
                 _logger.LogError($"Unhandled Exception: {exception}");

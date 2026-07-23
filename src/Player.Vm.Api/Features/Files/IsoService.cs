@@ -64,13 +64,9 @@ namespace Player.Vm.Api.Features.Files
             List<Guid> targetTeamIds;
             if (teamIds.Count > 0)
             {
-                // The caller's own teams (all teams for a view-admin). Using this instead of the
-                // view-wide team list avoids a privileged GetViewTeams call that 403s for team-only
-                // users; the per-team Can(...) check below remains the authoritative permission gate.
-                var viewTeamIds = (await _playerService.GetTeamsByViewIdAsync(viewId, ct)).Select(t => t.Id).ToHashSet();
                 foreach (var teamId in teamIds)
                 {
-                    if (!viewTeamIds.Contains(teamId))
+                    if (!await _playerService.IsTeamInViewAsync(teamId, viewId, ct))
                         throw new BadRequestException("The specified team is not part of this View");
                 }
                 targetTeamIds = teamIds.ToList();
@@ -120,13 +116,7 @@ namespace Player.Vm.Api.Features.Files
             Guid targetTeamId;
             if (teamId.HasValue)
             {
-                // Validate the team belongs to the View. A system DeleteIsos caller is generally not a
-                // member, so validate against ALL teams in the View; otherwise the caller's own teams
-                // (which also avoids a privileged GetViewTeams call that 403s for team-only users).
-                var viewTeamIds = hasSystemDeleteIsos
-                    ? (await _playerService.GetAllTeamsByViewIdAsync(viewId, ct)).Select(t => t.Id).ToHashSet()
-                    : (await _playerService.GetTeamsByViewIdAsync(viewId, ct)).Select(t => t.Id).ToHashSet();
-                if (!viewTeamIds.Contains(teamId.Value))
+                if (!await _playerService.IsTeamInViewAsync(teamId.Value, viewId, ct))
                     throw new BadRequestException("The specified team is not part of this View");
 
                 targetTeamId = teamId.Value;

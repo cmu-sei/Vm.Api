@@ -10,21 +10,23 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - name: Setup dotnet
-        uses: actions/setup-dotnet@v1
+        uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: "6.0.x"
+          dotnet-version: "10.0.x"
 
       - name: Setup Package Name
         id: package_name
         run: |
-          echo ::set-output name=name::Player.Vm.Api.Client
-          echo ::set-output name=dll_name::Player.Vm.Api
-          echo ::set-output name=directory::src/Player.Vm.Api
+          echo "name=Player.Vm.Api.Client" >> "$GITHUB_OUTPUT"
+          echo "dll_name=Player.Vm.Api" >> "$GITHUB_OUTPUT"
+          echo "directory=src/Player.Vm.Api" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v6
 
       - name: Build Package
         run: |
@@ -37,18 +39,18 @@ jobs:
           cd ${{ steps.package_name.outputs.directory }}
           dotnet swagger tofile --output ../${{ steps.package_name.outputs.name }}/swagger.json bin/Release/*/${{ steps.package_name.outputs.dll_name }}.dll v1
 
-      - name: Run AutoRest
+      - name: Run NSwag
         run: |
           cd src/${{ steps.package_name.outputs.name }}
-          npm install autorest@3.0.6247
-          ./node_modules/.bin/autorest . --version=3.0.6274
+          npm install
+          ./node_modules/.bin/nswag run /runtime:Net100
 
       - name: Create NuGet Package
         run: |
           cd src/${{ steps.package_name.outputs.name }}
           dotnet pack -c Release /p:version=${{ github.event.inputs.clientVersion }}  \
           /p:authors="Carnegie Mellon University/Software Engineering Institute"      \
-          /p:description="AutoRest generated client for Crucible's ${{ steps.package_name.outputs.dll_name }}"   \
+          /p:description="NSwag generated client for Crucible's ${{ steps.package_name.outputs.dll_name }}"   \
           --include-source
 
           cd bin/Release
@@ -59,7 +61,6 @@ jobs:
           sed -i '/<\/version>/a \    <license type="expression">MIT<\/license>' ${{ steps.package_name.outputs.name }}.nuspec
           sed -i '/<\/version>/a \    <licenseUrl>https:\/\/licenses.nuget.org\/MIT<\/licenseUrl>' ${{ steps.package_name.outputs.name }}.nuspec
           sed -i '/<\/version>/a \    <projectUrl>https:\/\/github.com\/cmu-sei\/crucible<\/projectUrl>' ${{ steps.package_name.outputs.name }}.nuspec
-          sed -i '/<\/version>/a \    <repository type="git" url="https:\/\/github.com\/cmu-sei\/crucible.git" \/>' ${{ steps.package_name.outputs.name }}.nuspec
           zip -r ../${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg *
 
       - name: Publish to Nuget.org as Unlisted
@@ -68,23 +69,12 @@ jobs:
           dotnet nuget delete ${{ steps.package_name.outputs.name }} ${{ github.event.inputs.clientVersion }} --non-interactive -k ${{ secrets.NUGET_APIKEY_UNLIST }} -s https://api.nuget.org/v3/index.json
 
       - name: Create Release
-        id: create_release
-        uses: actions/create-release@v1
+        uses: softprops/action-gh-release@v3
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
         with:
           tag_name: ${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}
-          release_name: ${{ steps.package_name.outputs.name }} ${{ github.event.inputs.clientVersion }}
+          name: ${{ steps.package_name.outputs.name }} ${{ github.event.inputs.clientVersion }}
           draft: false
           prerelease: false
-
-      - name: Upload Release Asset
-        id: upload-release-asset
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: src/${{ steps.package_name.outputs.name }}/bin/Release/${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg
-          asset_name: ${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg
-          asset_content_type: application/zip
+          files: src/${{ steps.package_name.outputs.name }}/bin/Release/${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg

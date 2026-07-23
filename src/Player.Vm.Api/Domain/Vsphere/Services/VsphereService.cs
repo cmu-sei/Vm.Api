@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Net;
 using System.Net.Http;
@@ -21,6 +22,7 @@ using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Features.Files;
 using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Infrastructure.Exceptions;
 using System.Web;
 
 namespace Player.Vm.Api.Domain.Vsphere.Services
@@ -52,6 +54,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task RevertToCurrentSnapshot(Guid vmId);
         Task<List<VmSnapshot>> GetSnapshots(Guid vmId);
         Task RevertToSnapshot(Guid vmId, string snapshotMoRefValue);
+        Task<string> CreateSnapshot(Guid vmId, string snapshotName, string description, bool includeMemory);
+        Task<string> DeleteSnapshot(Guid vmId, string snapshotMoRefValue);
+        Task<GuestProcessResult> RunGuestProcess(Guid vmId, string username, string password, string command, string arguments, string workingDirectory, TimeSpan timeout);
+        Task<long> RunGuestProcessFast(Guid vmId, string username, string password, string command, string arguments, string workingDirectory);
+        Task<string> ReadGuestFile(Guid vmId, string username, string password, string guestFilePath);
     }
 
     public class VsphereService : IVsphereService
@@ -65,10 +72,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private readonly IConnectionService _connectionService;
         private readonly IMapper _mapper;
         private readonly IHttpClientFactory _httpClientFactory;
+        private readonly VsphereOptions _vsphereOptions;
 
         public VsphereService(
                 IOptions<RewriteHostOptions> rewriteHostOptions,
                 ILogger<VsphereService> logger,
+                VsphereOptions vsphereOptions,
                 IConfiguration configuration,
                 IConnectionService connectionService,
                 IMapper mapper,
@@ -81,6 +90,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _configuration = configuration;
             _mapper = mapper;
             _httpClientFactory = httpClientFactory;
+            _vsphereOptions = vsphereOptions;
         }
 
         public async Task<string> GetConsoleUrl(VsphereVirtualMachine machine)
@@ -183,7 +193,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             string state = null;
 
             var aggregate = await this.GetVm(id);
-            vmReference = aggregate.MachineReference;
+            vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -234,7 +244,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             string state = null;
 
             var aggregate = await this.GetVm(id);
-            vmReference = aggregate.MachineReference;
+            vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -286,7 +296,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             foreach (var id in ids)
             {
                 var aggregate = await this.GetVm(id);
-                var vmReference = aggregate.MachineReference;
+                var vmReference = aggregate?.MachineReference;
 
                 if (vmReference == null)
                 {
@@ -332,7 +342,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             ManagedObjectReference task;
 
             var aggregate = await this.GetVm(id);
-            vmReference = aggregate.MachineReference;
+            vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -370,7 +380,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             string state = null;
 
             var aggregate = await this.GetVm(id);
-            vmReference = aggregate.MachineReference;
+            vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -411,7 +421,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             foreach (var id in ids)
             {
                 var aggregate = await this.GetVm(id);
-                var vmReference = aggregate.MachineReference;
+                var vmReference = aggregate?.MachineReference;
 
                 if (vmReference == null)
                 {
@@ -457,7 +467,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             foreach (var id in ids)
             {
                 var aggregate = await this.GetVm(id);
-                var vmReference = aggregate.MachineReference;
+                var vmReference = aggregate?.MachineReference;
 
                 if (vmReference == null)
                 {
@@ -558,7 +568,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _logger.LogDebug("GetPowerState called");
 
             var aggregate = await this.GetVm(id);
-            var vmReference = aggregate.MachineReference;
+            var vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -581,7 +591,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             foreach (var id in machineIds)
             {
                 var aggregate = await this.GetVm(id);
-                var vmReference = aggregate.MachineReference;
+                var vmReference = aggregate?.MachineReference;
 
                 if (vmReference != null)
                 {
@@ -672,7 +682,13 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         public async Task<VirtualMachineToolsStatus> GetVmToolsStatus(Guid id)
         {
             var aggregate = await GetVm(id);
-            var vmReference = aggregate.MachineReference;
+            var vmReference = aggregate?.MachineReference;
+
+            if (vmReference == null)
+            {
+                _logger.LogDebug($"could not get tools status, vmReference is null");
+                return VirtualMachineToolsStatus.toolsNotRunning;
+            }
 
             //retrieve the properties specificied
             RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
@@ -687,7 +703,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _logger.LogDebug("UploadFileToVm called");
 
             var aggregate = await GetVm(id);
-            var vmReference = aggregate.MachineReference;
+
+            // GetVm returns null when the VM isn't in the connection cache yet (e.g. between connect-loop
+            // refreshes), so null-condition the reference and bail with a clear, retryable message instead
+            // of NRE-ing below.
+            var vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -695,6 +715,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 _logger.LogDebug(errorMessage);
                 return errorMessage;
             }
+
             //retrieve the properties specificied
             RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
                 aggregate.Connection.Props,
@@ -744,16 +765,14 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                         fileTransferUrl = "https://" + hostName + fileTransferUrl.Substring(s);
                     }
 
-                    // http put to url
-                    using (var httpClientHandler = new HttpClientHandler())
+                    using (var httpClientHandler = CreateGuestFileHttpClientHandler())
                     {
                         using (var httpClient = new HttpClient(httpClientHandler))
                         {
                             httpClient.DefaultRequestHeaders.Accept.Clear();
                             using (MemoryStream ms = new MemoryStream())
                             {
-                                var timeout = _configuration.GetSection("vmOptions").GetValue("Timeout", 3);
-                                httpClient.Timeout = TimeSpan.FromMinutes(timeout);
+                                httpClient.Timeout = GetGuestFileTransferTimeout();
                                 fileStream.CopyTo(ms);
                                 var fileContent = new ByteArrayContent(ms.ToArray());
                                 _logger.LogDebug("UploadFileToVm Upload URL:  " + fileTransferUrl);
@@ -769,7 +788,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         public async Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath)
         {
             var aggregate = await GetVm(id);
-            var vmReference = aggregate.MachineReference;
+            var vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
@@ -858,32 +877,81 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         private async Task<TaskInfo> WaitForVimTask(ManagedObjectReference task, VsphereConnection connection)
         {
-            int i = 0;
-            TaskInfo info = new TaskInfo();
+            var timeoutMinutes = _vsphereOptions.TaskTimeoutMinutes;
+            var hasTimeout = timeoutMinutes > 0;
+            var deadline = hasTimeout ? DateTime.UtcNow.AddMinutes(timeoutMinutes) : DateTime.MaxValue;
 
-            //iterate the search until complete or timeout occurs
+            var taskKey = task?.Value;
+            TaskInfo info = new TaskInfo();
+            int polls = 0;
+            int missingTaskInfoPolls = 0;
+            int missingTaskInfoTimeoutSeconds = _vsphereOptions.TaskInfoUnavailableTimeoutSeconds > 0
+                ? _vsphereOptions.TaskInfoUnavailableTimeoutSeconds
+                : 30;
+            int maxMissingTaskInfoPolls = Math.Max(1, (int)Math.Ceiling(TimeSpan.FromSeconds(missingTaskInfoTimeoutSeconds).TotalMilliseconds / _pollInterval));
+
+            //poll until the task reaches a terminal state or we hit the deadline
             do
             {
-                //check every so often
                 await Task.Delay(_pollInterval);
                 info = await GetVimTaskInfo(task, connection);
-                i++;
-                //check for status updates until the task is complete
+                polls++;
+
+                if (info == null)
+                {
+                    missingTaskInfoPolls++;
+
+                    if (missingTaskInfoPolls >= maxMissingTaskInfoPolls)
+                    {
+                        _logger.LogWarning(
+                            "vCenter task {TaskKey} info was not available from the property collector within {TimeoutSeconds} second(s) after {Polls} polls. Abandoning wait.",
+                            taskKey, missingTaskInfoTimeoutSeconds, missingTaskInfoPolls);
+                        throw new TimeoutException(
+                            $"vCenter task {taskKey} info was not available from the property collector within {missingTaskInfoTimeoutSeconds} second(s).");
+                    }
+
+                    info = new TaskInfo { state = TaskInfoState.running };
+                }
+                else
+                {
+                    missingTaskInfoPolls = 0;
+                }
+
+                if (hasTimeout && DateTime.UtcNow >= deadline &&
+                    (info.state == TaskInfoState.running || info.state == TaskInfoState.queued))
+                {
+                    _logger.LogWarning(
+                        "vCenter task {TaskKey} did not complete within {TimeoutMinutes} minute(s); last state {State}, progress {Progress}% after {Polls} polls. Abandoning wait.",
+                        taskKey, timeoutMinutes, info.state, info.progress, polls);
+                    throw new TimeoutException(
+                        $"vCenter task {taskKey} did not reach a terminal state within {timeoutMinutes} minute(s) (last state: {info.state}).");
+                }
             } while ((info.state == TaskInfoState.running || info.state == TaskInfoState.queued));
 
-            //return the task info
+            _logger.LogDebug(
+                "vCenter task {TaskKey} finished with state {State} after {Polls} polls.",
+                taskKey, info.state, polls);
+
             return info;
         }
 
         private async Task<TaskInfo> GetVimTaskInfo(ManagedObjectReference task, VsphereConnection connection)
         {
-            TaskInfo info = new TaskInfo();
             RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(
                 connection.Props,
                 TaskFilter(task));
-            VimClient.ObjectContent[] oc = response.returnval;
-            info = (TaskInfo)oc[0].propSet[0].val;
-            return info;
+
+            // A task that has not yet been registered in the property collector (or a transient empty
+            // read) returns no objects/props. Let the caller retry briefly without masking a task that
+            // never becomes visible.
+            var oc = response?.returnval;
+            if (oc == null || oc.Length == 0 || oc[0].propSet == null || oc[0].propSet.Length == 0)
+            {
+                _logger.LogDebug("Task {TaskKey} info not yet available from property collector.", task?.Value);
+                return null;
+            }
+
+            return (TaskInfo)oc[0].propSet[0].val;
         }
 
         public async Task<NicOptions> GetNicOptions(Guid id, bool canManage, Dictionary<string, string> allowedNetworks, VsphereVirtualMachine machine)
@@ -1530,14 +1598,15 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         public async Task<string> SetResolution(Guid id, int width, int height)
         {
             var aggregate = await this.GetVm(id);
-            var vmReference = aggregate.MachineReference;
-            string state = await GetPowerState(id);
+            var vmReference = aggregate?.MachineReference;
 
             if (vmReference == null)
             {
                 _logger.LogDebug($"Could not get vm reference");
                 return "error";
             }
+
+            string state = await GetPowerState(id);
 
             _logger.LogDebug($"Set Resolution vm {id} requested - {width}x{height}");
 
@@ -1638,16 +1707,276 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return snapshots;
         }
 
-        public async Task RevertToSnapshot(Guid vmId, string snapshotMoRefValue)
+        public async Task RevertToSnapshot(Guid vmId, string snapshotIdentifier)
         {
             var aggregate = await this.GetVm(vmId);
+            var snapshotMoRefValue = await ResolveSnapshotMoRefValue(vmId, snapshotIdentifier);
+            _logger.LogInformation(
+                "RevertToSnapshot vm {vmId} reverting to snapshot identifier '{Identifier}' resolved to MoRef '{MoRef}'",
+                vmId, snapshotIdentifier, snapshotMoRefValue);
             var snapshotRef = new ManagedObjectReference { type = "VirtualMachineSnapshot", Value = snapshotMoRefValue };
             var task = await aggregate.Connection.Client.RevertToSnapshot_TaskAsync(snapshotRef, null, false);
             var taskInfo = await WaitForVimTask(task, aggregate.Connection);
 
             if (taskInfo.state == TaskInfoState.error)
-                throw new Exception(taskInfo.error.localizedMessage);
+            {
+                var message = taskInfo.error?.localizedMessage ?? "Revert to snapshot task failed";
+                _logger.LogError("RevertToSnapshot task for vm {vmId} failed: {Message}", vmId, message);
+                throw new Exception(message);
+            }
+
+            _logger.LogInformation("RevertToSnapshot vm {vmId} reverted to snapshot '{MoRef}'", vmId, snapshotMoRefValue);
         }
+
+        public async Task<string> CreateSnapshot(Guid vmId, string snapshotName, string description, bool includeMemory)
+        {
+            var aggregate = await this.GetVm(vmId);
+            // quiesce=false matches the existing RevertToSnapshot conservatism — let the caller add VM Tools quiesce later if needed.
+            var task = await aggregate.Connection.Client.CreateSnapshot_TaskAsync(
+                aggregate.MachineReference, snapshotName, description, includeMemory, false);
+            var taskInfo = await WaitForVimTask(task, aggregate.Connection);
+
+            if (taskInfo.state == TaskInfoState.error)
+                throw new Exception(taskInfo.error.localizedMessage);
+
+            return $"snapshot {snapshotName} created on vm {vmId}";
+        }
+
+        public async Task<string> DeleteSnapshot(Guid vmId, string snapshotIdentifier)
+        {
+            var aggregate = await this.GetVm(vmId);
+            var snapshotMoRefValue = await ResolveSnapshotMoRefValue(vmId, snapshotIdentifier);
+            var snapshotRef = new ManagedObjectReference { type = "VirtualMachineSnapshot", Value = snapshotMoRefValue };
+            // removeChildren=false: only the named snapshot is removed; its children are reparented onto its parent.
+            var task = await aggregate.Connection.Client.RemoveSnapshot_TaskAsync(snapshotRef, false, false);
+            var taskInfo = await WaitForVimTask(task, aggregate.Connection);
+
+            if (taskInfo.state == TaskInfoState.error)
+                throw new Exception(taskInfo.error.localizedMessage);
+
+            return $"snapshot {snapshotIdentifier} removed from vm {vmId}";
+        }
+
+        /// <summary>
+        /// Resolve a caller-supplied snapshot identifier to a vSphere snapshot managed object reference
+        /// value (e.g. "snapshot-1234"). Steamfitter and other callers may pass either the snapshot's
+        /// human-readable name or its MoRef value, so we look the identifier up against the VM's snapshot
+        /// tree by name first, then fall back to treating it as a MoRef value. Matching by name is
+        /// case-sensitive and, when multiple snapshots share a name, resolves to the most recently created.
+        /// </summary>
+        private async Task<string> ResolveSnapshotMoRefValue(Guid vmId, string snapshotIdentifier)
+        {
+            if (string.IsNullOrWhiteSpace(snapshotIdentifier))
+                throw new ArgumentException("A snapshot name or id must be provided.", nameof(snapshotIdentifier));
+
+            var identifier = snapshotIdentifier.Trim();
+            var snapshots = await GetSnapshots(vmId);
+
+            // Prefer an exact MoRef match so callers that already pass the id keep working unambiguously.
+            var byId = snapshots.FirstOrDefault(s => s.Id == identifier);
+            if (byId != null)
+                return byId.Id;
+
+            // Otherwise resolve by name. Case-insensitive + trimmed to tolerate caller formatting; when
+            // multiple snapshots share a name, prefer the most recently created.
+            var byName = snapshots
+                .Where(s => string.Equals(s.Name?.Trim(), identifier, StringComparison.OrdinalIgnoreCase))
+                .OrderByDescending(s => s.CreateTime)
+                .ToList();
+
+            if (byName.Count > 0)
+                return byName[0].Id;
+
+            // No match. Fail with a clear, actionable message (and the available snapshots) instead of
+            // passing an unresolvable value to vSphere, which returns a cryptic
+            // "has already been deleted or has not been completely created" fault.
+            var available = snapshots.Count == 0
+                ? "none"
+                : string.Join(", ", snapshots.Select(s => $"'{s.Name}' (id {s.Id})"));
+            _logger.LogWarning(
+                "ResolveSnapshotMoRefValue: no snapshot matching '{Identifier}' on vm {vmId}. Available snapshots: {Available}",
+                identifier, vmId, available);
+            throw new EntityNotFoundException<VmSnapshot>(
+                $"No snapshot named or identified by '{snapshotIdentifier}' was found on this vm. Available snapshots: {available}.");
+        }
+
+        #region Guest Operations
+
+        private async Task<(VsphereAggregate Aggregate, NamePasswordAuthentication Auth, ManagedObjectReference ProcessManager, ManagedObjectReference FileManager)> PrepareGuestOperations(Guid vmId, string username, string password)
+        {
+            var aggregate = await GetVm(vmId);
+            if (aggregate?.MachineReference == null)
+                throw new Exception("Could not get vm reference");
+
+            var toolsStatus = await GetVmToolsStatus(vmId);
+            if (toolsStatus == VirtualMachineToolsStatus.toolsNotInstalled || toolsStatus == VirtualMachineToolsStatus.toolsNotRunning)
+                throw new Exception("VM Tools is not running");
+
+            var auth = new NamePasswordAuthentication
+            {
+                interactiveSession = false,
+                username = username,
+                password = password
+            };
+
+            var processManager = new ManagedObjectReference
+            {
+                type = "GuestProcessManager",
+                Value = "guestOperationsProcessManager"
+            };
+
+            var fileManager = new ManagedObjectReference
+            {
+                type = "GuestFileManager",
+                Value = "guestOperationsFileManager"
+            };
+
+            return (aggregate, auth, processManager, fileManager);
+        }
+
+        public async Task<long> RunGuestProcessFast(Guid vmId, string username, string password, string command, string arguments, string workingDirectory)
+        {
+            _logger.LogDebug("RunGuestProcessFast called for vm {vmId}", vmId);
+
+            var (aggregate, auth, processManager, _) = await PrepareGuestOperations(vmId, username, password);
+
+            var spec = new GuestProgramSpec
+            {
+                programPath = command,
+                arguments = arguments ?? string.Empty,
+                workingDirectory = workingDirectory ?? string.Empty
+            };
+
+            return await aggregate.Connection.Client.StartProgramInGuestAsync(processManager, aggregate.MachineReference, auth, spec);
+        }
+
+        public async Task<GuestProcessResult> RunGuestProcess(Guid vmId, string username, string password, string command, string arguments, string workingDirectory, TimeSpan timeout)
+        {
+            _logger.LogDebug("RunGuestProcess called for vm {vmId}", vmId);
+
+            var capturedStdoutPath = CombineGuestTempPath($"player-vm-api-stdout-{Guid.NewGuid():N}");
+            var redirectedArgs = $"{arguments ?? string.Empty} > {capturedStdoutPath} 2>&1".Trim();
+
+            var (aggregate, auth, processManager, fileManager) = await PrepareGuestOperations(vmId, username, password);
+
+            var spec = new GuestProgramSpec
+            {
+                programPath = command,
+                arguments = redirectedArgs,
+                workingDirectory = workingDirectory ?? string.Empty
+            };
+
+            long pid = await aggregate.Connection.Client.StartProgramInGuestAsync(processManager, aggregate.MachineReference, auth, spec);
+
+            var deadline = DateTime.UtcNow.Add(timeout <= TimeSpan.Zero ? TimeSpan.FromMinutes(5) : timeout);
+            GuestProcessInfo procInfo = null;
+
+            while (DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(_pollInterval);
+                var procResponse = await aggregate.Connection.Client.ListProcessesInGuestAsync(processManager, aggregate.MachineReference, auth, new[] { pid });
+                procInfo = procResponse?.returnval?.FirstOrDefault();
+
+                if (procInfo == null || procInfo.endTimeSpecified)
+                    break;
+            }
+
+            if (procInfo != null && !procInfo.endTimeSpecified)
+            {
+                return new GuestProcessResult
+                {
+                    Success = false,
+                    ExitCode = -1,
+                    Error = $"Timed out waiting for process {pid} to exit"
+                };
+            }
+
+            string output = string.Empty;
+            try
+            {
+                output = await ReadGuestFileInternal(aggregate, fileManager, auth, capturedStdoutPath);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Failed to read captured stdout file for vm {vmId}", vmId);
+            }
+
+            return new GuestProcessResult
+            {
+                Output = output,
+                ExitCode = procInfo?.exitCode ?? 0,
+                Success = procInfo != null && procInfo.exitCode == 0
+            };
+        }
+
+        public async Task<string> ReadGuestFile(Guid vmId, string username, string password, string guestFilePath)
+        {
+            _logger.LogDebug("ReadGuestFile called for vm {vmId}", vmId);
+
+            var (aggregate, auth, _, fileManager) = await PrepareGuestOperations(vmId, username, password);
+            return await ReadGuestFileInternal(aggregate, fileManager, auth, guestFilePath);
+        }
+
+        private async Task<string> ReadGuestFileInternal(VsphereAggregate aggregate, ManagedObjectReference fileManager, NamePasswordAuthentication auth, string guestFilePath)
+        {
+            var transferInfo = await aggregate.Connection.Client.InitiateFileTransferFromGuestAsync(
+                fileManager, aggregate.MachineReference, auth, guestFilePath);
+
+            var url = transferInfo.url;
+
+            // Replace IP with hostname when needed (mirrors UploadFileToVm)
+            var summaryResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
+                VmFilter(aggregate.MachineReference));
+            var vmSummary = (VirtualMachineSummary)summaryResponse.returnval[0].propSet[0].val;
+
+            var hostResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                aggregate.Connection.Props,
+                HostFilter(vmSummary.runtime.host, "name"));
+            var hostName = hostResponse.returnval[0].propSet[0].val as string;
+
+            if (!url.Contains(hostName))
+            {
+                url = url.Replace("https://", "");
+                var s = url.IndexOf("/");
+                url = "https://" + hostName + url.Substring(s);
+            }
+
+            using var handler = CreateGuestFileHttpClientHandler();
+            using var client = new HttpClient(handler);
+            client.Timeout = GetGuestFileTransferTimeout();
+
+            return await client.GetStringAsync(url);
+        }
+
+        private HttpClientHandler CreateGuestFileHttpClientHandler()
+        {
+            var handler = new HttpClientHandler();
+            if (_vsphereOptions.SkipGuestFileCertificateValidation)
+                handler.ServerCertificateCustomValidationCallback = (_, _, _, _) => true;
+
+            return handler;
+        }
+
+        private TimeSpan GetGuestFileTransferTimeout()
+        {
+            return _vsphereOptions.GuestFileTransferTimeoutMinutes > 0
+                ? TimeSpan.FromMinutes(_vsphereOptions.GuestFileTransferTimeoutMinutes)
+                : Timeout.InfiniteTimeSpan;
+        }
+
+        private string CombineGuestTempPath(string fileName)
+        {
+            var tempPath = string.IsNullOrWhiteSpace(_vsphereOptions.GuestProcessTempPath)
+                ? Path.GetTempPath()
+                : _vsphereOptions.GuestProcessTempPath;
+
+            tempPath = tempPath.TrimEnd('/', '\\');
+            var separator = tempPath.Contains('\\') ? "\\" : "/";
+            return $"{tempPath}{separator}{fileName}";
+        }
+
+        #endregion
 
         #region Filters
 
