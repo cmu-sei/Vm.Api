@@ -192,12 +192,21 @@ namespace Player.Vm.Api.Domain.Services
 
                 if (requiredViewPermissions.Any() && teamPermissionsClaims != null)
                 {
-                    // View permissions granted through any direct or scoped team claim in the
-                    // requested View can authorize the API operation.
-                    if (HasViewPermission(
-                        teamPermissionsClaims,
-                        teamPermissionsClaims.Select(x => x.TeamId),
-                        requiredViewPermissions))
+                    // IMPORTANT: this intentionally mirrors player.api's TeamPermissionRequirement /
+                    // GetPrimaryVisibilityContext. Check the requested teams first, then fall back to
+                    // the caller's own (member or primary) teams - NOT every claim in the View, which
+                    // would let a scoped-in claim authorize an operation on an unrelated team.
+                    var targetTeamIds = teamViewIds
+                        .Where(x => x.Value == viewId)
+                        .Select(x => x.Key)
+                        .ToArray();
+
+                    if (targetTeamIds.Any() && HasViewPermission(teamPermissionsClaims, targetTeamIds, requiredViewPermissions))
+                        return true;
+
+                    var directTeamIds = await GetDirectTeamIdsByViewIdAsync(viewId, ct);
+
+                    if (directTeamIds.Any() && HasViewPermission(teamPermissionsClaims, directTeamIds, requiredViewPermissions))
                         return true;
                 }
 
@@ -294,10 +303,15 @@ namespace Player.Vm.Api.Domain.Services
             if (primaryPermission == null)
                 return VisibilityContext.Empty;
 
-            var effectiveViewPermissions = ParsePermissions<AppViewPermission>(primaryPermission.PermissionValues);
+            // IMPORTANT: this intentionally mirrors player.api's
+            // AuthorizationService.GetPrimaryVisibilityContext, which decides visibility from the
+            // primary team's DIRECT permissions only - permissions scoped in from another team must
+            // not widen what that team can see.
+            var directViewPermissions = ParsePermissions<AppViewPermission>(primaryPermission.DirectPermissionValues);
+            var directTeamPermissions = ParsePermissions<AppTeamPermission>(primaryPermission.DirectPermissionValues);
             var canViewAllTeams =
-                effectiveViewPermissions.Contains(AppViewPermission.ViewView) ||
-                effectiveViewPermissions.Contains(AppViewPermission.ManageView);
+                directViewPermissions.Contains(AppViewPermission.ViewView) ||
+                directViewPermissions.Contains(AppViewPermission.ManageView);
             var visibleTeamIds = new HashSet<Guid> { primaryPermission.TeamId };
 
             if (canViewAllTeams)
@@ -305,8 +319,12 @@ namespace Player.Vm.Api.Domain.Services
                 var teams = await GetUserViewTeamsByViewIdAsync(viewId, ct);
                 visibleTeamIds.UnionWith(teams.Select(x => x.Id));
             }
-            else
+            else if (
+                directTeamPermissions.Contains(AppTeamPermission.ViewTeam) ||
+                directTeamPermissions.Contains(AppTeamPermission.ManageTeam))
             {
+                // Only teams that scoped their permissions onto the primary team, and only where that
+                // claim itself grants team visibility.
                 visibleTeamIds.UnionWith(permissions
                     .Where(x =>
                         (x.SourceTeamIds?.Contains(primaryPermission.TeamId) ?? false) &&
@@ -381,6 +399,17 @@ namespace Player.Vm.Api.Domain.Services
             }
 
             return teams ?? [];
+        }
+
+        // The caller's own teams in the View - membership or primary only, excluding teams reachable
+        // solely through a scoped permission grant.
+        private async Task<HashSet<Guid>> GetDirectTeamIdsByViewIdAsync(Guid viewId, CancellationToken ct)
+        {
+            var teams = await GetUserViewTeamsByViewIdAsync(viewId, ct);
+            return teams
+                .Where(x => x.IsMember || x.IsPrimary)
+                .Select(x => x.Id)
+                .ToHashSet();
         }
 
         private static bool HasViewPermission(ICollection<TeamPermissionsClaim> claims, IEnumerable<Guid> teamIds, AppViewPermission[] requiredPermissions)

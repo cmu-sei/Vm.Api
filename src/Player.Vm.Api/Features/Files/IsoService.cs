@@ -73,8 +73,7 @@ namespace Player.Vm.Api.Features.Files
             }
             else
             {
-                var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, ct);
-                targetTeamIds = new List<Guid> { primaryTeam.Id };
+                targetTeamIds = new List<Guid> { await GetPrimaryTeamIdOrThrowAsync(viewId, ct) };
             }
 
             // UploadViewIsos lets a view-admin upload to any team; otherwise UploadTeamIsos on the
@@ -123,8 +122,7 @@ namespace Player.Vm.Api.Features.Files
             }
             else
             {
-                var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, ct);
-                targetTeamId = primaryTeam.Id;
+                targetTeamId = await GetPrimaryTeamIdOrThrowAsync(viewId, ct);
             }
 
             if (hasSystemDeleteIsos)
@@ -177,6 +175,19 @@ namespace Player.Vm.Api.Features.Files
             }
 
             return result;
+        }
+
+        // GetPrimaryTeamByViewIdAsync returns null both when Player does not know the View and when the
+        // caller simply has no primary team in it (e.g. a system operator who is not a member). Neither
+        // is a server fault, so translate to 403 rather than letting a null deref surface as a 500.
+        private async Task<Guid> GetPrimaryTeamIdOrThrowAsync(Guid viewId, CancellationToken ct)
+        {
+            var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, ct);
+
+            if (primaryTeam == null)
+                throw new ForbiddenException("You do not have an active team in this View");
+
+            return primaryTeam.Id;
         }
 
         public string SanitizeFilename(string filename)
