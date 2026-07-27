@@ -71,7 +71,9 @@ namespace Player.Vm.Api.Features.Vsphere
                 if (viewTeams.Count == 0)
                     return Array.Empty<IsoResult>();
 
-                return await _isoService.BuildViewIsoResultsAsync(viewTeams, cancellationToken);
+                // VM-scoped listing: the returned paths are handed back to MountIso, so they must come
+                // from the host this VM runs on rather than any connected host.
+                return await _isoService.BuildVmIsoResultsAsync(vm.Id, viewTeams, cancellationToken);
             }
         }
     }

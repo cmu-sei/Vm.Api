@@ -43,6 +43,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<string> UploadFileToVm(Guid id, string username, string password, string filepath, Stream fileStream);
         Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath);
         Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsos(Guid? viewId = null);
+        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsosForVm(Guid vmId, Guid? viewId = null);
         Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
         Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename);
         Task<string> SetResolution(Guid id, int width, int height);
@@ -1082,21 +1083,51 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return $"{baseFolder}/{viewId}/{scopeId}";
         }
 
-        // Lists ISOs from the datastore in a SINGLE recursive datastore-browser task, keyed by scope id
-        // (the leaf folder name). Passing null roots the search at the base folder so every View is
-        // enumerated at once ("all views" mode); passing a viewId roots it at that View's folder.
+        // Lists ISOs for the management UI from an arbitrary connected host. The result is
+        // display-only, so a single host is enough - a host that is missing an ISO means that upload
+        // failed and should be retried, not that every list should fan out. For the VM mount picker
+        // use ListIsosForVm instead: that result is actionable and must come from the VM's own host.
+        // Passing null roots the search at the base folder so every View is enumerated at once
+        // ("all views" mode); passing a viewId roots it at that View's folder.
         public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsos(Guid? viewId = null)
         {
-            var byScope = new Dictionary<Guid, IReadOnlyList<IsoFile>>();
-
             var connection = _connectionService.GetAllConnections()
                 .FirstOrDefault(c => c.Enabled && c.Connected && c.Client != null);
 
             if (connection == null)
             {
                 _logger.LogError("No connected vSphere hosts available to list ISOs.");
-                return byScope;
+                return new Dictionary<Guid, IReadOnlyList<IsoFile>>();
             }
+
+            return await ListIsosFromConnection(connection, viewId);
+        }
+
+        // Lists ISOs visible to a specific VM, from the host that VM actually runs on. IsoFile.Path is
+        // a host-specific "[dsName] baseFolder/..." string that is handed straight back to MountIso, so
+        // on a multi-vCenter install with differing DsName/BaseFolder a path listed from some other
+        // host would not resolve for this VM. Resolving the connection from the VM keeps the mountable
+        // list and the mount itself on the same host.
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsosForVm(Guid vmId, Guid? viewId = null)
+        {
+            var aggregate = await GetVm(vmId);
+
+            if (aggregate?.Connection?.Client == null)
+            {
+                _logger.LogError("Could not resolve a vSphere connection for VM {VmId} to list ISOs.", vmId);
+                return new Dictionary<Guid, IReadOnlyList<IsoFile>>();
+            }
+
+            return await ListIsosFromConnection(aggregate.Connection, viewId);
+        }
+
+        // Lists ISOs from one host's datastore in a SINGLE recursive datastore-browser task, keyed by
+        // scope id (the leaf folder name). Shared by ListIsos and ListIsosForVm so the two entry points
+        // only differ in how the connection is chosen, never in how the datastore is searched or parsed.
+        private async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsosFromConnection(
+            VsphereConnection connection, Guid? viewId)
+        {
+            var byScope = new Dictionary<Guid, IReadOnlyList<IsoFile>>();
 
             var dsName = connection.Host.DsName;
             // Root at the base folder for all Views, or the View folder for one View. Either way the

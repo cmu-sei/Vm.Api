@@ -16,10 +16,11 @@ using Player.Vm.Api.Infrastructure.Options;
 
 namespace Player.Vm.Api.Features.Files.Requests
 {
-    // Uploads a file as an ISO to a View's view-wide folder or to one/more team folders. Stages the
-    // (possibly converted) ISO once locally, then writes it to every resolved scope - either to the
-    // vSphere datastore(s) or to the NFS base path, depending on configuration. The controller owns
-    // reading the form; this handler owns the staging + write orchestration.
+    // Uploads a file as an ISO to a View's view-wide folder or to one/more team folders, writing it
+    // to every resolved scope - either to the vSphere datastore(s) or to the NFS base path, depending
+    // on configuration. Only the datastore path stages a local copy first (it needs a seekable file
+    // per host); the NFS path writes straight through. The controller owns reading the form; this
+    // handler owns the write orchestration.
     public class UploadIso : IFeatureHandler
     {
         private readonly IIsoService _isoService;
@@ -51,43 +52,102 @@ namespace Player.Vm.Api.Features.Files.Requests
             // selected team id - or the primary team when none were specified). Permissions enforced here.
             var scopeIds = await _isoService.ResolveUploadScopeIdsAsync(viewId, scope, teamIds, ct);
 
-            // Stage the (possibly converted) ISO once locally; both the datastore and NFS paths copy
-            // from this single staged file into each target scope.
-            var (tempPath, destName) = await StageIsoAsync(file, filename, ct);
+            // The datastore path needs a seekable local file to stream to each host, so it stages
+            // first. The NFS path writes straight to its destination(s) instead - staging there would
+            // impose a full-size temp-space requirement on deployments that never had one (and that
+            // TempStagingPath documents as datastore-only).
+            if (_isoUploadOptions.UploadToDatastore)
+            {
+                return await UploadToDatastoreStaged(viewId, file, filename, scopeIds, ct);
+            }
+
+            await UploadToNfs(viewId, file, filename, scopeIds, ct);
+
+            return new IsoUploadResult { Message = "ISO was uploaded" };
+        }
+
+        // Datastore path: stage the (possibly converted) ISO locally, then stream it to every target
+        // scope. This finally covers a failure during the upload; a failure during staging is cleaned
+        // up by StageIsoAsync itself, since tempPath is not assigned here until staging succeeds.
+        private async Task<IsoUploadResult> UploadToDatastoreStaged(
+            Guid viewId, IFormFile file, string filename, IReadOnlyList<string> scopeIds, CancellationToken ct)
+        {
+            string tempPath = null;
 
             try
             {
-                if (_isoUploadOptions.UploadToDatastore)
-                {
-                    return await UploadToDatastore(viewId.ToString(), scopeIds, destName, tempPath);
-                }
-
-                // NFS path: copy the staged ISO into every target folder in parallel.
-                await Task.WhenAll(scopeIds.Select(async scopeId =>
-                {
-                    var destPath = Path.Combine(_isoUploadOptions.BasePath, viewId.ToString(), scopeId);
-                    Directory.CreateDirectory(destPath);
-                    using var source = File.OpenRead(tempPath);
-                    using var dest = File.Create(Path.Combine(destPath, destName));
-                    await source.CopyToAsync(dest, ct);
-                }));
+                (tempPath, var destName) = await StageIsoAsync(file, filename, ct);
+                return await UploadToDatastore(viewId.ToString(), scopeIds, destName, tempPath);
             }
             finally
             {
-                if (File.Exists(tempPath))
+                DeleteIfExists(tempPath);
+            }
+        }
+
+        // Best-effort removal of a staged temp file. Never throws: a cleanup failure must not mask the
+        // outcome (or the exception) of the upload itself.
+        private static void DeleteIfExists(string path)
+        {
+            if (path == null)
+                return;
+
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch { /* best-effort cleanup */ }
+        }
+
+        // NFS path: write the upload directly into the target folder(s) under BasePath - no local
+        // staging. The request stream can only be read once, so the first scope is written from the
+        // stream and any remaining scopes are file-copied from it.
+        private async Task UploadToNfs(
+            Guid viewId, IFormFile file, string filename, IReadOnlyList<string> scopeIds, CancellationToken ct)
+        {
+            // Same naming as the datastore path: a real ISO keeps its name, anything else is wrapped
+            // into an ISO and gains the extension.
+            var isIso = IsoFileNaming.IsIsoFile(filename);
+            var destName = isIso ? filename : filename + IsoFileNaming.Extension;
+
+            string DestFileFor(string scopeId)
+            {
+                var destPath = Path.Combine(_isoUploadOptions.BasePath, viewId.ToString(), scopeId);
+                Directory.CreateDirectory(destPath);
+                return Path.Combine(destPath, destName);
+            }
+
+            var firstFile = DestFileFor(scopeIds[0]);
+
+            using (var sourceStream = file.OpenReadStream())
+            {
+                if (isIso)
                 {
-                    try { File.Delete(tempPath); }
-                    catch { /* best-effort cleanup */ }
+                    using var destStream = File.Create(firstFile);
+                    await sourceStream.CopyToAsync(destStream, ct);
+                }
+                else
+                {
+                    BuildIso(sourceStream, filename, firstFile);
                 }
             }
 
-            return new IsoUploadResult { Message = "ISO was uploaded" };
+            // Remaining scopes copy from the file just written rather than re-reading the request body.
+            await Task.WhenAll(scopeIds.Skip(1).Select(async scopeId =>
+            {
+                using var source = File.OpenRead(firstFile);
+                using var dest = File.Create(DestFileFor(scopeId));
+                await source.CopyToAsync(dest, ct);
+            }));
         }
 
         // Resolve the staging directory, normalize the destination name to "*.iso", and stage the
         // upload as an ISO locally. Real ISOs are streamed to disk directly; any other file is wrapped
         // into a single-file ISO. The datastore filename matches the NFS naming so GetIsos/MountIso
-        // resolve it identically. The caller owns deleting the returned tempPath.
+        // resolve it identically. The caller owns deleting the returned tempPath - but only once this
+        // returns: the caller's variable is unassigned until then, so a failure part-way through the
+        // copy/conversion must delete the partial file here or it would be leaked.
         private async Task<(string tempPath, string isoName)> StageIsoAsync(IFormFile formFile, string filename, CancellationToken ct)
         {
             var stagingDir = string.IsNullOrWhiteSpace(_isoUploadOptions.TempStagingPath)
@@ -99,17 +159,25 @@ namespace Player.Vm.Api.Features.Files.Requests
             var isoName = isIso ? filename : filename + IsoFileNaming.Extension;
             var tempPath = Path.Combine(stagingDir, Guid.NewGuid().ToString() + IsoFileNaming.Extension);
 
-            using (var sourceStream = formFile.OpenReadStream())
+            try
             {
-                if (isIso)
+                using (var sourceStream = formFile.OpenReadStream())
                 {
-                    using var destStream = File.Create(tempPath);
-                    await sourceStream.CopyToAsync(destStream, ct);
+                    if (isIso)
+                    {
+                        using var destStream = File.Create(tempPath);
+                        await sourceStream.CopyToAsync(destStream, ct);
+                    }
+                    else
+                    {
+                        BuildIso(sourceStream, filename, tempPath);
+                    }
                 }
-                else
-                {
-                    BuildIso(sourceStream, filename, tempPath);
-                }
+            }
+            catch
+            {
+                DeleteIfExists(tempPath);
+                throw;
             }
 
             return (tempPath, isoName);

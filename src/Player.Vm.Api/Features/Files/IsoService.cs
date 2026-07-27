@@ -28,6 +28,7 @@ namespace Player.Vm.Api.Features.Files
         Task<IReadOnlyList<string>> ResolveUploadScopeIdsAsync(Guid viewId, string scope, IReadOnlyList<Guid> teamIds, CancellationToken ct);
         Task<string> ResolveDeleteScopeIdAsync(Guid viewId, string scope, Guid? teamId, CancellationToken ct);
         Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
+        Task<IsoResult[]> BuildVmIsoResultsAsync(Guid vmId, IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
         string SanitizeFilename(string filename);
         IReadOnlyList<Guid> ParseTeamIds(StringValues values);
     }
@@ -146,6 +147,17 @@ namespace Player.Vm.Api.Features.Files
             // enumerate every View in one pass.
             var scopeViewId = views.Count == 1 ? views.First().View.Id : (Guid?)null;
             var isosByScope = await _vsphereService.ListIsos(scopeViewId);
+
+            return views.Select(v => AssembleViewIsoResult(v, isosByScope)).ToArray();
+        }
+
+        // Same shape as BuildViewIsoResultsAsync, but lists from the host the given VM runs on. Used by
+        // the VM mount picker, whose result is fed back to MountIso - see ListIsosForVm for why the
+        // connection must come from the VM rather than from an arbitrary connected host.
+        public async Task<IsoResult[]> BuildVmIsoResultsAsync(Guid vmId, IReadOnlyCollection<ViewTeams> views, CancellationToken ct)
+        {
+            var scopeViewId = views.Count == 1 ? views.First().View.Id : (Guid?)null;
+            var isosByScope = await _vsphereService.ListIsosForVm(vmId, scopeViewId);
 
             return views.Select(v => AssembleViewIsoResult(v, isosByScope)).ToArray();
         }
