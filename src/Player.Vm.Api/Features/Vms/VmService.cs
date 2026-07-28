@@ -413,9 +413,12 @@ namespace Player.Vm.Api.Features.Vms
                 return null;
 
             var visibility = await _playerService.GetVisibilityContextAsync(viewId, ct);
+
+            // This call is the View-existence probe, not a source of team data - the accessible-map
+            // filter below uses visibility.TeamIds. A null result means the View is absent from
+            // Player API, which must surface as 404 rather than an empty map list. Do not remove.
             var teams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
 
-            // If teams is null, view doesn't exist in Player API
             if (teams == null)
                 return null;
 

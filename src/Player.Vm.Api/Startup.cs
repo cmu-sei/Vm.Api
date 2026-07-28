@@ -291,6 +291,8 @@ public class Startup
         services.AddScoped<IVmService, VmService>();
         services.AddScoped<IPlayerService, PlayerService>();
         services.AddScoped<IViewService, ViewService>();
+        services.AddScoped<Features.Files.IIsoService, Features.Files.IsoService>();
+
         services.AddSingleton<CallbackBackgroundService>();
         services.AddSingleton<IHostedService>(x => x.GetService<CallbackBackgroundService>());
         services.AddSingleton<ICallbackBackgroundService>(x => x.GetService<CallbackBackgroundService>());
@@ -318,12 +320,13 @@ public class Startup
         services.AddSingleton<IHostedService>(x => x.GetService<ProxmoxStateService>());
         services.AddSingleton<IProxmoxStateService>(x => x.GetService<ProxmoxStateService>());
 
+        services.AddFeatureHandlers();
         services.AddAutoMapper(typeof(Startup));
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(typeof(Startup).Assembly));
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CheckTasksBehavior<,>));
 
         services.AddMemoryCache();
-        services.AddApiClients(identityClientOptions: _identityClientOptions, clientOptions: _clientOptions);
+        services.AddApiClients(identityClientOptions: _identityClientOptions, clientOptions: _clientOptions, isoUploadOptions: isoOptions);
 
         // Create custom Otel Metric
         services.AddSingleton<TelemetryService>();

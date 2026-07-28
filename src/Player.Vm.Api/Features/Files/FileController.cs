@@ -2,16 +2,15 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
-using System.IO;
 using System.Linq;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
-using DiscUtils.Iso9660;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using Player.Vm.Api.Domain.Services;
-using Player.Vm.Api.Infrastructure.Authorization;
-using Player.Vm.Api.Infrastructure.Options;
+using Player.Vm.Api.Features.Files.Requests;
+using Player.Vm.Api.Features.Vsphere;
+using Player.Vm.Api.Infrastructure.Exceptions;
 using Swashbuckle.AspNetCore.Annotations;
 
 namespace Player.Vm.Api.Features.Files
@@ -21,87 +20,55 @@ namespace Player.Vm.Api.Features.Files
     [Route("api/")]
     public class FileController : Controller
     {
-        private IsoUploadOptions _isoUploadOptions;
-        private readonly IPlayerService _playerService;
-
-        public FileController(
-            IsoUploadOptions isoUploadOptions,
-            IPlayerService playerService
-        ) : base()
-        {
-            _isoUploadOptions = isoUploadOptions;
-            _playerService = playerService;
-        }
-
         [HttpPost("views/{uuid}/isos"), DisableRequestSizeLimit]
-        [ProducesResponseType((int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(IsoUploadResult), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "uploadFileAsIso")]
-        public async Task<IActionResult> Upload(Guid uuid)
+        public async Task<IActionResult> Upload(Guid uuid,
+            [FromServices] IIsoService isoService, [FromServices] UploadIso uploadIso, CancellationToken ct)
         {
+            if (Request.Form.Files.Count == 0)
+            {
+                throw new BadRequestException("A file is required.");
+            }
+
             var formFile = Request.Form.Files[0];
-            var filename = SanitizeFilename(formFile.Name);
-            var scope = Request.Form["scope"][0];
-            var size = Convert.ToInt64(Request.Form["size"][0]);
 
-            if (size > _isoUploadOptions.MaxFileSize)
+            var scope = Request.Form["scope"].FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(scope))
             {
-                throw new Exception($"File exceeds the {_isoUploadOptions.MaxFileSize} byte maximum size.");
+                throw new BadRequestException("A scope is required.");
             }
 
-            var team = await _playerService.GetPrimaryTeamByViewIdAsync(uuid, new System.Threading.CancellationToken());
-
-            if (scope == "view")
+            if (!long.TryParse(Request.Form["size"].FirstOrDefault(), out var size))
             {
-                if (!await _playerService.Can([team.Id], [], [], [AppViewPermission.UploadViewIsos], [], new System.Threading.CancellationToken()))
-                    throw new InvalidOperationException("You do not have permission to upload public files for this View");
-            }
-            else
-            {
-                if (!await _playerService.Can([team.Id], [], [], [AppViewPermission.UploadViewIsos], [AppTeamPermission.UploadTeamIsos], new System.Threading.CancellationToken()))
-                    throw new InvalidOperationException("You do not have permission to upload files for this Team");
+                throw new BadRequestException("A valid size is required.");
             }
 
-            var destPath = Path.Combine(
-                _isoUploadOptions.BasePath,
-                uuid.ToString(),
-                (scope == "view") ? uuid.ToString() : team.Id.ToString()
-            );
+            var teamIds = isoService.ParseTeamIds(Request.Form["teamIds"]);
 
-            var destFile = Path.Combine(destPath, filename);
-
-            Directory.CreateDirectory(destPath);
-
-            using (var sourceStream = formFile.OpenReadStream())
-            {
-
-                if (filename.ToLower().EndsWith(".iso"))
-                {
-                    using (var destStream = System.IO.File.Create(destFile))
-                    {
-                        await sourceStream.CopyToAsync(destStream);
-                    }
-                }
-                else
-                {
-                    CDBuilder builder = new CDBuilder();
-                    builder.UseJoliet = true;
-                    builder.VolumeIdentifier = "PlayerIso";
-                    builder.AddFile(filename, sourceStream);
-                    builder.Build(destFile + ".iso");
-                }
-            }
-
-            return Json("ISO was uploaded");
+            return Json(await uploadIso.HandleAsync(uuid, formFile, scope, size, teamIds, ct));
         }
 
-        private string SanitizeFilename(string filename)
-        {
-            string fn = "";
-            char[] bad = Path.GetInvalidFileNameChars();
-            foreach (char c in filename.ToCharArray())
-                if (!bad.Contains(c))
-                    fn += c;
-            return fn;
-        }
+        [HttpGet("views/{uuid}/isos")]
+        [ProducesResponseType(typeof(IsoResult), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getViewIsos")]
+        public async Task<IActionResult> List(Guid uuid,
+            [FromServices] ListViewIsos listViewIsos, CancellationToken ct)
+            => Json(await listViewIsos.HandleAsync(uuid, ct));
+
+        [HttpGet("isos")]
+        [ProducesResponseType(typeof(IsoResult[]), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "getAllIsos")]
+        public async Task<IActionResult> ListAll(
+            [FromServices] ListAllIsos listAllIsos, CancellationToken ct)
+            => Json(await listAllIsos.HandleAsync(ct));
+
+        [HttpDelete("views/{uuid}/isos")]
+        [ProducesResponseType(typeof(IsoUploadResult), (int)HttpStatusCode.OK)]
+        [SwaggerOperation(OperationId = "deleteIso")]
+        public async Task<IActionResult> Delete(Guid uuid, [FromQuery] string scope,
+            [FromQuery] string filename, [FromQuery] Guid? teamId,
+            [FromServices] DeleteIso deleteIso, CancellationToken ct = default)
+            => Json(await deleteIso.HandleAsync(uuid, scope, filename, teamId, ct));
     }
 }

@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Mvc;
 using VimClient;
 using Swashbuckle.AspNetCore.Annotations;
 using Player.Vm.Api.Domain.Vsphere.Models;
+using Player.Vm.Api.Features.Files;
 
 namespace Player.Vm.Api.Features.Vsphere
 {
@@ -215,7 +216,7 @@ namespace Player.Vm.Api.Features.Vsphere
         /// Get isos available to be mounted to a vsphere virtual machine
         /// </summary>
         [HttpGet("vms/vsphere/{id}/isos")]
-        [ProducesResponseType(typeof(GetIsos.IsoResult[]), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(IsoResult[]), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "getVsphereVirtualMachineIsos")]
         public async Task<IActionResult> GetIsos([FromRoute] Guid id)
         {

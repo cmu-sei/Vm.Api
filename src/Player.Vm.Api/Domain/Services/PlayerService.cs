@@ -18,12 +18,27 @@ namespace Player.Vm.Api.Domain.Services
     public interface IPlayerService
     {
         Task<IEnumerable<Team>> GetTeamsByViewIdAsync(Guid viewId, CancellationToken ct);
+
+        /// <summary>
+        /// All teams in the View, regardless of the caller's membership (unlike
+        /// <see cref="GetTeamsByViewIdAsync"/>, which returns only the caller's teams). Backed by the
+        /// privileged player.api GetViewTeams endpoint, so the caller must be authorized for it
+        /// (e.g. a view-admin or system operator); use for the view-admin / all-views ISO listing.
+        /// </summary>
+        Task<IEnumerable<Team>> GetAllTeamsByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<VisibilityContext> GetVisibilityContextAsync(Guid viewId, CancellationToken ct);
         Task<VisibilityContext> GetVisibilityContextForTeamAsync(Guid teamId, CancellationToken ct);
+        Task<bool> IsTeamInViewAsync(Guid teamId, Guid viewId, CancellationToken ct);
         Task<bool> IsTeamVisibleAsync(Guid teamId, CancellationToken ct);
         Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct);
         Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct);
+
+        /// <summary>
+        /// Every View in the system. Gated by SystemPermission.ViewViews in player.api, so the caller
+        /// must be a system operator; use for the system-wide "all views" ISO listing.
+        /// </summary>
+        Task<IEnumerable<View>> GetAllViewsAsync(CancellationToken ct);
         Task<Team> GetTeamById(Guid id);
         Task<User> GetUserById(Guid id, CancellationToken ct);
         Task<IEnumerable<User>> GetUsersByTeamId(Guid teamId, CancellationToken ct);
@@ -177,6 +192,10 @@ namespace Player.Vm.Api.Domain.Services
 
                 if (requiredViewPermissions.Any() && teamPermissionsClaims != null)
                 {
+                    // This intentionally mirrors player.api's TeamPermissionRequirement /
+                    // GetPrimaryVisibilityContext. Check the requested teams first, then fall back to
+                    // the caller's own (member or primary) teams - NOT every claim in the View, which
+                    // would let a scoped-in claim authorize an operation on an unrelated team.
                     var targetTeamIds = teamViewIds
                         .Where(x => x.Value == viewId)
                         .Select(x => x.Key)
@@ -210,6 +229,9 @@ namespace Player.Vm.Api.Domain.Services
         {
             try
             {
+                // Fetch teams FIRST - this is the probe that surfaces a 404 for an unknown View.
+                // GetVisibilityContextAsync deliberately swallows 404 into an empty context, so
+                // reversing these two lines would turn "view not found" into "no visible teams".
                 var teams = await GetUserViewTeamsByViewIdAsync(viewId, ct);
                 var visibility = await GetVisibilityContextAsync(viewId, ct);
                 return teams.Where(x => visibility.TeamIds.Contains(x.Id));
@@ -221,10 +243,18 @@ namespace Player.Vm.Api.Domain.Services
             }
         }
 
+        public async Task<IEnumerable<Team>> GetAllTeamsByViewIdAsync(Guid viewId, CancellationToken ct)
+        {
+            // All teams in the View (not just the caller's) - used for the view-admin ISO listing.
+            var teams = await _playerApiClient.GetViewTeamsAsync(viewId, ct);
+            return teams;
+        }
+
         public async Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct)
         {
             try
             {
+                // Teams first - see the ordering note in GetTeamsByViewIdAsync.
                 var teams = await GetUserViewTeamsByViewIdAsync(viewId, ct);
                 var visibility = await GetVisibilityContextAsync(viewId, ct);
                 return teams.FirstOrDefault(x => x.Id == visibility.PrimaryTeamId);
@@ -271,12 +301,29 @@ namespace Player.Vm.Api.Domain.Services
 
         public async Task<VisibilityContext> GetVisibilityContextAsync(Guid viewId, CancellationToken ct)
         {
-            var permissions = await GetTeamPermissionsByViewIdAsync(viewId, ct);
+            ICollection<TeamPermissionsClaim> permissions;
+
+            try
+            {
+                permissions = await GetTeamPermissionsByViewIdAsync(viewId, ct);
+            }
+            catch (Player.Api.Client.ApiException ex) when (ex.StatusCode == 404)
+            {
+                // View not found in Player API - an unknown View grants no visibility. Callers that
+                // need to distinguish "not found" from "nothing visible" (GetTeamsByViewIdAsync,
+                // GetPrimaryTeamByViewIdAsync) probe the teams endpoint separately.
+                return VisibilityContext.Empty;
+            }
+
             var primaryPermission = permissions.FirstOrDefault(x => x.IsPrimary);
 
             if (primaryPermission == null)
                 return VisibilityContext.Empty;
 
+            // This intentionally mirrors player.api's
+            // AuthorizationService.GetPrimaryVisibilityContext, which decides visibility from the
+            // primary team's DIRECT permissions only - permissions scoped in from another team must
+            // not widen what that team can see.
             var directViewPermissions = ParsePermissions<AppViewPermission>(primaryPermission.DirectPermissionValues);
             var directTeamPermissions = ParsePermissions<AppTeamPermission>(primaryPermission.DirectPermissionValues);
             var canViewAllTeams =
@@ -293,6 +340,9 @@ namespace Player.Vm.Api.Domain.Services
                 directTeamPermissions.Contains(AppTeamPermission.ViewTeam) ||
                 directTeamPermissions.Contains(AppTeamPermission.ManageTeam))
             {
+                // Teams that scoped their permissions onto the primary team. The caller's own direct
+                // ViewTeam/ManageTeam above is what authorizes this - the scoped claim's own
+                // permissions are deliberately not consulted, matching player.api.
                 visibleTeamIds.UnionWith(permissions
                     .Where(x => x.SourceTeamIds?.Contains(primaryPermission.TeamId) ?? false)
                     .Select(x => x.TeamId));
@@ -300,6 +350,12 @@ namespace Player.Vm.Api.Domain.Services
 
             visibleTeamIds.Remove(Guid.Empty);
             return new VisibilityContext(primaryPermission.TeamId, canViewAllTeams, visibleTeamIds);
+        }
+
+        public async Task<bool> IsTeamInViewAsync(Guid teamId, Guid viewId, CancellationToken ct)
+        {
+            var teamViewId = await _viewService.GetViewIdForTeam(teamId, ct);
+            return teamViewId == viewId;
         }
 
         public async Task<bool> IsTeamVisibleAsync(Guid teamId, CancellationToken ct)
@@ -322,6 +378,12 @@ namespace Player.Vm.Api.Domain.Services
             return await _playerApiClient.GetViewAsync(viewId, ct);
         }
 
+        public async Task<IEnumerable<View>> GetAllViewsAsync(CancellationToken ct)
+        {
+            // Every View in the system - gated by SystemPermission.ViewViews in player.api.
+            return await _playerApiClient.GetViewsAsync(ct);
+        }
+
         public async Task<User> GetUserById(Guid id, CancellationToken ct)
         {
             return await _playerApiClient.GetUserAsync(id, ct);
@@ -337,7 +399,11 @@ namespace Player.Vm.Api.Domain.Services
             if (!_teamPermissionsCache.TryGetValue(viewId, out var teamPermissionsClaims))
             {
                 teamPermissionsClaims = await _playerApiClient.GetMyTeamPermissionsAsync(viewId, null, true, ct);
-                _teamPermissionsCache.TryAdd(viewId, teamPermissionsClaims);
+
+                // Only cache a real result - memoizing null would make a transient failure sticky for
+                // the rest of the request and indistinguishable from "no claims".
+                if (teamPermissionsClaims != null)
+                    _teamPermissionsCache.TryAdd(viewId, teamPermissionsClaims);
             }
 
             return teamPermissionsClaims ?? [];
@@ -348,12 +414,18 @@ namespace Player.Vm.Api.Domain.Services
             if (!_viewTeamsCache.TryGetValue(viewId, out var teams))
             {
                 teams = await _playerApiClient.GetUserViewTeamsAsync(viewId, _userId, ct);
-                _viewTeamsCache.TryAdd(viewId, teams);
+
+                // Only cache a real result - memoizing null would make a transient failure sticky for
+                // the rest of the request and indistinguishable from "view exists, no teams".
+                if (teams != null)
+                    _viewTeamsCache.TryAdd(viewId, teams);
             }
 
             return teams ?? [];
         }
 
+        // The caller's own teams in the View - membership or primary only, excluding teams reachable
+        // solely through a scoped permission grant.
         private async Task<HashSet<Guid>> GetDirectTeamIdsByViewIdAsync(Guid viewId, CancellationToken ct)
         {
             var teams = await GetUserViewTeamsByViewIdAsync(viewId, ct);

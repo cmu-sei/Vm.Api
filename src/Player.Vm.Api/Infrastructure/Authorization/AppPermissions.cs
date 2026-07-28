@@ -9,7 +9,13 @@ public enum AppSystemPermission
     ManageViews,
     EditViews,
     ViewNetworks,
-    ManageNetworks
+    ManageNetworks,
+
+    /// <summary>
+    /// System-wide authority to delete any ISO in any View/team, including ones the caller is not a
+    /// member of. Used by the "all views" ISO management mode.
+    /// </summary>
+    DeleteIsos
 }
 
 public enum AppViewPermission
@@ -17,7 +23,12 @@ public enum AppViewPermission
     ViewView,
     ManageView,
     EditView,
+
+    /// <summary>Upload ISOs view-wide (public) and to any team in the View.</summary>
     UploadViewIsos,
+
+    /// <summary>Delete view-wide (public) ISOs and any team's ISOs in the View.</summary>
+    DeleteViewIsos,
     DownloadVmFiles,
     UploadVmFiles,
     RevertVms,
@@ -30,5 +41,10 @@ public enum AppTeamPermission
     ViewTeam,
     ManageTeam,
     EditTeam,
-    UploadTeamIsos
+
+    /// <summary>Upload ISOs to this specific team.</summary>
+    UploadTeamIsos,
+
+    /// <summary>Delete ISOs belonging to this specific team.</summary>
+    DeleteTeamIsos
 }

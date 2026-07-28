@@ -1,0 +1,234 @@
+// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
+// Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Primitives;
+using Player.Api.Client;
+using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Domain.Vsphere.Models;
+using Player.Vm.Api.Domain.Vsphere.Services;
+using Player.Vm.Api.Infrastructure.Authorization;
+using Player.Vm.Api.Infrastructure.Exceptions;
+
+namespace Player.Vm.Api.Features.Files
+{
+    // A View and the teams within it to render an ISO listing for.
+    public record ViewTeams(View View, IReadOnlyCollection<Team> Teams);
+
+    // Shared ISO logic used by more than one of the Files request handlers: permission/scope
+    // resolution for upload and delete, assembling the per-View listing, plus the pure filename/
+    // teamId parsing helpers. Per-endpoint orchestration lives in the Requests/* handlers.
+    public interface IIsoService
+    {
+        Task<IReadOnlyList<string>> ResolveUploadScopeIdsAsync(Guid viewId, string scope, IReadOnlyList<Guid> teamIds, CancellationToken ct);
+        Task<string> ResolveDeleteScopeIdAsync(Guid viewId, string scope, Guid? teamId, CancellationToken ct);
+        Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
+        Task<IsoResult[]> BuildVmIsoResultsAsync(Guid vmId, IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
+        string SanitizeFilename(string filename);
+        IReadOnlyList<Guid> ParseTeamIds(StringValues values);
+    }
+
+    public class IsoService : IIsoService
+    {
+        private readonly IPlayerService _playerService;
+        private readonly IVsphereService _vsphereService;
+
+        public IsoService(
+            IPlayerService playerService,
+            IVsphereService vsphereService)
+        {
+            _playerService = playerService;
+            _vsphereService = vsphereService;
+        }
+
+        // Enforces the ISO UPLOAD permissions and returns the scopeId(s) the ISO folder(s) are keyed on:
+        //  - "view" scope: requires UploadViewIsos; a single scopeId of the view id.
+        //  - "team" scope: targets are the given teamIds (each validated to belong to the View) or the
+        //    primary team when none are supplied. Each target requires UploadViewIsos (any team) or
+        //    UploadTeamIsos on that team. scopeIds are the team ids.
+        public async Task<IReadOnlyList<string>> ResolveUploadScopeIdsAsync(Guid viewId, string scope, IReadOnlyList<Guid> teamIds, CancellationToken ct)
+        {
+            if (scope == "view")
+            {
+                if (!await _playerService.Can([], [viewId], [], [AppViewPermission.UploadViewIsos], [], ct))
+                    throw new ForbiddenException("You do not have permission to upload public files for this View");
+
+                return new[] { viewId.ToString() };
+            }
+
+            // Resolve the target team(s): explicit teamIds (each must belong to the View) else the primary team.
+            List<Guid> targetTeamIds;
+            if (teamIds.Count > 0)
+            {
+                foreach (var teamId in teamIds)
+                {
+                    if (!await _playerService.IsTeamInViewAsync(teamId, viewId, ct))
+                        throw new BadRequestException("The specified team is not part of this View");
+                }
+                targetTeamIds = teamIds.ToList();
+            }
+            else
+            {
+                targetTeamIds = new List<Guid> { await GetPrimaryTeamIdOrThrowAsync(viewId, ct) };
+            }
+
+            // UploadViewIsos lets a view-admin upload to any team; otherwise UploadTeamIsos on the
+            // target team is required. Checked per team so a partially-permitted selection is rejected.
+            foreach (var targetTeamId in targetTeamIds)
+            {
+                if (!await _playerService.Can([targetTeamId], [viewId], [], [AppViewPermission.UploadViewIsos], [AppTeamPermission.UploadTeamIsos], ct))
+                    throw new ForbiddenException("You do not have permission to upload files for this Team");
+            }
+
+            return targetTeamIds.Select(id => id.ToString()).ToList();
+        }
+
+        // Enforces the ISO DELETE permissions and returns the scopeId to delete from.
+        //  - "view" scope: requires DeleteViewIsos; scopeId is the view id.
+        //  - "team" scope: target team is teamId (validated to belong to the View) or the primary team
+        //    when teamId is absent. Allowed if the caller has DeleteViewIsos (any team) or DeleteTeamIsos
+        //    on that team. scopeId is the team id.
+        // The system-level DeleteIsos permission additionally authorizes deleting an ISO in ANY
+        // View/team - including ones the caller is not a member of (the "all views" management mode).
+        public async Task<string> ResolveDeleteScopeIdAsync(Guid viewId, string scope, Guid? teamId, CancellationToken ct)
+        {
+            // DeleteIsos is the only permission that lets a caller delete an ISO they have no specific
+            // Delete*Isos permission for; checked up front so it can short-circuit the per-scope checks.
+            var hasSystemDeleteIsos = await _playerService.Can([], [], [AppSystemPermission.DeleteIsos], [], [], ct);
+
+            if (scope == "view")
+            {
+                if (hasSystemDeleteIsos)
+                    return viewId.ToString();
+
+                if (!await _playerService.Can([], [viewId], [], [AppViewPermission.DeleteViewIsos], [], ct))
+                    throw new ForbiddenException("You do not have permission to delete public files for this View");
+
+                return viewId.ToString();
+            }
+
+            // Resolve the target team: an explicit teamId (must belong to the View) else the primary team.
+            Guid targetTeamId;
+            if (teamId.HasValue)
+            {
+                if (!await _playerService.IsTeamInViewAsync(teamId.Value, viewId, ct))
+                    throw new BadRequestException("The specified team is not part of this View");
+
+                targetTeamId = teamId.Value;
+            }
+            else
+            {
+                targetTeamId = await GetPrimaryTeamIdOrThrowAsync(viewId, ct);
+            }
+
+            if (hasSystemDeleteIsos)
+                return targetTeamId.ToString();
+
+            // DeleteViewIsos lets a view-admin delete any team's ISO; otherwise DeleteTeamIsos on the
+            // target team is required.
+            if (!await _playerService.Can([targetTeamId], [viewId], [], [AppViewPermission.DeleteViewIsos], [AppTeamPermission.DeleteTeamIsos], ct))
+                throw new ForbiddenException("You do not have permission to delete files for this Team");
+
+            return targetTeamId.ToString();
+        }
+
+        // Assemble the view-wide + per-team ISO listing for one or more Views. View-wide ISOs are keyed
+        // on the view id; each team's on the team id. A SINGLE recursive datastore-browser task lists
+        // every scope: scoped to the one View when a single View is requested, else rooted at the base
+        // folder for all Views.
+        public async Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct)
+        {
+            // Scope the search to the single View when only one is requested (smaller search); otherwise
+            // enumerate every View in one pass.
+            var scopeViewId = views.Count == 1 ? views.First().View.Id : (Guid?)null;
+            var isosByScope = await _vsphereService.ListIsos(scopeViewId);
+
+            return views.Select(v => AssembleViewIsoResult(v, isosByScope)).ToArray();
+        }
+
+        // Same shape as BuildViewIsoResultsAsync, but lists from the host the given VM runs on. Used by
+        // the VM mount picker, whose result is fed back to MountIso - see ListIsosForVm for why the
+        // connection must come from the VM rather than from an arbitrary connected host.
+        public async Task<IsoResult[]> BuildVmIsoResultsAsync(Guid vmId, IReadOnlyCollection<ViewTeams> views, CancellationToken ct)
+        {
+            var scopeViewId = views.Count == 1 ? views.First().View.Id : (Guid?)null;
+            var isosByScope = await _vsphereService.ListIsosForVm(vmId, scopeViewId);
+
+            return views.Select(v => AssembleViewIsoResult(v, isosByScope)).ToArray();
+        }
+
+        // Bucket the scope-keyed ISO listing into the view-wide + per-team shape. View-wide ISOs are
+        // keyed on the view id; each team's on the team id. Scopes with no ISOs yield empty arrays.
+        private static IsoResult AssembleViewIsoResult(ViewTeams viewTeams, IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>> isosByScope)
+        {
+            IsoFile[] IsosFor(Guid scopeId) =>
+                isosByScope.TryGetValue(scopeId, out var isos) ? isos.ToArray() : Array.Empty<IsoFile>();
+
+            var result = new IsoResult
+            {
+                ViewId = viewTeams.View.Id,
+                ViewName = viewTeams.View.Name,
+                Isos = IsosFor(viewTeams.View.Id)
+            };
+
+            foreach (var team in viewTeams.Teams)
+            {
+                result.TeamIsoResults.Add(new TeamIsoResult
+                {
+                    TeamId = team.Id,
+                    TeamName = team.Name,
+                    Isos = IsosFor(team.Id)
+                });
+            }
+
+            return result;
+        }
+
+        // GetPrimaryTeamByViewIdAsync returns null both when Player does not know the View and when the
+        // caller simply has no primary team in it (e.g. a system operator who is not a member). Neither
+        // is a server fault, so translate to 403 rather than letting a null deref surface as a 500.
+        private async Task<Guid> GetPrimaryTeamIdOrThrowAsync(Guid viewId, CancellationToken ct)
+        {
+            var primaryTeam = await _playerService.GetPrimaryTeamByViewIdAsync(viewId, ct);
+
+            if (primaryTeam == null)
+                throw new ForbiddenException("You do not have an active team in this View");
+
+            return primaryTeam.Id;
+        }
+
+        public string SanitizeFilename(string filename)
+        {
+            string fn = "";
+            char[] bad = Path.GetInvalidFileNameChars();
+            foreach (char c in filename.ToCharArray())
+                if (!bad.Contains(c))
+                    fn += c;
+            return fn;
+        }
+
+        // Parse the optional "teamIds" form field, which may arrive as repeated values and/or
+        // comma-separated lists. Invalid/empty entries are ignored.
+        public IReadOnlyList<Guid> ParseTeamIds(StringValues values)
+        {
+            var ids = new List<Guid>();
+            foreach (var value in values)
+            {
+                if (string.IsNullOrWhiteSpace(value))
+                    continue;
+
+                foreach (var part in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                {
+                    if (Guid.TryParse(part, out var id))
+                        ids.Add(id);
+                }
+            }
+            return ids.Distinct().ToList();
+        }
+    }
+}

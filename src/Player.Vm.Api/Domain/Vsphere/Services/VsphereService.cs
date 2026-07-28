@@ -6,8 +6,12 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Net;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.IO;
+using System.ServiceModel;
+using System.Text;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
@@ -16,6 +20,7 @@ using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
+using Player.Vm.Api.Features.Files;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using System.Web;
@@ -37,7 +42,10 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<VirtualMachineToolsStatus> GetVmToolsStatus(Guid id);
         Task<string> UploadFileToVm(Guid id, string username, string password, string filepath, Stream fileStream);
         Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath);
-        Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subFolder);
+        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsos(Guid? viewId = null);
+        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsosForVm(Guid vmId, Guid? viewId = null);
+        Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
+        Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename);
         Task<string> SetResolution(Guid id, int width, int height);
         Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation);
         Task<Dictionary<Guid, string>> BulkShutdown(Guid[] ids);
@@ -64,6 +72,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private readonly IConfiguration _configuration;
         private readonly IConnectionService _connectionService;
         private readonly IMapper _mapper;
+        private readonly IHttpClientFactory _httpClientFactory;
         private readonly VsphereOptions _vsphereOptions;
 
         public VsphereService(
@@ -72,7 +81,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 VsphereOptions vsphereOptions,
                 IConfiguration configuration,
                 IConnectionService connectionService,
-                IMapper mapper
+                IMapper mapper,
+                IHttpClientFactory httpClientFactory
             )
         {
             _rewriteHostOptions = rewriteHostOptions.Value;
@@ -80,6 +90,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _connectionService = connectionService;
             _configuration = configuration;
             _mapper = mapper;
+            _httpClientFactory = httpClientFactory;
             _vsphereOptions = vsphereOptions;
         }
 
@@ -1065,58 +1076,438 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return names;
         }
 
-        public async Task<IEnumerable<IsoFile>> GetIsos(Guid vmId, string viewId, string subfolder)
+        // Single source of truth for the datastore-relative ISO folder layout, shared by the ISO
+        // search (GetIsos) and the datastore upload (UploadIsoToConnection) so they never diverge.
+        private static string BuildIsoFolderRelative(string baseFolder, string viewId, string scopeId)
         {
-            var aggregate = await this.GetVm(vmId);
-            var connection = aggregate.Connection;
+            return $"{baseFolder}/{viewId}/{scopeId}";
+        }
 
-            List<IsoFile> list = new List<IsoFile>();
+        // Lists ISOs for the management UI from an arbitrary connected host. The result is
+        // display-only, so a single host is enough - a host that is missing an ISO means that upload
+        // failed and should be retried, not that every list should fan out. For the VM mount picker
+        // use ListIsosForVm instead: that result is actionable and must come from the VM's own host.
+        // Passing null roots the search at the base folder so every View is enumerated at once
+        // ("all views" mode); passing a viewId roots it at that View's folder.
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsos(Guid? viewId = null)
+        {
+            var connection = _connectionService.GetAllConnections()
+                .FirstOrDefault(c => c.Enabled && c.Connected && c.Client != null);
+
+            if (connection == null)
+            {
+                _logger.LogError("No connected vSphere hosts available to list ISOs.");
+                return new Dictionary<Guid, IReadOnlyList<IsoFile>>();
+            }
+
+            return await ListIsosFromConnection(connection, viewId);
+        }
+
+        // Lists ISOs visible to a specific VM, from the host that VM actually runs on. IsoFile.Path is
+        // a host-specific "[dsName] baseFolder/..." string that is handed straight back to MountIso, so
+        // on a multi-vCenter install with differing DsName/BaseFolder a path listed from some other
+        // host would not resolve for this VM. Resolving the connection from the VM keeps the mountable
+        // list and the mount itself on the same host.
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsosForVm(Guid vmId, Guid? viewId = null)
+        {
+            var aggregate = await GetVm(vmId);
+
+            if (aggregate?.Connection?.Client == null)
+            {
+                _logger.LogError("Could not resolve a vSphere connection for VM {VmId} to list ISOs.", vmId);
+                return new Dictionary<Guid, IReadOnlyList<IsoFile>>();
+            }
+
+            return await ListIsosFromConnection(aggregate.Connection, viewId);
+        }
+
+        // Lists ISOs from one host's datastore in a SINGLE recursive datastore-browser task, keyed by
+        // scope id (the leaf folder name). Shared by ListIsos and ListIsosForVm so the two entry points
+        // only differ in how the connection is chosen, never in how the datastore is searched or parsed.
+        private async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsosFromConnection(
+            VsphereConnection connection, Guid? viewId)
+        {
+            var byScope = new Dictionary<Guid, IReadOnlyList<IsoFile>>();
+
             var dsName = connection.Host.DsName;
-            var baseFolder = connection.Host.BaseFolder;
-            var filepath = $"[{dsName}] {baseFolder}/{viewId}/{subfolder}";
+            // Root at the base folder for all Views, or the View folder for one View. Either way the
+            // leaf folders are baseFolder/{viewId}/{scopeId}, so the scope id is always the last segment.
+            var rootFolder = viewId.HasValue
+                ? $"[{dsName}] {connection.Host.BaseFolder}/{viewId}"
+                : $"[{dsName}] {connection.Host.BaseFolder}";
 
             var datastore = await GetDatastoreByName(dsName, connection);
             if (datastore == null)
             {
                 _logger.LogError($"Datastore {dsName} not found in {connection.Address}.");
-                return list;
+                return byScope;
             }
 
-            var dsBrowser = datastore.Browser;
-
-            ManagedObjectReference task = null;
-            TaskInfo info = null;
-            HostDatastoreBrowserSearchSpec spec = new HostDatastoreBrowserSearchSpec { };
-            List<HostDatastoreBrowserSearchResults> results = new List<HostDatastoreBrowserSearchResults>();
-            task = await connection.Client.SearchDatastore_TaskAsync(dsBrowser, filepath, spec);
-            info = await WaitForVimTask(task, connection);
+            // Server-side filter to ISO files (matches TopoMojo's "*" + extension pattern).
+            var spec = new HostDatastoreBrowserSearchSpec { matchPattern = new[] { "*" + IsoFileNaming.Extension } };
+            var results = new List<HostDatastoreBrowserSearchResults>();
+            var task = await connection.Client.SearchDatastoreSubFolders_TaskAsync(datastore.Browser, rootFolder, spec);
+            var info = await WaitForVimTask(task, connection);
             if (info.state == TaskInfoState.error)
             {
                 if (info.error.fault != null &&
                     info.error.fault.ToString().Equals("FileNotFound", StringComparison.CurrentCultureIgnoreCase))
                 {
-                    // folder not found, return empty
-                    return list;
+                    // Root folder not present yet - no ISOs.
+                    return byScope;
                 }
                 _logger.LogError(info.error.localizedMessage);
             }
             else if (info.result != null)
             {
-                results.Add((HostDatastoreBrowserSearchResults)info.result);
+                results.AddRange((HostDatastoreBrowserSearchResults[])info.result);
             }
 
-            foreach (HostDatastoreBrowserSearchResults result in results)
+            foreach (var result in results)
             {
-                if (result != null && result.file != null && result.file.Length > 0)
+                if (result?.file == null || result.file.Length == 0)
+                    continue;
+
+                // folderPath is "[ds] baseFolder/{viewId}/{scopeId}"; the scope id is the last segment.
+                // Skip anything that isn't a scope (Guid) folder - e.g. a stray file in the base/View dir.
+                var leaf = result.folderPath.TrimEnd('/').Split('/').Last();
+                if (!Guid.TryParse(leaf, out var scopeId))
+                    continue;
+
+                if (!byScope.TryGetValue(scopeId, out var existing))
                 {
-                    foreach (var fileInfo in result.file.Where(x => x.path.EndsWith(".iso")))
-                    {
-                        list.Add(new IsoFile(result.folderPath, fileInfo.path));
-                    }
+                    existing = new List<IsoFile>();
+                    byScope[scopeId] = existing;
+                }
+
+                ((List<IsoFile>)existing).AddRange(result.file.Select(x => new IsoFile(result.folderPath, x.path)));
+            }
+
+            return byScope;
+        }
+
+        public async Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath)
+        {
+            // Upload to all enabled/connected hosts so the ISO is available wherever the VM runs
+            // (mirrors the shared-storage semantics of the NFS path).
+            var connections = GetEnabledConnections();
+
+            if (!connections.Any())
+            {
+                throw new InvalidOperationException("No connected vSphere hosts available for ISO upload.");
+            }
+
+            // Upload to every host concurrently; each host streams its own FileStream off the staged
+            // file, so the PUTs are independent. Per-host failures are captured (never faulting the
+            // whole batch) so wall-clock is ~the slowest host rather than the sum.
+            // Idempotent re-upload heals any missed host (deterministic path + PUT overwrite), so we
+            // report partial failures rather than aborting; AggregateHostResults throws only if all fail.
+            var results = await Task.WhenAll(connections.Select(async connection =>
+            {
+                try
+                {
+                    await UploadIsoToConnection(connection, viewId, scopeId, filename, localFilePath);
+                    return (string)null;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to upload ISO {File} to {Host}", filename, connection.Address);
+                    return $"{connection.Address}: {ex.Message}";
+                }
+            }));
+
+            var (failedHostCount, totalHostCount) = AggregateHostResults(results, connections.Count, "upload", filename);
+
+            return new IsoOperationOutcome
+            {
+                FailedHostCount = failedHostCount,
+                TotalHostCount = totalHostCount
+            };
+        }
+
+        // Enabled, connected hosts with a live client - the set ISO uploads/deletes fan out across.
+        private List<VsphereConnection> GetEnabledConnections()
+        {
+            return _connectionService.GetAllConnections()
+                .Where(c => c.Enabled && c.Connected && c.Client != null)
+                .ToList();
+        }
+
+        // Tally per-host outcomes from a fan-out (a null entry is success; a non-null entry is a
+        // server-side failure detail). Host addresses/reasons stay in the logs and are never returned
+        // to the caller, so they can't leak to app users - callers receive counts only. Throws when
+        // every host failed; logs a warning on partial failure.
+        private (int failedHostCount, int totalHostCount) AggregateHostResults(
+            IReadOnlyList<string> results, int totalHostCount, string operation, string filename)
+        {
+            var failures = results.Where(r => r != null).ToList();
+
+            if (failures.Count == totalHostCount)
+            {
+                _logger.LogError("ISO {File} failed to {Operation} on all {Count} hosts: {Failures}", filename, operation, totalHostCount, string.Join("; ", failures));
+                throw new Exception($"ISO {operation} failed on all hosts. Contact an administrator.");
+            }
+
+            if (failures.Any())
+            {
+                _logger.LogWarning("ISO {File} {Operation} completed with partial failures: {Failures}", filename, operation, string.Join("; ", failures));
+            }
+
+            return (failures.Count, totalHostCount);
+        }
+
+        private async Task UploadIsoToConnection(VsphereConnection connection, string viewId, string scopeId, string filename, string localFilePath)
+        {
+            // Resolve the datastore HTTP file API target (and create the destination directory).
+            var client = await BuildDatastoreFileClient(connection, viewId, scopeId, filename, ensureDirectory: true);
+
+            using (var fileStream = System.IO.File.OpenRead(localFilePath))
+            {
+                var content = new StreamContent(fileStream);
+                content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
+                content.Headers.ContentLength = fileStream.Length;
+
+                _logger.LogDebug("Uploading ISO to datastore: {Url}", client.BaseAddress);
+
+                // Empty relative URI resolves to BaseAddress (the full /folder/...?dcPath=&dsName= URL).
+                var response = await client.PutAsync("", content);
+                if (!response.IsSuccessStatusCode)
+                {
+                    var body = await response.Content.ReadAsStringAsync();
+                    throw new Exception($"Datastore PUT failed ({(int)response.StatusCode}): {body}");
+                }
+            }
+        }
+
+        // Resolves dsName/folderPath/datacenter (incl. null-guard throw), optionally creates the
+        // destination directory (upload only), builds the datastore HTTP file API URL, and returns a
+        // "vSphereDatastore" HttpClient with that URL as BaseAddress and the per-host Basic-auth header
+        // set. Shared by ISO upload (PUT) and delete (DELETE) so the path/auth setup never diverges.
+        private async Task<HttpClient> BuildDatastoreFileClient(VsphereConnection connection, string viewId, string scopeId, string filename, bool ensureDirectory)
+        {
+            var dsName = connection.Host.DsName;
+
+            // datastore-relative folder (no "[ds]" prefix; that form is only used for search/mount/MakeDirectory paths)
+            var folderPath = BuildIsoFolderRelative(connection.Host.BaseFolder, viewId, scopeId);
+
+            var datacenter = await GetDatacenterForDatastore(dsName, connection);
+            if (datacenter == null)
+            {
+                throw new InvalidOperationException($"Could not resolve datacenter for datastore {dsName} on {connection.Address}");
+            }
+
+            if (ensureDirectory)
+            {
+                // ensure the destination directory exists (ignore "already exists")
+                await EnsureDatastoreDirectory(connection, datacenter, dsName, folderPath);
+            }
+
+            var url = BuildDatastoreUploadUrl(connection.Address, folderPath, filename, datacenter.Name, dsName);
+
+            var client = _httpClientFactory.CreateClient("vSphereDatastore");
+            client.BaseAddress = new Uri(url);
+
+            // HTTP Basic auth (not the SOAP session cookie) - matches the topomojo implementation.
+            var credentials = Convert.ToBase64String(
+                Encoding.UTF8.GetBytes($"{connection.Host.Username}:{connection.Host.Password}"));
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic", credentials);
+
+            return client;
+        }
+
+        private static string BuildDatastoreUploadUrl(string host, string folderPath, string file, string dcName, string dsName)
+        {
+            // https://{host}/folder/{folder}/{file}?dcPath={datacenter}&dsName={datastore}
+            var folder = string.Join("/", folderPath.Split('/').Select(Uri.EscapeDataString));
+            return $"https://{host}/folder/{folder}/{Uri.EscapeDataString(file)}"
+                 + $"?dcPath={Uri.EscapeDataString(dcName)}&dsName={Uri.EscapeDataString(dsName)}";
+        }
+
+        public async Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename)
+        {
+            // Delete from all enabled/connected hosts so the ISO is removed wherever it was uploaded
+            // (mirrors UploadIso, which writes to every host).
+            var connections = GetEnabledConnections();
+
+            if (!connections.Any())
+            {
+                throw new InvalidOperationException("No connected vSphere hosts available for ISO delete.");
+            }
+
+            // Delete on every host concurrently; per-host failures are captured (never faulting the
+            // whole batch). A missing file is treated as success inside DeleteIsoFromConnection.
+            var results = await Task.WhenAll(connections.Select(async connection =>
+            {
+                try
+                {
+                    await DeleteIsoFromConnection(connection, viewId, scopeId, filename);
+                    return (string)null;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Failed to delete ISO {File} from {Host}", filename, connection.Address);
+                    return $"{connection.Address}: {ex.Message}";
+                }
+            }));
+
+            var (failedHostCount, totalHostCount) = AggregateHostResults(results, connections.Count, "delete", filename);
+
+            return new IsoOperationOutcome
+            {
+                FailedHostCount = failedHostCount,
+                TotalHostCount = totalHostCount
+            };
+        }
+
+        private async Task DeleteIsoFromConnection(VsphereConnection connection, string viewId, string scopeId, string filename)
+        {
+            // Same /folder/...?dcPath=&dsName= URL as the PUT upload; the datastore HTTP file API
+            // accepts DELETE on it. No directory creation needed for a delete.
+            var client = await BuildDatastoreFileClient(connection, viewId, scopeId, filename, ensureDirectory: false);
+
+            _logger.LogDebug("Deleting ISO from datastore: {Url}", client.BaseAddress);
+
+            // Empty relative URI resolves to BaseAddress (the full /folder/...?dcPath=&dsName= URL).
+            var response = await client.DeleteAsync("");
+
+            // Already gone => idempotent success (lets a re-delete or partially-uploaded ISO clear cleanly).
+            if (response.StatusCode == HttpStatusCode.NotFound)
+            {
+                return;
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadAsStringAsync();
+                throw new Exception($"Datastore DELETE failed ({(int)response.StatusCode}): {body}");
+            }
+        }
+
+        private async Task EnsureDatastoreDirectory(VsphereConnection connection, DatacenterInfo datacenter, string dsName, string folderPath)
+        {
+            var datastorePath = $"[{dsName}] {folderPath}";
+            try
+            {
+                await connection.Client.MakeDirectoryAsync(
+                    connection.Sic.fileManager,
+                    datastorePath,
+                    datacenter.Reference,
+                    true /* createParentDirectories */);
+            }
+            catch (FaultException<VimClient.FileAlreadyExists>)
+            {
+                // directory already present - nothing to do
+            }
+            catch (FaultException<VimClient.FileFault> ex) when (ex.Detail is VimClient.FileAlreadyExists)
+            {
+                // directory already present (surfaced as the base FileFault) - nothing to do
+            }
+        }
+
+        private async Task<DatacenterInfo> GetDatacenterForDatastore(string dsName, VsphereConnection connection)
+        {
+            var tree = await LoadInventoryTree(connection, new PropertySpec[]
+            {
+                new PropertySpec
+                {
+                    type = "Datacenter",
+                    pathSet = new string[] { "name", "datastore" }
+                },
+                new PropertySpec
+                {
+                    type = "Datastore",
+                    pathSet = new string[] { "name" }
+                }
+            });
+            if (tree.Length == 0)
+            {
+                return null;
+            }
+
+            var datacenters = tree.FindType("Datacenter");
+            var datastores = tree.FindType("Datastore");
+
+            // Return the datacenter that actually contains the named datastore.
+            foreach (var dc in datacenters)
+            {
+                var dsRefs = dc.GetProperty("datastore") as ManagedObjectReference[] ?? Array.Empty<ManagedObjectReference>();
+
+                var match = datastores.FirstOrDefault(d =>
+                    (d.GetProperty("name") as string) == dsName &&
+                    dsRefs.Any(r => r.Value == d.obj.Value));
+
+                if (match != null)
+                {
+                    return ToDatacenterInfo(dc);
                 }
             }
 
-            return list;
+            // No datacenter contains the configured datastore. Return null rather than guessing the
+            // first datacenter (which would upload against the wrong dcPath); the caller surfaces this
+            // as a clear per-host failure so a misconfigured DsName / stale inventory is visible.
+            return null;
+        }
+
+        private static DatacenterInfo ToDatacenterInfo(VimClient.ObjectContent dc)
+        {
+            return new DatacenterInfo
+            {
+                Name = dc.GetProperty("name") as string,
+                Reference = dc.obj
+            };
+        }
+
+        // Walk the rootFolder inventory (Datacenters and their datastores, recursing through folders)
+        // retrieving the supplied properties. Shared by datastore and datacenter lookups so the
+        // traversal scaffolding lives in one place.
+        private async Task<VimClient.ObjectContent[]> LoadInventoryTree(VsphereConnection connection, PropertySpec[] props)
+        {
+            var plan = new TraversalSpec
+            {
+                name = "FolderTraverseSpec",
+                type = "Folder",
+                path = "childEntity",
+                selectSet = new SelectionSpec[] {
+                    new TraversalSpec()
+                    {
+                        type = "Datacenter",
+                        path = "datastore",
+                        selectSet = new SelectionSpec[] {
+                            new SelectionSpec {
+                                name = "FolderTraverseSpec"
+                            }
+                        }
+                    },
+
+                    new TraversalSpec()
+                    {
+                        type = "Folder",
+                        path = "childEntity",
+                        selectSet = new SelectionSpec[] {
+                            new SelectionSpec {
+                                name = "FolderTraverseSpec"
+                            }
+                        }
+                    }
+                }
+            };
+
+            ObjectSpec objectspec = new ObjectSpec
+            {
+                obj = connection.Sic.rootFolder,
+                selectSet = new SelectionSpec[] { plan }
+            };
+
+            PropertyFilterSpec filter = new PropertyFilterSpec
+            {
+                propSet = props,
+                objectSet = new ObjectSpec[] { objectspec }
+            };
+
+            PropertyFilterSpec[] filters = new PropertyFilterSpec[] { filter };
+            RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(connection.Props, filters);
+
+            return response.returnval;
         }
 
         public async Task<TaskInfo> ReconfigureVm(Guid id, Feature feature, string label, string newvalue)
@@ -1915,58 +2306,14 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         private async Task<VimClient.ObjectContent[]> LoadReferenceTree(VsphereConnection connection)
         {
-            var plan = new TraversalSpec
-            {
-                name = "FolderTraverseSpec",
-                type = "Folder",
-                path = "childEntity",
-                selectSet = new SelectionSpec[] {
-
-                    new TraversalSpec()
-                    {
-                        type = "Datacenter",
-                        path = "datastore",
-                        selectSet = new SelectionSpec[] {
-                            new SelectionSpec {
-                                name = "FolderTraverseSpec"
-                            }
-                        }
-                    },
-
-                    new TraversalSpec()
-                    {
-                        type = "Folder",
-                        path = "childEntity",
-                        selectSet = new SelectionSpec[] {
-                            new SelectionSpec {
-                                name = "FolderTraverseSpec"
-                            }
-                        }
-                    }
-                }
-            };
-
-            var props = new PropertySpec[]
+            return await LoadInventoryTree(connection, new PropertySpec[]
             {
                 new PropertySpec
                 {
                     type = "Datastore",
                     pathSet = new string[] { "name", "browser" }
                 }
-            };
-
-            ObjectSpec objectspec = new ObjectSpec();
-            objectspec.obj = connection.Sic.rootFolder;
-            objectspec.selectSet = new SelectionSpec[] { plan };
-
-            PropertyFilterSpec filter = new PropertyFilterSpec();
-            filter.propSet = props;
-            filter.objectSet = new ObjectSpec[] { objectspec };
-
-            PropertyFilterSpec[] filters = new PropertyFilterSpec[] { filter };
-            RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(connection.Props, filters);
-
-            return response.returnval;
+            });
         }
 
         #endregion
