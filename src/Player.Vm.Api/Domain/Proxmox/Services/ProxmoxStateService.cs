@@ -69,7 +69,8 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
     public override Task StopAsync(CancellationToken cancellationToken)
     {
         _jobQueue.Complete();
-        return System.Threading.Tasks.Task.CompletedTask;
+        // Wait for in-flight jobs rather than abandoning them mid-SaveChanges.
+        return _jobQueue.Completion;
     }
 
     protected override async Task ExecuteAsync(CancellationToken cancellationToken)
@@ -139,16 +140,25 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
     {
         if (pveVm == null) return;
 
-        using (var scope = _serviceProvider.CreateScope())
+        // An unhandled exception here faults the ActionBlock permanently, silently killing state
+        // sync for the rest of the process lifetime, so nothing may escape this method.
+        try
         {
-            var dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
-            var dbVm = await dbContext.Vms.FirstOrDefaultAsync(x => x.ProxmoxVmInfo.Id == pveVm.VmId);
-
-            if (dbVm != null)
+            using (var scope = _serviceProvider.CreateScope())
             {
-                this.UpdateVm(dbVm, pveVm);
-                await dbContext.SaveChangesAsync();
+                var dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
+                var dbVm = await dbContext.Vms.FirstOrDefaultAsync(x => x.ProxmoxVmInfo.Id == pveVm.VmId);
+
+                if (dbVm != null)
+                {
+                    this.UpdateVm(dbVm, pveVm);
+                    await dbContext.SaveChangesAsync();
+                }
             }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Exception processing Proxmox vmid={pveVm.VmId}");
         }
     }
 

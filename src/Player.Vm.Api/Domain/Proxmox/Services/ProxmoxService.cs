@@ -2,15 +2,21 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Net;
 using System.Threading.Tasks;
 using Corsinvest.ProxmoxVE.Api;
 using Corsinvest.ProxmoxVE.Api.Extension;
 using Corsinvest.ProxmoxVE.Api.Shared.Models.Cluster;
+using Corsinvest.ProxmoxVE.Api.Shared.Models.Node;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Domain.Proxmox.Extensions;
 using Player.Vm.Api.Domain.Proxmox.Models;
 using Player.Vm.Api.Domain.Proxmox.Options;
 using Player.Vm.Api.Domain.Vsphere.Models;
@@ -22,11 +28,19 @@ public interface IProxmoxService
 {
     Task<ProxmoxConsole> GetConsole(ProxmoxVmInfo info);
     Task<IEnumerable<IClusterResourceVm>> GetVms();
+    Task<IEnumerable<NodeTask>> GetTasks();
 
     Task<string> PowerOnVm(ProxmoxVmInfo info);
     Task<string> PowerOffVm(ProxmoxVmInfo info);
     Task<string> RebootVm(ProxmoxVmInfo info);
     Task<string> ShutdownVm(ProxmoxVmInfo info);
+
+    /// <summary>
+    /// Submits a power operation for many Vms at once without waiting for the Proxmox tasks to
+    /// finish. Returns a per-Vm error message, or an empty string for a Vm whose operation was
+    /// accepted. Completion is observed by <see cref="IProxmoxTaskService"/>.
+    /// </summary>
+    Task<Dictionary<Guid, string>> BulkPowerOperation(Guid[] ids, PowerOperation operation);
 
     Task<GuestProcessResult> RunGuestProcess(ProxmoxVmInfo info, string command, string arguments, TimeSpan timeout);
     Task<long> RunGuestProcessFast(ProxmoxVmInfo info, string command, string arguments);
@@ -46,18 +60,21 @@ public class ProxmoxService : IProxmoxService
     private readonly PveClient _pveClient;
     private readonly IProxmoxStateService _proxmoxStateService;
     private readonly RewriteHostOptions _rewriteHostOptions;
+    private readonly VmContext _dbContext;
 
     public ProxmoxService(
             ProxmoxOptions options,
             ILogger<ProxmoxService> logger,
             IProxmoxStateService proxmoxStateService,
-            RewriteHostOptions rewriteHostOptions
+            RewriteHostOptions rewriteHostOptions,
+            VmContext dbContext
         )
     {
         _options = options;
         _logger = logger;
         _proxmoxStateService = proxmoxStateService;
         _rewriteHostOptions = rewriteHostOptions;
+        _dbContext = dbContext;
 
         _pveClient = new PveClient(options.Host, _options.Port);
         _pveClient.ApiToken = options.Token;
@@ -65,30 +82,36 @@ public class ProxmoxService : IProxmoxService
 
     public async Task<ProxmoxConsole> GetConsole(ProxmoxVmInfo info)
     {
-        var result = await VncProxyCall(info.Node, info.Id, info.Type);
-        var success = result.IsSuccessStatusCode;
+        // The power state is read up front rather than inferred from a vncproxy failure. Proxmox
+        // hands out a vncproxy ticket for a Vm that is not running, but the resulting websocket
+        // never completes an RFB handshake, so a client given that ticket waits forever. This also
+        // refreshes info.Node, which goes stale as soon as a Vm migrates.
+        var vm = await ResolveNode(info);
 
-        if (!success)
+        if (vm == null)
         {
-            // Check if vm exists on a different node and try again
-            var vm = await _pveClient.GetVmAsync(info.Id);
+            // Proxmox does not know this vmid at all, which is a real error rather than a power
+            // state. Reporting PowerState.Unknown here would be indistinguishable from a transient
+            // failure and would leave the client retrying a console that can never exist.
+            throw new Exception($"Could not find vmid {info.Id} in Proxmox");
+        }
 
-            if (vm != null)
+        if (!vm.IsRunning)
+        {
+            // A Vm that is not running has no console to proxy. Returning the state instead of
+            // throwing lets the client render a powered off placeholder rather than treating a
+            // normal power state as a server error.
+            return new ProxmoxConsole
             {
-                await _proxmoxStateService.UpdateVm(vm);
+                PowerState = vm.GetPowerState()
+            };
+        }
 
-                if (vm.IsRunning)
-                {
-                    info.Node = vm.Node;
-                    result = await VncProxyCall(info.Node, info.Id, info.Type);
-                    success = result.IsSuccessStatusCode;
-                }
-            }
+        var result = await VncProxyCall(info.Node, info.Id, info.Type);
 
-            if (!success)
-            {
-                throw new Exception(result.GetError());
-            }
+        if (!result.IsSuccessStatusCode)
+        {
+            throw new Exception(result.GetError());
         }
 
         string url = null;
@@ -106,7 +129,8 @@ public class ProxmoxService : IProxmoxService
         return new ProxmoxConsole()
         {
             Ticket = result.Response.data.ticket,
-            Url = url
+            Url = url,
+            PowerState = PowerState.On
         };
     }
 
@@ -127,19 +151,47 @@ public class ProxmoxService : IProxmoxService
         return await _pveClient.GetResourcesAsync(ClusterResourceType.Vm);
     }
 
-    private async Task<IClusterResourceVm> RefreshVm(int id)
+    /// <summary>
+    /// Lists recent tasks cluster-wide, regardless of which client submitted them.
+    /// </summary>
+    public async Task<IEnumerable<NodeTask>> GetTasks()
     {
-        var vm = await _pveClient.GetVmAsync(id);
+        return await _pveClient.Cluster.Tasks.GetAsync();
+    }
+
+    /// <summary>
+    /// Re-resolves the node a Vm currently lives on. ProxmoxVmInfo.Node is only refreshed by the
+    /// state poller, so it goes stale as soon as a Vm migrates and every Nodes[Node] call against
+    /// it fails. Returns the live cluster resource, or null if Proxmox no longer knows the vmid.
+    /// </summary>
+    private async Task<IClusterResourceVm> ResolveNode(ProxmoxVmInfo info)
+    {
+        IClusterResourceVm vm;
+
+        try
+        {
+            vm = await _pveClient.GetVmAsync(info.Id);
+        }
+        catch (ArgumentException)
+        {
+            // GetVmAsync throws rather than returning null when the cluster has no such vmid.
+            return null;
+        }
+
+        if (vm == null)
+        {
+            return null;
+        }
+
+        await _proxmoxStateService.UpdateVm(vm);
+        info.Node = vm.Node;
 
         return vm;
     }
 
     public async Task<string> PowerOnVm(ProxmoxVmInfo info)
     {
-        var result = info.Type == ProxmoxVmType.LXC
-            ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Status.Start.VmStart()
-            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Status.Start.VmStart();
-
+        var result = await SubmitPowerOperation(info, PowerOperation.PowerOn);
         await WaitAndThrow(result, $"PowerOn vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} started";
@@ -147,10 +199,7 @@ public class ProxmoxService : IProxmoxService
 
     public async Task<string> PowerOffVm(ProxmoxVmInfo info)
     {
-        var result = info.Type == ProxmoxVmType.LXC
-            ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Status.Stop.VmStop()
-            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Status.Stop.VmStop();
-
+        var result = await SubmitPowerOperation(info, PowerOperation.PowerOff);
         await WaitAndThrow(result, $"PowerOff vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} stopped";
@@ -158,33 +207,93 @@ public class ProxmoxService : IProxmoxService
 
     public async Task<string> RebootVm(ProxmoxVmInfo info)
     {
-        if (info.Type == ProxmoxVmType.LXC)
-        {
-            // LXC has no reboot endpoint; emulate via stop + start
-            var stop = await _pveClient.Nodes[info.Node].Lxc[info.Id].Status.Stop.VmStop();
-            await WaitAndThrow(stop, $"Reboot/stop vmid={info.Id}");
-            var start = await _pveClient.Nodes[info.Node].Lxc[info.Id].Status.Start.VmStart();
-            await WaitAndThrow(start, $"Reboot/start vmid={info.Id}");
-        }
-        else
-        {
-            var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Status.Reboot.VmReboot();
-            await WaitAndThrow(result, $"Reboot vmid={info.Id}");
-        }
-
+        var result = await SubmitPowerOperation(info, PowerOperation.Reboot);
+        await WaitAndThrow(result, $"Reboot vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} rebooted";
     }
 
     public async Task<string> ShutdownVm(ProxmoxVmInfo info)
     {
-        var result = info.Type == ProxmoxVmType.LXC
-            ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Status.Shutdown.VmShutdown()
-            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Status.Shutdown.VmShutdown();
-
+        var result = await SubmitPowerOperation(info, PowerOperation.Shutdown);
         await WaitAndThrow(result, $"Shutdown vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} shutdown";
+    }
+
+    public async Task<Dictionary<Guid, string>> BulkPowerOperation(Guid[] ids, PowerOperation operation)
+    {
+        var errors = new ConcurrentDictionary<Guid, string>();
+
+        if (ids.Length == 0)
+        {
+            return new Dictionary<Guid, string>();
+        }
+
+        var infos = await _dbContext.ProxmoxVmInfo
+            .Where(x => ids.Contains(x.VmId))
+            .ToListAsync();
+
+        foreach (var id in ids.Where(x => !infos.Any(y => y.VmId == x)))
+        {
+            errors.TryAdd(id, "Virtual machine not found");
+        }
+
+        // Submissions return as soon as pvedaemon accepts the task, so fan out unbounded like
+        // VsphereService.BulkPowerOperation does. Completion is observed by ProxmoxTaskService.
+        await Task.WhenAll(infos.Select(async info =>
+        {
+            try
+            {
+                var result = await SubmitPowerOperation(info, operation);
+
+                if (!result.IsSuccessStatusCode)
+                {
+                    // The node may be stale after a migration - re-resolve it and retry once.
+                    if (await ResolveNode(info) != null)
+                    {
+                        result = await SubmitPowerOperation(info, operation);
+                    }
+                }
+
+                errors.TryAdd(info.VmId, result.IsSuccessStatusCode ? string.Empty : result.GetError());
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to submit {operation} for vmid={info.Id}");
+                errors.TryAdd(info.VmId, ex.Message);
+            }
+        }));
+
+        _proxmoxStateService.CheckState();
+
+        return errors.ToDictionary(x => x.Key, x => x.Value);
+    }
+
+    /// <summary>
+    /// Submits a power operation and returns as soon as Proxmox accepts it, without waiting for the
+    /// resulting task to finish. Callers that need the outcome pass the Result to WaitAndThrow.
+    /// </summary>
+    private async Task<Result> SubmitPowerOperation(ProxmoxVmInfo info, PowerOperation operation)
+    {
+        var lxc = info.Type == ProxmoxVmType.LXC;
+
+        return operation switch
+        {
+            PowerOperation.PowerOn => lxc
+                ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Status.Start.VmStart()
+                : await _pveClient.Nodes[info.Node].Qemu[info.Id].Status.Start.VmStart(),
+            PowerOperation.PowerOff => lxc
+                ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Status.Stop.VmStop()
+                : await _pveClient.Nodes[info.Node].Qemu[info.Id].Status.Stop.VmStop(),
+            PowerOperation.Reboot => lxc
+                ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Status.Reboot.VmReboot()
+                : await _pveClient.Nodes[info.Node].Qemu[info.Id].Status.Reboot.VmReboot(),
+            PowerOperation.Shutdown => lxc
+                ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Status.Shutdown.VmShutdown()
+                : await _pveClient.Nodes[info.Node].Qemu[info.Id].Status.Shutdown.VmShutdown(),
+            _ => throw new NotSupportedException($"{operation} is not supported on Proxmox virtual machines."),
+        };
     }
 
     public async Task<GuestProcessResult> RunGuestProcess(ProxmoxVmInfo info, string command, string arguments, TimeSpan timeout)

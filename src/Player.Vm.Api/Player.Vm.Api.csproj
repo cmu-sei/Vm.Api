@@ -27,8 +27,8 @@
     <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
     <PackageReference Include="AspNetCore.HealthChecks.Sqlite" Version="9.0.0" />
     <PackageReference Include="VimClient" Version="7.0.0"/>
-    <PackageReference Include="Corsinvest.ProxmoxVE.Api" Version="9.1.2" />
-    <PackageReference Include="Corsinvest.ProxmoxVE.Api.Extension" Version="9.1.2" />
+    <PackageReference Include="Corsinvest.ProxmoxVE.Api" Version="9.2.1" />
+    <PackageReference Include="Corsinvest.ProxmoxVE.Api.Extension" Version="9.2.1" />
     <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.1" />
     <PackageReference Include="AspNetCore.HealthChecks.UI" Version="9.0.0" />
     <PackageReference Include="AspNetCore.HealthChecks.UI.InMemory.Storage" Version="9.0.0" />

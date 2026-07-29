@@ -119,9 +119,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         private async Task getRecentTasks()
         {
+            // Proxmox Vms are excluded because ProxmoxTaskService owns their pending state. Without
+            // this, whichever poller ran last would clear the other provider's flags - and with no
+            // vSphere connection up, this query returns every Vm and clears all of them.
             var pendingVms = await _dbContext.Vms
                 .Include(x => x.VmTeams)
-                .Where(x => x.HasPendingTasks)
+                .Where(x => x.HasPendingTasks && x.Type != Domain.Models.VmType.Proxmox)
                 .ToArrayAsync();
 
             var stillPendingVmIds = new List<Guid>();

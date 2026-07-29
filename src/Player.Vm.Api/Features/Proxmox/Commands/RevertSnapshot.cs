@@ -18,7 +18,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
     public class RevertSnapshot
     {
         [DataContract(Name = "RevertProxmoxVirtualMachineSnapshot")]
-        public class Command : IRequest<string>, ICheckTasksRequest
+        public class Command : IRequest<string>, ICheckProxmoxTasksRequest
         {
             [JsonIgnore]
             public Guid Id { get; set; }

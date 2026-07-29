@@ -17,7 +17,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
     public class PowerOn
     {
         [DataContract(Name = "PowerOnProxmoxVirtualMachine")]
-        public class Command : IRequest<string>, ICheckTasksRequest
+        public class Command : IRequest<string>, ICheckProxmoxTasksRequest
         {
             [JsonIgnore]
             public Guid Id { get; set; }
