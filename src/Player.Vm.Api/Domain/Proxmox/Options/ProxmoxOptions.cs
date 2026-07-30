@@ -9,6 +9,8 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
         public string Host { get; set; }
         public int Port { get; set; }
         public string Token { get; set; }
+        public bool ValidateCertificate { get; set; }
+
         public int StateRefreshIntervalSeconds { get; set; }
 
         // How often ProxmoxTaskService polls cluster tasks while nothing is pending, and while at

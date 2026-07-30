@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Threading.Tasks;
 using Corsinvest.ProxmoxVE.Api;
 using Corsinvest.ProxmoxVE.Api.Extension;
@@ -67,7 +68,8 @@ public class ProxmoxService : IProxmoxService
             ILogger<ProxmoxService> logger,
             IProxmoxStateService proxmoxStateService,
             RewriteHostOptions rewriteHostOptions,
-            VmContext dbContext
+            VmContext dbContext,
+            IHttpClientFactory httpClientFactory
         )
     {
         _options = options;
@@ -76,7 +78,7 @@ public class ProxmoxService : IProxmoxService
         _rewriteHostOptions = rewriteHostOptions;
         _dbContext = dbContext;
 
-        _pveClient = new PveClient(options.Host, _options.Port);
+        _pveClient = new PveClient(options.Host, _options.Port, httpClientFactory.CreateClient("proxmox"));
         _pveClient.ApiToken = options.Token;
     }
 
