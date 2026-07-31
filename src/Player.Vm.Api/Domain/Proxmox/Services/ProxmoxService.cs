@@ -4,17 +4,18 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
 using Corsinvest.ProxmoxVE.Api;
 using Corsinvest.ProxmoxVE.Api.Extension;
 using Corsinvest.ProxmoxVE.Api.Shared.Models.Cluster;
 using Corsinvest.ProxmoxVE.Api.Shared.Models.Node;
+using Corsinvest.ProxmoxVE.Api.Shared.Models.Vm;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Player.Vm.Api.Data;
@@ -196,8 +197,12 @@ public class ProxmoxService : IProxmoxService
         if (vm == null)
             throw new InvalidOperationException($"Could not find vmid {info.Id} in Proxmox");
 
-        var configuration = await GetNetworkConfiguration(info);
-        return configuration.CurrentNetworks;
+        var networks = await GetNetworkConfiguration(info);
+        return networks
+            .Where(network =>
+                !string.IsNullOrWhiteSpace(network.Id) &&
+                !string.IsNullOrWhiteSpace(network.Bridge))
+            .ToDictionary(network => network.Id, network => network.Bridge);
     }
 
     public async Task ChangeNetwork(
@@ -210,16 +215,21 @@ public class ProxmoxService : IProxmoxService
         if (vm == null)
             throw new InvalidOperationException($"Could not find vmid {info.Id} in Proxmox");
 
-        var configuration = await GetNetworkConfiguration(info);
-        if (!configuration.RawValues.TryGetValue(adapter, out var rawValue))
+        var networks = await GetNetworkConfiguration(info);
+        var nic = networks.SingleOrDefault(network =>
+            string.Equals(network.Id, adapter, StringComparison.Ordinal));
+        if (nic == null ||
+            string.IsNullOrWhiteSpace(nic.Bridge) ||
+            string.IsNullOrWhiteSpace(nic.RawDefinition))
             throw new InvalidOperationException($"Could not find network adapter {adapter} on vmid {info.Id}");
 
-        if (!TryGetAdapterIndex(adapter, out var adapterIndex))
-            throw new InvalidOperationException($"Invalid network adapter {adapter}");
+        var adapterIndex = int.Parse(
+            nic.Id["net".Length..],
+            CultureInfo.InvariantCulture);
 
         await ValidateTargetNetwork(info.Node, network);
 
-        var updatedValue = ReplaceBridge(rawValue, network);
+        var updatedValue = ReplaceBridge(nic.RawDefinition, network);
         var assignments = new Dictionary<int, string> { [adapterIndex] = updatedValue };
 
         Result result;
@@ -239,16 +249,16 @@ public class ProxmoxService : IProxmoxService
         _proxmoxStateService.CheckState();
     }
 
-    private async Task<NetworkConfiguration> GetNetworkConfiguration(ProxmoxVmInfo info)
+    private async Task<IEnumerable<VmNetwork>> GetNetworkConfiguration(ProxmoxVmInfo info)
     {
         if (info.Type == ProxmoxVmType.QEMU)
         {
             var config = await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.GetAsync(true);
-            return ParseNetworkConfiguration(config.ExtensionData);
+            return config.Networks ?? [];
         }
 
         var containerConfig = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.GetAsync(true);
-        return ParseNetworkConfiguration(containerConfig.ExtensionData);
+        return containerConfig.Networks ?? [];
     }
 
     private async Task ValidateTargetNetwork(string node, string network)
@@ -268,49 +278,6 @@ public class ProxmoxService : IProxmoxService
         }
     }
 
-    private static NetworkConfiguration ParseNetworkConfiguration(
-        IEnumerable<KeyValuePair<string, object>> extensionData)
-    {
-        var configuration = new NetworkConfiguration();
-
-        foreach (var extensionItem in extensionData ?? [])
-        {
-            if (!TryGetAdapterIndex(extensionItem.Key, out _))
-                continue;
-
-            var rawValue = extensionItem.Value?.ToString();
-            var bridge = GetBridge(rawValue);
-            if (string.IsNullOrWhiteSpace(rawValue) || string.IsNullOrWhiteSpace(bridge))
-                continue;
-
-            configuration.CurrentNetworks[extensionItem.Key] = bridge;
-            configuration.RawValues[extensionItem.Key] = rawValue;
-        }
-
-        return configuration;
-    }
-
-    private static bool TryGetAdapterIndex(string adapter, out int index)
-    {
-        index = 0;
-        return adapter != null
-            && int.TryParse(
-                Regex.Match(adapter, @"^net(?<index>\d+)$", RegexOptions.CultureInvariant).Groups["index"].Value,
-                out index);
-    }
-
-    private static string GetBridge(string rawValue)
-    {
-        if (string.IsNullOrWhiteSpace(rawValue))
-            return null;
-
-        var bridge = rawValue
-            .Split(',', StringSplitOptions.TrimEntries)
-            .FirstOrDefault(x => x.StartsWith("bridge=", StringComparison.OrdinalIgnoreCase));
-
-        return bridge?["bridge=".Length..];
-    }
-
     private static string ReplaceBridge(string rawValue, string network)
     {
         var parts = rawValue.Split(',', StringSplitOptions.TrimEntries).ToList();
@@ -322,12 +289,6 @@ public class ProxmoxService : IProxmoxService
             parts.Add($"bridge={network}");
 
         return string.Join(',', parts);
-    }
-
-    private sealed class NetworkConfiguration
-    {
-        public Dictionary<string, string> CurrentNetworks { get; } = new();
-        public Dictionary<string, string> RawValues { get; } = new();
     }
 
     private async Task<Result> VncProxyCall(string node, int id, ProxmoxVmType type)
