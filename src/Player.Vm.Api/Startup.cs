@@ -326,7 +326,7 @@ public class Startup
         services.AddFeatureHandlers();
         services.AddAutoMapper(typeof(Startup));
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(typeof(Startup).Assembly));
-        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CheckTasksBehavior<,>));
+        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CheckVsphereTasksBehavior<,>));
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CheckProxmoxTasksBehavior<,>));
 
         services.AddMemoryCache();

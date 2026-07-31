@@ -21,7 +21,7 @@ namespace Player.Vm.Api.Features.Vsphere
     public class PowerOn
     {
         [DataContract(Name = "PowerOnVsphereVirtualMachine")]
-        public class Command : IRequest<string>, ICheckTasksRequest
+        public class Command : IRequest<string>, ICheckVsphereTasksRequest
         {
             [JsonIgnore]
             public Guid Id { get; set; }

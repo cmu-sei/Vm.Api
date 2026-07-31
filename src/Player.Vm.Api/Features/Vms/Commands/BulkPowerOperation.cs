@@ -24,7 +24,7 @@ namespace Player.Vm.Api.Features.Vms
     public class BulkPowerOperation
     {
         [DataContract(Name = "BulkPowerOperation")]
-        public class Command : IRequest<Response>, ICheckTasksRequest, ICheckProxmoxTasksRequest
+        public class Command : IRequest<Response>, ICheckVsphereTasksRequest, ICheckProxmoxTasksRequest
         {
             public Guid[] Ids { get; set; }
 

@@ -5,7 +5,7 @@ namespace Player.Vm.Api.Features.Shared.Interfaces
 {
     /// <summary>
     /// Marks a request that should kick the Proxmox task poller once it completes. The vSphere
-    /// counterpart is <see cref="ICheckTasksRequest"/>; a request that can target either provider
+    /// counterpart is <see cref="ICheckVsphereTasksRequest"/>; a request that can target either provider
     /// implements both.
     /// </summary>
     public interface ICheckProxmoxTasksRequest { }
