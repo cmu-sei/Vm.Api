@@ -82,10 +82,17 @@ public abstract class NetworkBaseHandler
     {
         var principal = _principal as ClaimsPrincipal;
         var allowedNetworks = permissions.AllowedNetworks ?? new();
+        var info = ToDomainInfo(vm.ProxmoxVmInfo, vm.Id);
+        var currentNetworks = await ProxmoxService.GetCurrentNetworks(info, cancellationToken);
+        var unauthorizedCurrentNetworks = currentNetworks.Values
+            .Where(network => !string.IsNullOrWhiteSpace(network) && !allowedNetworks.ContainsKey(network))
+            .Distinct()
+            .ToArray();
         var networkNames = await NetworkService.GetNetworkNames(
             viewId,
             VmType.Proxmox,
             _proxmoxOptions.Host,
+            unauthorizedCurrentNetworks,
             cancellationToken);
 
         return new ProxmoxVirtualMachine
@@ -94,11 +101,10 @@ public abstract class NetworkBaseHandler
             Name = vm.Name,
             UserId = vm.UserId,
             IsOwner = vm.UserId == principal.GetId(),
-            NetworkCards = await ProxmoxService.GetNicOptions(
-                ToDomainInfo(vm.ProxmoxVmInfo, vm.Id),
+            NetworkCards = ProxmoxService.GetNicOptions(
+                currentNetworks,
                 allowedNetworks,
-                networkNames,
-                cancellationToken),
+                networkNames),
             CanAccessNicConfiguration = allowedNetworks.Count > 0
         };
     }
