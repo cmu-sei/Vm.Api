@@ -3,9 +3,9 @@
 
 using System;
 using System.Diagnostics;
+using System.Threading;
 using System.Threading.Tasks;
 using Corsinvest.ProxmoxVE.Api;
-using Corsinvest.ProxmoxVE.Api.Extension;
 using Corsinvest.ProxmoxVE.Api.Shared.Models.Cluster;
 using Player.Vm.Api.Domain.Models;
 
@@ -36,7 +36,12 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
         /// <summary>
         /// Waits for a Proxmox task to finish and checks its final exit status.
         /// </summary>
-        public static async Task<bool> WaitForTaskToFinish(this PveClient client, Result result, int wait = 2000, long timeout = 3600 * 1000)
+        public static async Task<bool> WaitForTaskToFinish(
+            this PveClient client,
+            Result result,
+            int wait = 2000,
+            long timeout = 3600 * 1000,
+            CancellationToken cancellationToken = default)
         {
             if (result == null || timeout <= 0)
                 return false;
@@ -55,7 +60,7 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             if (data is null || !data.StartsWith("UPID:"))
                 return true;
 
-            var finished = await WaitForTaskToFinish(client, data, wait, timeout);
+            var finished = await WaitForTaskToFinish(client, data, wait, timeout, cancellationToken);
 
             if (finished)
             {
@@ -71,7 +76,12 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
         /// <summary>
         /// Waits for a Proxmox task to stop running.
         /// </summary>
-        public static async Task<bool> WaitForTaskToFinish(this PveClient client, string task, int wait = 2000, long timeout = 3600 * 1000)
+        public static async Task<bool> WaitForTaskToFinish(
+            this PveClient client,
+            string task,
+            int wait = 2000,
+            long timeout = 3600 * 1000,
+            CancellationToken cancellationToken = default)
         {
             var isRunning = true;
             if (wait <= 0)
@@ -84,7 +94,7 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
 
             while (isRunning && stopwatch.ElapsedMilliseconds < timeout)
             {
-                await Task.Delay(wait);
+                await Task.Delay(wait, cancellationToken);
                 isRunning = await client.TaskIsRunningAsync(task);
             }
 

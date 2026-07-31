@@ -15,7 +15,7 @@ using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Infrastructure.Exceptions;
 
-namespace Player.Vm.Api.Features.Proxmox;
+namespace Player.Vm.Api.Features.Proxmox.Commands;
 
 public class ChangeNetwork
 {

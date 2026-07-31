@@ -192,13 +192,12 @@ public class ProxmoxService : IProxmoxService
         ProxmoxVmInfo info,
         CancellationToken cancellationToken)
     {
-        _ = cancellationToken;
-
         var vm = await ResolveNode(info);
         if (vm == null)
             throw new InvalidOperationException($"Could not find vmid {info.Id} in Proxmox");
 
-        return (await GetNetworkConfiguration(info)).CurrentNetworks;
+        var configuration = await GetNetworkConfiguration(info);
+        return configuration.CurrentNetworks;
     }
 
     public async Task ChangeNetwork(
@@ -207,8 +206,6 @@ public class ProxmoxService : IProxmoxService
         string network,
         CancellationToken cancellationToken)
     {
-        _ = cancellationToken;
-
         var vm = await ResolveNode(info);
         if (vm == null)
             throw new InvalidOperationException($"Could not find vmid {info.Id} in Proxmox");
@@ -235,7 +232,10 @@ public class ProxmoxService : IProxmoxService
             result = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.UpdateVm(netN: assignments);
         }
 
-        await WaitAndThrow(result, $"ChangeNetwork vmid={info.Id} adapter={adapter}");
+        await WaitAndThrow(
+            result,
+            $"ChangeNetwork vmid={info.Id} adapter={adapter}",
+            cancellationToken);
         _proxmoxStateService.CheckState();
     }
 
@@ -656,12 +656,18 @@ public class ProxmoxService : IProxmoxService
         return $"snapshot {snapshotName} deleted on vmid {info.Id}";
     }
 
-    private async Task WaitAndThrow(Result result, string operation)
+    private async Task WaitAndThrow(
+        Result result,
+        string operation,
+        CancellationToken cancellationToken = default)
     {
         if (!result.IsSuccessStatusCode)
             throw new Exception($"{operation} failed: {result.GetError()}");
 
-        var finished = await Extensions.ProxmoxExtensions.WaitForTaskToFinish(_pveClient, result);
+        var finished = await Extensions.ProxmoxExtensions.WaitForTaskToFinish(
+            _pveClient,
+            result,
+            cancellationToken: cancellationToken);
         if (!finished)
             throw new TimeoutException($"{operation} timed out waiting for the Proxmox task to finish.");
     }

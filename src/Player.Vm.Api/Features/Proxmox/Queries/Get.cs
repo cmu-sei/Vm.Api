@@ -13,7 +13,7 @@ using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms;
 
-namespace Player.Vm.Api.Features.Proxmox;
+namespace Player.Vm.Api.Features.Proxmox.Queries;
 
 public class Get
 {

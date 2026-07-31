@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
@@ -34,9 +35,13 @@ public class ProxmoxController : Controller
     [HttpGet("vms/proxmox/{id}")]
     [ProducesResponseType(typeof(ProxmoxVirtualMachine), (int)HttpStatusCode.OK)]
     [SwaggerOperation(OperationId = "getProxmoxVirtualMachine")]
-    public async Task<IActionResult> GetVirtualMachine([FromRoute] Guid id)
+    public async Task<IActionResult> GetVirtualMachine(
+        [FromRoute] Guid id,
+        CancellationToken cancellationToken)
     {
-        var result = await _mediator.Send(new Get.Query { Id = id });
+        var result = await _mediator.Send(
+            new Get.Query { Id = id },
+            cancellationToken);
         return Json(result);
     }
 
@@ -108,10 +113,11 @@ public class ProxmoxController : Controller
     [SwaggerOperation(OperationId = "changeProxmoxVirtualMachineNetwork")]
     public async Task<IActionResult> ChangeNetwork(
         [FromRoute] Guid id,
-        [FromBody] ChangeNetwork.Command command)
+        [FromBody] ChangeNetwork.Command command,
+        CancellationToken cancellationToken)
     {
         command.Id = id;
-        var result = await _mediator.Send(command);
+        var result = await _mediator.Send(command, cancellationToken);
         return Json(result);
     }
 
