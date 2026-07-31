@@ -29,6 +29,18 @@ public class ProxmoxController : Controller
     }
 
     /// <summary>
+    /// Retrieve a Proxmox virtual machine, including its network adapter configuration.
+    /// </summary>
+    [HttpGet("vms/proxmox/{id}")]
+    [ProducesResponseType(typeof(ProxmoxVirtualMachine), (int)HttpStatusCode.OK)]
+    [SwaggerOperation(OperationId = "getProxmoxVirtualMachine")]
+    public async Task<IActionResult> GetVirtualMachine([FromRoute] Guid id)
+    {
+        var result = await _mediator.Send(new Get.Query { Id = id });
+        return Json(result);
+    }
+
+    /// <summary>
     /// Retrieve the Url and Ticket for accessing a Proxmox virtual machine's NoVNC console
     /// </summary>
     [HttpGet("vms/proxmox/{id}/console")]
@@ -85,6 +97,21 @@ public class ProxmoxController : Controller
     public async Task<IActionResult> Shutdown([FromRoute] Guid id)
     {
         var result = await _mediator.Send(new Shutdown.Command { Id = id });
+        return Json(result);
+    }
+
+    /// <summary>
+    /// Change the network of a Proxmox virtual machine's network adapter.
+    /// </summary>
+    [HttpPost("vms/proxmox/{id}/actions/change-network")]
+    [ProducesResponseType(typeof(ProxmoxVirtualMachine), (int)HttpStatusCode.OK)]
+    [SwaggerOperation(OperationId = "changeProxmoxVirtualMachineNetwork")]
+    public async Task<IActionResult> ChangeNetwork(
+        [FromRoute] Guid id,
+        [FromBody] ChangeNetwork.Command command)
+    {
+        command.Id = id;
+        var result = await _mediator.Send(command);
         return Json(result);
     }
 

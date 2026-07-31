@@ -8,6 +8,8 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using Corsinvest.ProxmoxVE.Api;
 using Corsinvest.ProxmoxVE.Api.Extension;
@@ -28,6 +30,15 @@ namespace Player.Vm.Api.Domain.Proxmox.Services;
 public interface IProxmoxService
 {
     Task<ProxmoxConsole> GetConsole(ProxmoxVmInfo info);
+    Task<NicOptions> GetNicOptions(
+        ProxmoxVmInfo info,
+        IDictionary<string, string> allowedNetworks,
+        CancellationToken cancellationToken);
+    Task ChangeNetwork(
+        ProxmoxVmInfo info,
+        string adapter,
+        string network,
+        CancellationToken cancellationToken);
     Task<IEnumerable<IClusterResourceVm>> GetVms();
     Task<IEnumerable<NodeTask>> GetTasks();
 
@@ -134,6 +145,155 @@ public class ProxmoxService : IProxmoxService
             Url = url,
             PowerState = PowerState.On
         };
+    }
+
+    public async Task<NicOptions> GetNicOptions(
+        ProxmoxVmInfo info,
+        IDictionary<string, string> allowedNetworks,
+        CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+
+        var configuration = await GetNetworkConfiguration(info);
+        var available = (allowedNetworks ?? new Dictionary<string, string>())
+            .OrderBy(x => string.IsNullOrWhiteSpace(x.Value) ? x.Key : x.Value)
+            .ToDictionary(
+                x => x.Key,
+                x => string.IsNullOrWhiteSpace(x.Value) ? x.Key : x.Value);
+        var readOnly = new List<string>();
+
+        foreach (var currentNetwork in configuration.CurrentNetworks.Values)
+        {
+            if (string.IsNullOrWhiteSpace(currentNetwork))
+                continue;
+
+            if (!available.ContainsKey(currentNetwork))
+            {
+                available[currentNetwork] = currentNetwork;
+                readOnly.Add(currentNetwork);
+            }
+        }
+
+        return new NicOptions
+        {
+            AvailableNetworks = available,
+            CurrentNetworks = configuration.CurrentNetworks,
+            ReadOnlyNetworks = readOnly.ToArray()
+        };
+    }
+
+    public async Task ChangeNetwork(
+        ProxmoxVmInfo info,
+        string adapter,
+        string network,
+        CancellationToken cancellationToken)
+    {
+        _ = cancellationToken;
+
+        var vm = await ResolveNode(info);
+        if (vm == null)
+            throw new InvalidOperationException($"Could not find vmid {info.Id} in Proxmox");
+
+        var configuration = await GetNetworkConfiguration(info);
+        if (!configuration.RawValues.TryGetValue(adapter, out var rawValue))
+            throw new InvalidOperationException($"Could not find network adapter {adapter} on vmid {info.Id}");
+
+        if (!TryGetAdapterIndex(adapter, out var adapterIndex))
+            throw new InvalidOperationException($"Invalid network adapter {adapter}");
+
+        var updatedValue = ReplaceBridge(rawValue, network);
+        var assignments = new Dictionary<int, string> { [adapterIndex] = updatedValue };
+
+        Result result;
+        if (info.Type == ProxmoxVmType.QEMU)
+        {
+            result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.UpdateVmAsync(netN: assignments);
+        }
+        else
+        {
+            result = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.UpdateVm(netN: assignments);
+        }
+
+        await WaitAndThrow(result, $"ChangeNetwork vmid={info.Id} adapter={adapter}");
+        _proxmoxStateService.CheckState();
+    }
+
+    private async Task<NetworkConfiguration> GetNetworkConfiguration(ProxmoxVmInfo info)
+    {
+        var vm = await ResolveNode(info);
+        if (vm == null)
+            throw new InvalidOperationException($"Could not find vmid {info.Id} in Proxmox");
+
+        if (info.Type == ProxmoxVmType.QEMU)
+        {
+            var config = await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.GetAsync(true);
+            return ParseNetworkConfiguration(config.ExtensionData);
+        }
+
+        var containerConfig = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.GetAsync(true);
+        return ParseNetworkConfiguration(containerConfig.ExtensionData);
+    }
+
+    private static NetworkConfiguration ParseNetworkConfiguration(
+        IEnumerable<KeyValuePair<string, object>> extensionData)
+    {
+        var configuration = new NetworkConfiguration();
+
+        foreach (var extensionItem in extensionData ?? [])
+        {
+            if (!TryGetAdapterIndex(extensionItem.Key, out _))
+                continue;
+
+            var rawValue = extensionItem.Value?.ToString();
+            var bridge = GetBridge(rawValue);
+            if (string.IsNullOrWhiteSpace(rawValue) || string.IsNullOrWhiteSpace(bridge))
+                continue;
+
+            configuration.CurrentNetworks[extensionItem.Key] = bridge;
+            configuration.RawValues[extensionItem.Key] = rawValue;
+        }
+
+        return configuration;
+    }
+
+    private static bool TryGetAdapterIndex(string adapter, out int index)
+    {
+        index = 0;
+        return adapter != null
+            && int.TryParse(
+                Regex.Match(adapter, @"^net(?<index>\d+)$", RegexOptions.CultureInvariant).Groups["index"].Value,
+                out index);
+    }
+
+    private static string GetBridge(string rawValue)
+    {
+        if (string.IsNullOrWhiteSpace(rawValue))
+            return null;
+
+        var bridge = rawValue
+            .Split(',', StringSplitOptions.TrimEntries)
+            .FirstOrDefault(x => x.StartsWith("bridge=", StringComparison.OrdinalIgnoreCase));
+
+        return bridge?["bridge=".Length..];
+    }
+
+    private static string ReplaceBridge(string rawValue, string network)
+    {
+        var parts = rawValue.Split(',', StringSplitOptions.TrimEntries).ToList();
+        var bridgeIndex = parts.FindIndex(x => x.StartsWith("bridge=", StringComparison.OrdinalIgnoreCase));
+
+        if (bridgeIndex >= 0)
+            parts[bridgeIndex] = $"bridge={network}";
+        else
+            parts.Add($"bridge={network}");
+
+        return string.Join(',', parts);
+    }
+
+    private sealed class NetworkConfiguration
+    {
+        public Dictionary<string, string> CurrentNetworks { get; } = new();
+        public Dictionary<string, string> RawValues { get; } = new();
     }
 
     private async Task<Result> VncProxyCall(string node, int id, ProxmoxVmType type)
