@@ -60,13 +60,6 @@ public class ProxmoxTaskService : BackgroundService, IProxmoxTaskService
         "spiceshell",
     };
 
-    /// <summary>
-    /// UPIDs of finished-unsuccessfully tasks already logged. Cluster/tasks keeps returning a failed
-    /// task for as long as PVE retains it, so without this the same failure is logged every poll.
-    /// Pruned each pass to the UPIDs PVE still reports, which bounds it to the task list size.
-    /// </summary>
-    private readonly HashSet<string> _loggedFailures = [];
-
     public ProxmoxTaskService(
             ILogger<ProxmoxTaskService> logger,
             IOptionsMonitor<ProxmoxOptions> optionsMonitor,
@@ -136,11 +129,7 @@ public class ProxmoxTaskService : BackgroundService, IProxmoxTaskService
 
     private async Task GetRecentTasks(VmContext dbContext, IProxmoxService proxmoxService, CancellationToken cancellationToken)
     {
-        var tasks = (await proxmoxService.GetTasks()).ToList();
-
-        // Forget failures PVE has aged out, so the set tracks the current task list rather than
-        // growing for the life of the process.
-        _loggedFailures.IntersectWith(tasks.Select(x => x.UniqueTaskId));
+        var tasks = await proxmoxService.GetTasks();
 
         // vmid -> Vm.Id, the analogue of IConnectionService.GetVmIdByRef.
         var vmIdsByVmid = await dbContext.ProxmoxVmInfo
@@ -176,13 +165,6 @@ public class ProxmoxTaskService : BackgroundService, IProxmoxTaskService
                 {
                     _tasksPending = true;
                     stillPendingVmIds.Add(vmId);
-                }
-                else if (!task.StatusOk && _loggedFailures.Add(task.UniqueTaskId))
-                {
-                    // StatusOk is false for both failures and still-running tasks, so it is only a
-                    // meaningful error signal once the task is known to have finished. This is the
-                    // error channel for bulk operations, which do not wait on their tasks.
-                    _logger.LogWarning($"Proxmox task {task.UniqueTaskId} for vmid={vmid} finished unsuccessfully: {task.Status}");
                 }
             }
             catch (Exception ex)
