@@ -3,8 +3,6 @@
 
 using System;
 using System.Linq;
-using System.Security.Claims;
-using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using Player.Vm.Api.Domain.Models;
@@ -13,14 +11,12 @@ using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Networks;
 using Player.Vm.Api.Features.Vms;
-using Player.Vm.Api.Infrastructure.Extensions;
 using Player.Vm.Api.Infrastructure.Exceptions;
 
 namespace Player.Vm.Api.Features.Proxmox;
 
 public abstract class NetworkBaseHandler
 {
-    private readonly IPrincipal _principal;
     private readonly ProxmoxOptions _proxmoxOptions;
 
     protected NetworkBaseHandler(
@@ -28,14 +24,12 @@ public abstract class NetworkBaseHandler
         IViewService viewService,
         INetworkService networkService,
         IProxmoxService proxmoxService,
-        IPrincipal principal,
         ProxmoxOptions proxmoxOptions)
     {
         VmService = vmService;
         ViewService = viewService;
         NetworkService = networkService;
         ProxmoxService = proxmoxService;
-        _principal = principal;
         _proxmoxOptions = proxmoxOptions;
     }
 
@@ -80,7 +74,6 @@ public abstract class NetworkBaseHandler
         EffectiveNetworkPermission permissions,
         CancellationToken cancellationToken)
     {
-        var principal = _principal as ClaimsPrincipal;
         var allowedNetworks = permissions.AllowedNetworks ?? new();
         var info = ToDomainInfo(vm.ProxmoxVmInfo, vm.Id);
         var currentNetworks = await ProxmoxService.GetCurrentNetworks(info, cancellationToken);
@@ -100,7 +93,6 @@ public abstract class NetworkBaseHandler
             Id = vm.Id,
             Name = vm.Name,
             UserId = vm.UserId,
-            IsOwner = vm.UserId == principal.GetId(),
             NetworkCards = ProxmoxService.GetNicOptions(
                 currentNetworks,
                 allowedNetworks,

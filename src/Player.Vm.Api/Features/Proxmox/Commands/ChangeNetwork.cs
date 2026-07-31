@@ -3,7 +3,6 @@
 
 using System;
 using System.Runtime.Serialization;
-using System.Security.Principal;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
@@ -37,9 +36,8 @@ public class ChangeNetwork
             IViewService viewService,
             INetworkService networkService,
             IProxmoxService proxmoxService,
-            IPrincipal principal,
             ProxmoxOptions proxmoxOptions)
-            : base(vmService, viewService, networkService, proxmoxService, principal, proxmoxOptions)
+            : base(vmService, viewService, networkService, proxmoxService, proxmoxOptions)
         {
         }
 

@@ -14,8 +14,6 @@ public class ProxmoxVirtualMachine
 
     public Guid? UserId { get; set; }
 
-    public bool IsOwner { get; set; }
-
     public NicOptions NetworkCards { get; set; }
 
     public bool CanAccessNicConfiguration { get; set; }

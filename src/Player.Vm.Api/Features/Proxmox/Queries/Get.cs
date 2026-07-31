@@ -3,7 +3,6 @@
 
 using System;
 using System.Runtime.Serialization;
-using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
@@ -30,9 +29,8 @@ public class Get
             IViewService viewService,
             INetworkService networkService,
             IProxmoxService proxmoxService,
-            IPrincipal principal,
             ProxmoxOptions proxmoxOptions)
-            : base(vmService, viewService, networkService, proxmoxService, principal, proxmoxOptions)
+            : base(vmService, viewService, networkService, proxmoxService, proxmoxOptions)
         {
         }
 
