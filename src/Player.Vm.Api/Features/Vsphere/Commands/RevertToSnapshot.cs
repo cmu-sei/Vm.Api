@@ -20,7 +20,7 @@ namespace Player.Vm.Api.Features.Vsphere
     public class RevertToSnapshot
     {
         [DataContract(Name = "RevertToVsphereVirtualMachineSnapshot")]
-        public class Command : IRequest, ICheckTasksRequest
+        public class Command : IRequest, ICheckVsphereTasksRequest
         {
             [JsonIgnore]
             public Guid Id { get; set; }

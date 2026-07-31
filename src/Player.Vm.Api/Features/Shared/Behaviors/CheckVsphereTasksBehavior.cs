@@ -9,11 +9,11 @@ using Player.Vm.Api.Features.Shared.Interfaces;
 
 namespace Player.Vm.Api.Features.Shared.Behaviors
 {
-    public class CheckTasksBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
+    public class CheckVsphereTasksBehavior<TRequest, TResponse> : IPipelineBehavior<TRequest, TResponse>
     {
         private readonly ITaskService _taskService;
 
-        public CheckTasksBehavior(ITaskService taskService)
+        public CheckVsphereTasksBehavior(ITaskService taskService)
         {
             _taskService = taskService;
         }
@@ -22,7 +22,7 @@ namespace Player.Vm.Api.Features.Shared.Behaviors
         {
             var response = await next();
 
-            if (typeof(ICheckTasksRequest).IsAssignableFrom(typeof(TRequest)))
+            if (typeof(ICheckVsphereTasksRequest).IsAssignableFrom(typeof(TRequest)))
             {
                 _taskService.CheckTasks();
             }

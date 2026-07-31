@@ -319,11 +319,15 @@ public class Startup
         services.AddSingleton<ProxmoxStateService>();
         services.AddSingleton<IHostedService>(x => x.GetService<ProxmoxStateService>());
         services.AddSingleton<IProxmoxStateService>(x => x.GetService<ProxmoxStateService>());
+        services.AddSingleton<ProxmoxTaskService>();
+        services.AddSingleton<IHostedService>(x => x.GetService<ProxmoxTaskService>());
+        services.AddSingleton<IProxmoxTaskService>(x => x.GetService<ProxmoxTaskService>());
 
         services.AddFeatureHandlers();
         services.AddAutoMapper(typeof(Startup));
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(typeof(Startup).Assembly));
-        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CheckTasksBehavior<,>));
+        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CheckVsphereTasksBehavior<,>));
+        services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CheckProxmoxTasksBehavior<,>));
 
         services.AddMemoryCache();
         services.AddApiClients(identityClientOptions: _identityClientOptions, clientOptions: _clientOptions, isoUploadOptions: isoOptions);

@@ -18,7 +18,15 @@ namespace Player.Vm.Api.Features.Vms
 
             CreateMap<Domain.Models.ConsoleConnectionInfo, ConsoleConnectionInfo>().ReverseMap();
 
-            CreateMap<VmUpdateForm, Domain.Models.Vm>();
+            // Keep Type in sync with ProxmoxVmInfo, but never clobber the Type of a
+            // Vm from another provider (vSphere's Type is set by its own poller).
+            CreateMap<VmUpdateForm, Domain.Models.Vm>()
+                .ForMember(dest => dest.Type, opt => opt.MapFrom((src, dest) =>
+                    src.ProxmoxVmInfo != null
+                        ? Domain.Models.VmType.Proxmox
+                        : dest.Type == Domain.Models.VmType.Proxmox
+                            ? Domain.Models.VmType.Unknown
+                            : dest.Type));
 
             CreateMap<VmCreateForm, Domain.Models.Vm>()
                 .ForMember(dest => dest.Type, opt => opt.MapFrom(src => src.ProxmoxVmInfo != null ? Domain.Models.VmType.Proxmox : Domain.Models.VmType.Unknown))

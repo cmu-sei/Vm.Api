@@ -9,7 +9,14 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
         public string Host { get; set; }
         public int Port { get; set; }
         public string Token { get; set; }
+        public bool ValidateCertificate { get; set; } = true;
+
         public int StateRefreshIntervalSeconds { get; set; }
+
+        // How often ProxmoxTaskService polls cluster tasks while nothing is pending, and while at
+        // least one task is still running. Mirrors the equivalent VsphereOptions settings.
+        public int CheckTaskProgressIntervalMilliseconds { get; set; } = 5000;
+        public int ReCheckTaskProgressIntervalMilliseconds { get; set; } = 1000;
 
         // Maximum payload accepted by UploadFileToGuest. The QEMU guest agent's file-write is limited
         // (~64 KiB per call), so this defaults to 60 KiB to stay safely under that ceiling.
