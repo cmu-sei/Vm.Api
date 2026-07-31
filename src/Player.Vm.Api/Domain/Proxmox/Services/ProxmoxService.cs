@@ -257,7 +257,7 @@ public class ProxmoxService : IProxmoxService
         if (!result.IsSuccessStatusCode)
             throw new Exception($"Could not list Proxmox networks on node {node}: {result.GetError()}");
 
-        var networks = result.ToData<NodeNetwork[]>();
+        var networks = result.ToModel<NodeNetwork[]>();
         var exists = networks?.Any(item =>
             string.Equals(item.Interface, network, StringComparison.Ordinal)) == true;
 
