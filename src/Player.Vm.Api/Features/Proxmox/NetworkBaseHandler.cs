@@ -26,12 +26,14 @@ public abstract class NetworkBaseHandler
     protected NetworkBaseHandler(
         IVmService vmService,
         IViewService viewService,
+        INetworkService networkService,
         IProxmoxService proxmoxService,
         IPrincipal principal,
         ProxmoxOptions proxmoxOptions)
     {
         VmService = vmService;
         ViewService = viewService;
+        NetworkService = networkService;
         ProxmoxService = proxmoxService;
         _principal = principal;
         _proxmoxOptions = proxmoxOptions;
@@ -39,6 +41,7 @@ public abstract class NetworkBaseHandler
 
     protected IVmService VmService { get; }
     protected IViewService ViewService { get; }
+    protected INetworkService NetworkService { get; }
     protected IProxmoxService ProxmoxService { get; }
 
     protected static Domain.Models.ProxmoxVmInfo ToDomainInfo(Vms.ProxmoxVmInfo info, Guid vmId)
@@ -52,7 +55,7 @@ public abstract class NetworkBaseHandler
         };
     }
 
-    protected async Task<(Vms.Vm Vm, EffectiveNetworkPermission Permissions)> GetVmAndPermissions(
+    protected async Task<(Vms.Vm Vm, Guid ViewId, EffectiveNetworkPermission Permissions)> GetVmAndPermissions(
         Guid id,
         CancellationToken cancellationToken)
     {
@@ -68,16 +71,22 @@ public abstract class NetworkBaseHandler
             _proxmoxOptions.Host,
             cancellationToken);
 
-        return (vm, permissions);
+        return (vm, viewId, permissions);
     }
 
     protected async Task<ProxmoxVirtualMachine> BuildVm(
         Vms.Vm vm,
+        Guid viewId,
         EffectiveNetworkPermission permissions,
         CancellationToken cancellationToken)
     {
         var principal = _principal as ClaimsPrincipal;
         var allowedNetworks = permissions.AllowedNetworks ?? new();
+        var networkNames = await NetworkService.GetNetworkNames(
+            viewId,
+            VmType.Proxmox,
+            _proxmoxOptions.Host,
+            cancellationToken);
 
         return new ProxmoxVirtualMachine
         {
@@ -88,6 +97,7 @@ public abstract class NetworkBaseHandler
             NetworkCards = await ProxmoxService.GetNicOptions(
                 ToDomainInfo(vm.ProxmoxVmInfo, vm.Id),
                 allowedNetworks,
+                networkNames,
                 cancellationToken),
             CanAccessNicConfiguration = allowedNetworks.Count > 0
         };

@@ -8,6 +8,7 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
+using Player.Vm.Api.Features.Networks;
 using Player.Vm.Api.Domain.Proxmox.Options;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
@@ -34,10 +35,11 @@ public class ChangeNetwork
         public Handler(
             IVmService vmService,
             IViewService viewService,
+            INetworkService networkService,
             IProxmoxService proxmoxService,
             IPrincipal principal,
             ProxmoxOptions proxmoxOptions)
-            : base(vmService, viewService, proxmoxService, principal, proxmoxOptions)
+            : base(vmService, viewService, networkService, proxmoxService, principal, proxmoxOptions)
         {
         }
 
@@ -45,7 +47,7 @@ public class ChangeNetwork
             Command request,
             CancellationToken cancellationToken)
         {
-            var (vm, permissions) = await GetVmAndPermissions(request.Id, cancellationToken);
+            var (vm, viewId, permissions) = await GetVmAndPermissions(request.Id, cancellationToken);
             var allowedNetworks = permissions.AllowedNetworks ?? new();
 
             if (allowedNetworks.Count == 0)
@@ -63,7 +65,7 @@ public class ChangeNetwork
                 request.Network,
                 cancellationToken);
 
-            return await BuildVm(vm, permissions, cancellationToken);
+            return await BuildVm(vm, viewId, permissions, cancellationToken);
         }
     }
 }

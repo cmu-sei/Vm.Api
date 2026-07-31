@@ -33,6 +33,7 @@ public interface IProxmoxService
     Task<NicOptions> GetNicOptions(
         ProxmoxVmInfo info,
         IDictionary<string, string> allowedNetworks,
+        IDictionary<string, string> networkNames,
         CancellationToken cancellationToken);
     Task ChangeNetwork(
         ProxmoxVmInfo info,
@@ -150,10 +151,9 @@ public class ProxmoxService : IProxmoxService
     public async Task<NicOptions> GetNicOptions(
         ProxmoxVmInfo info,
         IDictionary<string, string> allowedNetworks,
+        IDictionary<string, string> networkNames,
         CancellationToken cancellationToken)
     {
-        _ = cancellationToken;
-
         var configuration = await GetNetworkConfiguration(info);
         var available = (allowedNetworks ?? new Dictionary<string, string>())
             .OrderBy(x => string.IsNullOrWhiteSpace(x.Value) ? x.Key : x.Value)
@@ -169,7 +169,12 @@ public class ProxmoxService : IProxmoxService
 
             if (!available.ContainsKey(currentNetwork))
             {
-                available[currentNetwork] = currentNetwork;
+                available[currentNetwork] =
+                    networkNames != null &&
+                    networkNames.TryGetValue(currentNetwork, out var name) &&
+                    !string.IsNullOrWhiteSpace(name)
+                        ? name
+                        : currentNetwork;
                 readOnly.Add(currentNetwork);
             }
         }
