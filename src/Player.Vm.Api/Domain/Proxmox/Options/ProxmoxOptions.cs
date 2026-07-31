@@ -9,7 +9,7 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
         public string Host { get; set; }
         public int Port { get; set; }
         public string Token { get; set; }
-        public bool ValidateCertificate { get; set; }
+        public bool ValidateCertificate { get; set; } = true;
 
         public int StateRefreshIntervalSeconds { get; set; }
 
