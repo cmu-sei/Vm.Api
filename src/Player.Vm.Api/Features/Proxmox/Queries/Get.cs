@@ -6,9 +6,7 @@ using System.Runtime.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
-using Player.Vm.Api.Features.Networks;
-using Player.Vm.Api.Domain.Proxmox.Options;
-using Player.Vm.Api.Domain.Proxmox.Services;
+using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms;
 
@@ -22,24 +20,30 @@ public class Get
         public Guid Id { get; set; }
     }
 
-    public class Handler : NetworkBaseHandler, IRequestHandler<Query, ProxmoxVirtualMachine>
+    public class Handler : BaseHandler, IRequestHandler<Query, ProxmoxVirtualMachine>
     {
+        private readonly IProxmoxVmNetworkService _networkService;
+
         public Handler(
+            VmContext db,
+            IPlayerService playerService,
             IVmService vmService,
-            IViewService viewService,
-            INetworkService networkService,
-            IProxmoxService proxmoxService,
-            ProxmoxOptions proxmoxOptions)
-            : base(vmService, viewService, networkService, proxmoxService, proxmoxOptions)
+            IProxmoxVmNetworkService networkService)
+            : base(db, playerService, vmService)
         {
+            _networkService = networkService;
         }
 
         public async Task<ProxmoxVirtualMachine> Handle(
             Query request,
             CancellationToken cancellationToken)
         {
-            var (vm, viewId, permissions) = await GetVmAndPermissions(request.Id, cancellationToken);
-            return await BuildVm(vm, viewId, permissions, cancellationToken);
+            // No permission arrays: read access is settled by GetVm, and which networks are
+            // selectable is settled by the view-network permissions below.
+            var vm = await GetVm(request.Id, [], [], [], cancellationToken);
+            var permissions = await _networkService.GetPermissions(vm, cancellationToken);
+
+            return await _networkService.ToResponse(vm, permissions, cancellationToken);
         }
     }
 }

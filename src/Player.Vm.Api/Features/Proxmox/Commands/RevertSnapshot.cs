@@ -11,6 +11,7 @@ using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Shared.Interfaces;
+using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Features.Proxmox.Commands
@@ -29,8 +30,8 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
         {
             private readonly IProxmoxService _proxmoxService;
 
-            public Handler(VmContext db, IPlayerService playerService, IProxmoxService proxmoxService)
-                : base(db, playerService)
+            public Handler(VmContext db, IPlayerService playerService, IVmService vmService, IProxmoxService proxmoxService)
+                : base(db, playerService, vmService)
             {
                 _proxmoxService = proxmoxService;
             }

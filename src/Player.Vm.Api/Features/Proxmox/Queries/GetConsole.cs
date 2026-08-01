@@ -9,11 +9,9 @@ using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Data;
-using Microsoft.EntityFrameworkCore;
-using System.Linq;
 using Player.Vm.Api.Domain.Proxmox.Services;
+using Player.Vm.Api.Domain.Services;
 using AutoMapper;
-using Player.Vm.Api.Infrastructure.Exceptions;
 
 namespace Player.Vm.Api.Features.Proxmox
 {
@@ -38,38 +36,28 @@ namespace Player.Vm.Api.Features.Proxmox
             public Domain.Models.PowerState PowerState { get; init; }
         }
 
-        public class Handler : IRequestHandler<Query, ProxmoxConsole>
+        public class Handler : BaseHandler, IRequestHandler<Query, ProxmoxConsole>
         {
-            private readonly VmContext _db;
             private readonly IMapper _mapper;
-            private readonly IVmService _vmService;
             private readonly IProxmoxService _proxmoxService;
 
             public Handler(
                 VmContext db,
-                IMapper mapper,
+                IPlayerService playerService,
                 IVmService vmService,
+                IMapper mapper,
                 IProxmoxService proxmoxService)
+                : base(db, playerService, vmService)
             {
-                _db = db;
                 _mapper = mapper;
-                _vmService = vmService;
                 _proxmoxService = proxmoxService;
             }
 
             public async Task<ProxmoxConsole> Handle(Query request, CancellationToken cancellationToken)
             {
-                var vmEntity = await _db.Vms
-                    .Include(x => x.VmTeams)
-                    .Where(x => x.Id == request.Id)
-                    .SingleOrDefaultAsync(cancellationToken);
+                var vm = await GetVm(request.Id, [], [], [], cancellationToken);
 
-                if (vmEntity == null)
-                    throw new EntityNotFoundException<Vm.Api.Features.Vms.Vm>();
-
-                await _vmService.CanAccessVm(vmEntity, cancellationToken);
-
-                return _mapper.Map<ProxmoxConsole>(await _proxmoxService.GetConsole(vmEntity.ProxmoxVmInfo));
+                return _mapper.Map<ProxmoxConsole>(await _proxmoxService.GetConsole(vm.ProxmoxVmInfo));
             }
         }
     }

@@ -7,8 +7,7 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
-using Player.Vm.Api.Features.Networks;
-using Player.Vm.Api.Domain.Proxmox.Options;
+using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms;
@@ -29,24 +28,30 @@ public class ChangeNetwork
         public string Network { get; set; }
     }
 
-    public class Handler : NetworkBaseHandler, IRequestHandler<Command, ProxmoxVirtualMachine>
+    public class Handler : BaseHandler, IRequestHandler<Command, ProxmoxVirtualMachine>
     {
+        private readonly IProxmoxVmNetworkService _networkService;
+        private readonly IProxmoxService _proxmoxService;
+
         public Handler(
+            VmContext db,
+            IPlayerService playerService,
             IVmService vmService,
-            IViewService viewService,
-            INetworkService networkService,
-            IProxmoxService proxmoxService,
-            ProxmoxOptions proxmoxOptions)
-            : base(vmService, viewService, networkService, proxmoxService, proxmoxOptions)
+            IProxmoxVmNetworkService networkService,
+            IProxmoxService proxmoxService)
+            : base(db, playerService, vmService)
         {
+            _networkService = networkService;
+            _proxmoxService = proxmoxService;
         }
 
         public async Task<ProxmoxVirtualMachine> Handle(
             Command request,
             CancellationToken cancellationToken)
         {
-            var (vm, viewId, permissions) = await GetVmAndPermissions(request.Id, cancellationToken);
-            var allowedNetworks = permissions.AllowedNetworks ?? new();
+            var vm = await GetVm(request.Id, [], [], [], cancellationToken);
+            var permissions = await _networkService.GetPermissions(vm, cancellationToken);
+            var allowedNetworks = permissions.Permissions.AllowedNetworks ?? new();
 
             if (allowedNetworks.Count == 0)
                 throw new ForbiddenException("You do not have permission to change networks on this VM");
@@ -57,13 +62,13 @@ public class ChangeNetwork
             if (!allowedNetworks.ContainsKey(request.Network))
                 throw new ForbiddenException("The target network is not in your allowed networks list");
 
-            await ProxmoxService.ChangeNetwork(
-                ToDomainInfo(vm.ProxmoxVmInfo, vm.Id),
+            await _proxmoxService.ChangeNetwork(
+                vm.ProxmoxVmInfo,
                 request.Adapter,
                 request.Network,
                 cancellationToken);
 
-            return await BuildVm(vm, viewId, permissions, cancellationToken);
+            return await _networkService.ToResponse(vm, permissions, cancellationToken);
         }
     }
 }

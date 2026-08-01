@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Data;
+using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Exceptions;
@@ -14,15 +15,22 @@ using DomainVm = Player.Vm.Api.Domain.Models.Vm;
 
 namespace Player.Vm.Api.Features.Proxmox
 {
+    /// <summary>
+    /// Base for every Proxmox request handler. All Proxmox VM acquisition goes through
+    /// <see cref="GetVm"/> so that the Proxmox-provider guard and the access checks are applied
+    /// consistently, regardless of which endpoint is being served.
+    /// </summary>
     public class BaseHandler
     {
         private readonly VmContext _db;
-        private readonly Player.Vm.Api.Domain.Services.IPlayerService _playerService;
+        private readonly IPlayerService _playerService;
+        private readonly IVmService _vmService;
 
-        public BaseHandler(VmContext db, Player.Vm.Api.Domain.Services.IPlayerService playerService)
+        public BaseHandler(VmContext db, IPlayerService playerService, IVmService vmService)
         {
             _db = db;
             _playerService = playerService;
+            _vmService = vmService;
         }
 
         protected async Task<DomainVm> GetVmForEditing(Guid id, CancellationToken cancellationToken)
@@ -48,10 +56,13 @@ namespace Player.Vm.Api.Features.Proxmox
                 .SingleOrDefaultAsync(x => x.Id == id, cancellationToken);
 
             if (vm == null)
-                throw new EntityNotFoundException<Player.Vm.Api.Features.Vms.Vm>();
+                throw new EntityNotFoundException<Vms.Vm>();
 
             if (vm.ProxmoxVmInfo == null)
                 throw new ForbiddenException("This action is only valid for Proxmox VMs");
+
+            // Team visibility plus the personal-Vm ownership rule. Throws on failure.
+            await _vmService.CanAccessVm(vm, cancellationToken);
 
             if (requiredSystemPermissions.Length > 0 || requiredViewPermissions.Length > 0 || requiredTeamPermissions.Length > 0)
             {
