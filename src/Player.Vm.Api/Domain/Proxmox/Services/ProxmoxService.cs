@@ -4,15 +4,18 @@
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using Corsinvest.ProxmoxVE.Api;
 using Corsinvest.ProxmoxVE.Api.Extension;
 using Corsinvest.ProxmoxVE.Api.Shared.Models.Cluster;
 using Corsinvest.ProxmoxVE.Api.Shared.Models.Node;
+using Corsinvest.ProxmoxVE.Api.Shared.Models.Vm;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Player.Vm.Api.Data;
@@ -22,12 +25,25 @@ using Player.Vm.Api.Domain.Proxmox.Models;
 using Player.Vm.Api.Domain.Proxmox.Options;
 using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Options;
+using Player.Vm.Api.Infrastructure.Exceptions;
 
 namespace Player.Vm.Api.Domain.Proxmox.Services;
 
 public interface IProxmoxService
 {
     Task<ProxmoxConsole> GetConsole(ProxmoxVmInfo info);
+    Task<Dictionary<string, string>> GetCurrentNetworks(
+        ProxmoxVmInfo info,
+        CancellationToken cancellationToken);
+    NicOptions GetNicOptions(
+        Dictionary<string, string> currentNetworks,
+        IDictionary<string, string> allowedNetworks,
+        IDictionary<string, string> networkNames);
+    Task ChangeNetwork(
+        ProxmoxVmInfo info,
+        string adapter,
+        string network,
+        CancellationToken cancellationToken);
     Task<IEnumerable<IClusterResourceVm>> GetVms();
     Task<IEnumerable<NodeTask>> GetTasks();
 
@@ -134,6 +150,145 @@ public class ProxmoxService : IProxmoxService
             Url = url,
             PowerState = PowerState.On
         };
+    }
+
+    public NicOptions GetNicOptions(
+        Dictionary<string, string> currentNetworks,
+        IDictionary<string, string> allowedNetworks,
+        IDictionary<string, string> networkNames)
+    {
+        var available = (allowedNetworks ?? new Dictionary<string, string>())
+            .OrderBy(x => string.IsNullOrWhiteSpace(x.Value) ? x.Key : x.Value)
+            .ToDictionary(
+                x => x.Key,
+                x => string.IsNullOrWhiteSpace(x.Value) ? x.Key : x.Value);
+        var readOnly = new List<string>();
+
+        foreach (var currentNetwork in (currentNetworks ?? new Dictionary<string, string>()).Values)
+        {
+            if (string.IsNullOrWhiteSpace(currentNetwork))
+                continue;
+
+            if (!available.ContainsKey(currentNetwork))
+            {
+                available[currentNetwork] =
+                    networkNames != null &&
+                    networkNames.TryGetValue(currentNetwork, out var name) &&
+                    !string.IsNullOrWhiteSpace(name)
+                        ? name
+                        : currentNetwork;
+                readOnly.Add(currentNetwork);
+            }
+        }
+
+        return new NicOptions
+        {
+            AvailableNetworks = available,
+            CurrentNetworks = currentNetworks ?? new Dictionary<string, string>(),
+            ReadOnlyNetworks = readOnly.ToArray()
+        };
+    }
+
+    public async Task<Dictionary<string, string>> GetCurrentNetworks(
+        ProxmoxVmInfo info,
+        CancellationToken cancellationToken)
+    {
+        var vm = await ResolveNode(info);
+        if (vm == null)
+            throw new InvalidOperationException($"Could not find vmid {info.Id} in Proxmox");
+
+        var networks = await GetNetworkConfiguration(info);
+        return networks
+            .Where(network =>
+                !string.IsNullOrWhiteSpace(network.Id) &&
+                !string.IsNullOrWhiteSpace(network.Bridge))
+            .ToDictionary(network => network.Id, network => network.Bridge);
+    }
+
+    public async Task ChangeNetwork(
+        ProxmoxVmInfo info,
+        string adapter,
+        string network,
+        CancellationToken cancellationToken)
+    {
+        var vm = await ResolveNode(info);
+        if (vm == null)
+            throw new InvalidOperationException($"Could not find vmid {info.Id} in Proxmox");
+
+        var networks = await GetNetworkConfiguration(info);
+        var nic = networks.SingleOrDefault(network =>
+            string.Equals(network.Id, adapter, StringComparison.Ordinal));
+        if (nic == null ||
+            string.IsNullOrWhiteSpace(nic.Bridge) ||
+            string.IsNullOrWhiteSpace(nic.RawDefinition))
+            throw new InvalidOperationException($"Could not find network adapter {adapter} on vmid {info.Id}");
+
+        var adapterIndex = int.Parse(
+            nic.Id["net".Length..],
+            CultureInfo.InvariantCulture);
+
+        await ValidateTargetNetwork(info.Node, network);
+
+        var updatedValue = ReplaceBridge(nic.RawDefinition, network);
+        var assignments = new Dictionary<int, string> { [adapterIndex] = updatedValue };
+
+        Result result;
+        if (info.Type == ProxmoxVmType.QEMU)
+        {
+            result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.UpdateVmAsync(netN: assignments);
+        }
+        else
+        {
+            result = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.UpdateVm(netN: assignments);
+        }
+
+        await WaitAndThrow(
+            result,
+            $"ChangeNetwork vmid={info.Id} adapter={adapter}",
+            cancellationToken);
+        _proxmoxStateService.CheckState();
+    }
+
+    private async Task<IEnumerable<VmNetwork>> GetNetworkConfiguration(ProxmoxVmInfo info)
+    {
+        if (info.Type == ProxmoxVmType.QEMU)
+        {
+            var config = await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.GetAsync(true);
+            return config.Networks ?? [];
+        }
+
+        var containerConfig = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.GetAsync(true);
+        return containerConfig.Networks ?? [];
+    }
+
+    private async Task ValidateTargetNetwork(string node, string network)
+    {
+        var result = await _pveClient.Nodes[node].Network.Index("any_bridge");
+        if (!result.IsSuccessStatusCode)
+            throw new Exception($"Could not list Proxmox networks on node {node}: {result.GetError()}");
+
+        var networks = result.ToModel<NodeNetwork[]>();
+        var exists = networks?.Any(item =>
+            string.Equals(item.Interface, network, StringComparison.Ordinal)) == true;
+
+        if (!exists)
+        {
+            throw new BadRequestException(
+                $"The target network '{network}' does not exist on Proxmox node '{node}'.");
+        }
+    }
+
+    private static string ReplaceBridge(string rawValue, string network)
+    {
+        var parts = rawValue.Split(',', StringSplitOptions.TrimEntries).ToList();
+        var bridgeIndex = parts.FindIndex(x => x.StartsWith("bridge=", StringComparison.OrdinalIgnoreCase));
+
+        if (bridgeIndex >= 0)
+            parts[bridgeIndex] = $"bridge={network}";
+        else
+            parts.Add($"bridge={network}");
+
+        return string.Join(',', parts);
     }
 
     private async Task<Result> VncProxyCall(string node, int id, ProxmoxVmType type)
@@ -462,12 +617,18 @@ public class ProxmoxService : IProxmoxService
         return $"snapshot {snapshotName} deleted on vmid {info.Id}";
     }
 
-    private async Task WaitAndThrow(Result result, string operation)
+    private async Task WaitAndThrow(
+        Result result,
+        string operation,
+        CancellationToken cancellationToken = default)
     {
         if (!result.IsSuccessStatusCode)
             throw new Exception($"{operation} failed: {result.GetError()}");
 
-        var finished = await Extensions.ProxmoxExtensions.WaitForTaskToFinish(_pveClient, result);
+        var finished = await Extensions.ProxmoxExtensions.WaitForTaskToFinish(
+            _pveClient,
+            result,
+            cancellationToken: cancellationToken);
         if (!finished)
             throw new TimeoutException($"{operation} timed out waiting for the Proxmox task to finish.");
     }

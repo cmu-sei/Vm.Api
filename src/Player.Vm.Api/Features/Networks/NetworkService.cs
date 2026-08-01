@@ -27,6 +27,12 @@ namespace Player.Vm.Api.Features.Networks
             Guid viewId, IEnumerable<Guid> vmTeamIds,
             VmType providerType, string providerInstanceId,
             CancellationToken ct);
+        Task<Dictionary<string, string>> GetNetworkNames(
+            Guid viewId,
+            VmType providerType,
+            string providerInstanceId,
+            IEnumerable<string> networkIds,
+            CancellationToken ct);
     }
 
     public class NetworkService : INetworkService
@@ -171,6 +177,31 @@ namespace Player.Vm.Api.Features.Networks
                 .ToDictionaryAsync(n => n.NetworkId, n => n.Name ?? "", ct);
 
             return new EffectiveNetworkPermission { AllowedNetworks = teamViewNetworks };
+        }
+
+        public Task<Dictionary<string, string>> GetNetworkNames(
+            Guid viewId,
+            VmType providerType,
+            string providerInstanceId,
+            IEnumerable<string> networkIds,
+            CancellationToken ct)
+        {
+            var ids = (networkIds ?? Enumerable.Empty<string>())
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Distinct()
+                .ToArray();
+
+            if (ids.Length == 0)
+                return Task.FromResult(new Dictionary<string, string>());
+
+            return _context.ViewNetworks
+                .AsNoTracking()
+                .Where(n =>
+                    n.ViewId == viewId &&
+                    n.ProviderType == providerType &&
+                    n.ProviderInstanceId == providerInstanceId &&
+                    ids.Contains(n.NetworkId))
+                .ToDictionaryAsync(n => n.NetworkId, n => n.Name ?? "", ct);
         }
 
         private Task<bool> CanViewNetworks(Guid viewId, CancellationToken ct)
