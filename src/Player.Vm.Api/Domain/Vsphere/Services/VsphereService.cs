@@ -19,6 +19,7 @@ using VimClient;
 using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Models;
+using Player.Vm.Api.Features.Files.Models;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Features.Files;
 using Player.Vm.Api.Domain.Models;
@@ -46,6 +47,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsosForVm(Guid vmId, Guid? viewId = null);
         Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
         Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename);
+        int GetEnabledConnectionCount();
         Task<string> SetResolution(Guid id, int width, int height);
         Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation);
         Task<Dictionary<Guid, string>> BulkShutdown(Guid[] ids);
@@ -1223,6 +1225,13 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 FailedHostCount = failedHostCount,
                 TotalHostCount = totalHostCount
             };
+        }
+
+        // How many hosts an ISO write would currently fan out to. Reported by VsphereIsoProvider as its
+        // target count so a wholly-failed provider can still be tallied honestly in the response.
+        public int GetEnabledConnectionCount()
+        {
+            return GetEnabledConnections().Count;
         }
 
         // Enabled, connected hosts with a live client - the set ISO uploads/deletes fan out across.

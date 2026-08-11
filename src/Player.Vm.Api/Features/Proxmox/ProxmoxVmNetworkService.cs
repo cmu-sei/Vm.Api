@@ -10,6 +10,7 @@ using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Proxmox.Options;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Features.Files.Providers;
 using Player.Vm.Api.Features.Networks;
 using DomainVm = Player.Vm.Api.Domain.Models.Vm;
 
@@ -45,17 +46,23 @@ namespace Player.Vm.Api.Features.Proxmox
         private readonly INetworkService _networkService;
         private readonly IProxmoxService _proxmoxService;
         private readonly ProxmoxOptions _proxmoxOptions;
+        private readonly bool _isoProviderEnabled;
 
         public ProxmoxVmNetworkService(
             IViewService viewService,
             INetworkService networkService,
             IProxmoxService proxmoxService,
-            ProxmoxOptions proxmoxOptions)
+            ProxmoxOptions proxmoxOptions,
+            IEnumerable<IIsoProvider> isoProviders)
         {
             _viewService = viewService;
             _networkService = networkService;
             _proxmoxService = proxmoxService;
             _proxmoxOptions = proxmoxOptions;
+
+            // Asked of the provider rather than recomputed from ProxmoxOptions, so there is exactly one
+            // definition of "Proxmox ISO support is on" and this cannot drift from it.
+            _isoProviderEnabled = isoProviders.Any(p => p.ProviderType == VmType.Proxmox && p.Enabled);
         }
 
         public async Task<ProxmoxNetworkPermissions> GetPermissions(DomainVm vm, CancellationToken ct)
@@ -104,7 +111,8 @@ namespace Player.Vm.Api.Features.Proxmox
                     currentNetworks,
                     allowedNetworks,
                     networkNames),
-                CanAccessNicConfiguration = allowedNetworks.Count > 0
+                CanAccessNicConfiguration = allowedNetworks.Count > 0,
+                CanMountIso = _isoProviderEnabled && vm.ProxmoxVmInfo.Type == ProxmoxVmType.QEMU
             };
         }
     }

@@ -64,6 +64,34 @@ public interface IProxmoxService
     Task<string> ReadGuestFile(ProxmoxVmInfo info, string guestFilePath);
     Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content);
 
+    /// <summary>
+    /// Every ISO on the configured ISO storage, read from whichever node currently offers it. Used for
+    /// the management listing, where any node's view of a shared storage will do.
+    /// </summary>
+    Task<IReadOnlyList<ProxmoxIsoVolume>> ListStorageIsos(CancellationToken cancellationToken);
+
+    /// <summary>
+    /// The same listing, but read from the node the given Vm currently runs on, so every volume id
+    /// returned is one that Vm can actually mount. Matters on a storage that is not shared.
+    /// </summary>
+    Task<IReadOnlyList<ProxmoxIsoVolume>> ListStorageIsosForVm(Guid vmId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Pushes a local file to the ISO storage through PVE's own upload API (UploadToStorage mode).
+    /// Overwrites an existing file of the same name.
+    /// </summary>
+    Task UploadIsoToStorage(string encodedFileName, string localFilePath, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Removes an ISO from the ISO storage through PVE's API. A file that is already gone is success.
+    /// </summary>
+    Task DeleteIsoFromStorage(string encodedFileName, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Swaps the medium in a running or stopped QEMU Vm's existing CD-ROM drive.
+    /// </summary>
+    Task MountIso(ProxmoxVmInfo info, string isoVolumeId, CancellationToken cancellationToken);
+
     Task<List<ProxmoxSnapshot>> GetSnapshots(ProxmoxVmInfo info);
     Task<string> CreateSnapshot(ProxmoxVmInfo info, string snapshotName, string description, bool includeRam);
     Task<string> RevertSnapshot(ProxmoxVmInfo info, string snapshotName);
@@ -72,12 +100,20 @@ public interface IProxmoxService
 
 public class ProxmoxService : IProxmoxService
 {
+    // PVE's content-type discriminator for ISO images, used for both listing and upload.
+    private const string IsoContentType = "iso";
+
+    private static readonly System.Text.RegularExpressions.Regex DriveIdRegex =
+        new(@"^([a-zA-Z]+)(\d+)$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
     private readonly ProxmoxOptions _options;
     private readonly ILogger<ProxmoxService> _logger;
     private readonly PveClient _pveClient;
     private readonly IProxmoxStateService _proxmoxStateService;
     private readonly RewriteHostOptions _rewriteHostOptions;
     private readonly VmContext _dbContext;
+    private readonly IHttpClientFactory _httpClientFactory;
+    private readonly int _uploadSecondsTimeout;
 
     public ProxmoxService(
             ProxmoxOptions options,
@@ -85,7 +121,8 @@ public class ProxmoxService : IProxmoxService
             IProxmoxStateService proxmoxStateService,
             RewriteHostOptions rewriteHostOptions,
             VmContext dbContext,
-            IHttpClientFactory httpClientFactory
+            IHttpClientFactory httpClientFactory,
+            Infrastructure.Options.IsoUploadOptions isoUploadOptions
         )
     {
         _options = options;
@@ -93,10 +130,32 @@ public class ProxmoxService : IProxmoxService
         _proxmoxStateService = proxmoxStateService;
         _rewriteHostOptions = rewriteHostOptions;
         _dbContext = dbContext;
+        _httpClientFactory = httpClientFactory;
+
+        // The same cross-provider budget the vSphere datastore upload uses, in the seconds the SDK wants.
+        _uploadSecondsTimeout = (isoUploadOptions.UploadTimeoutMinutes <= 0 ? 60 : isoUploadOptions.UploadTimeoutMinutes) * 60;
 
         _pveClient = new PveClient(options.Host, _options.Port, httpClientFactory.CreateClient("proxmox"));
         _pveClient.ApiToken = options.Token;
+
     }
+
+    // A separate client on the long-timeout "proxmoxIsoUpload" HttpClient, because
+    // UploadFileToStorageAsync sends the body through whichever HttpClient its PveClient was built
+    // with, and the shared one keeps HttpClient's 100 second default - far too short for a
+    // multi-gigabyte ISO, while raising it there would slow failure detection in the state and task
+    // pollers.
+    //
+    // Deliberately built fresh per upload attempt rather than cached: UploadFileToStorageAsync
+    // assigns HttpClient.Timeout on every invocation, and that setter throws once the instance has
+    // sent a request. A reused client therefore fails every upload after the first - which is one
+    // per team on a multi-team upload, and one per node on failover. IHttpClientFactory pools the
+    // handler, so a fresh HttpClient per attempt costs nothing.
+    private PveClient CreateUploadClient() =>
+        new(_options.Host, _options.Port, _httpClientFactory.CreateClient("proxmoxIsoUpload"))
+        {
+            ApiToken = _options.Token
+        };
 
     public async Task<ProxmoxConsole> GetConsole(ProxmoxVmInfo info)
     {
@@ -616,6 +675,326 @@ public class ProxmoxService : IProxmoxService
         await WaitAndThrow(result, $"DeleteSnapshot vmid={info.Id} name={snapshotName}");
         return $"snapshot {snapshotName} deleted on vmid {info.Id}";
     }
+
+    #region View/team-scoped ISO storage
+
+    public async Task<IReadOnlyList<ProxmoxIsoVolume>> ListStorageIsos(CancellationToken cancellationToken)
+    {
+        // Keyed on the storage name rather than a filename: a whole-storage listing has no one file to
+        // be affine to, and this keeps repeated listings hitting the same node (and so the same cache).
+        return await OnIsoStorageNode(
+            _options.IsoStorage,
+            "ListStorageIsos",
+            node => ListIsosOnNode(node, cancellationToken));
+    }
+
+    public async Task<IReadOnlyList<ProxmoxIsoVolume>> ListStorageIsosForVm(Guid vmId, CancellationToken cancellationToken)
+    {
+        EnsureIsoStorageConfigured();
+
+        var vm = await _dbContext.Vms
+            .AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == vmId, cancellationToken);
+
+        if (vm?.ProxmoxVmInfo == null)
+            return [];
+
+        // Deliberately no failover across nodes here: the point of this listing is that every volume id
+        // it returns is mountable by THIS Vm, which on a non-shared storage is only true of the node the
+        // Vm is on. ResolveNode also refreshes info.Node, which goes stale on migration.
+        var resource = await ResolveNode(vm.ProxmoxVmInfo);
+
+        if (resource == null)
+            throw new InvalidOperationException($"Could not find vmid {vm.ProxmoxVmInfo.Id} in Proxmox");
+
+        return await ListIsosOnNode(vm.ProxmoxVmInfo.Node, cancellationToken);
+    }
+
+    private async Task<IReadOnlyList<ProxmoxIsoVolume>> ListIsosOnNode(string node, CancellationToken cancellationToken)
+    {
+        var contents = await _pveClient.Nodes[node].Storage[_options.IsoStorage].Content
+            .GetAsync(IsoContentType);
+
+        return (contents ?? [])
+            .Where(x => !string.IsNullOrEmpty(x.Volume))
+            .Select(x => new ProxmoxIsoVolume(
+                x.Volume,
+                ProxmoxIsoNaming.VolumeFileName(x.Volume),
+                x.Size))
+            .ToList();
+    }
+
+    public async Task UploadIsoToStorage(string encodedFileName, string localFilePath, CancellationToken cancellationToken)
+    {
+        await OnIsoStorageNode(
+            encodedFileName,
+            $"UploadIsoToStorage file={encodedFileName}",
+            async node =>
+            {
+                // Both the stream and the client are created inside the per-node action, not outside
+                // it: a failover to the next node has to start the body from the beginning rather
+                // than from wherever the failed attempt left the stream, and it needs an HttpClient
+                // that has not yet sent a request (see CreateUploadClient).
+                using var fileStream = File.OpenRead(localFilePath);
+
+                var result = await CreateUploadClient().UploadFileToStorageAsync(
+                    node,
+                    _options.IsoStorage,
+                    IsoContentType,
+                    fileStream,
+                    encodedFileName,
+                    cancellationToken,
+                    secondsTimeout: _uploadSecondsTimeout);
+
+                await WaitAndThrow(result, $"UploadIsoToStorage node={node} file={encodedFileName}", cancellationToken);
+                return true;
+            });
+    }
+
+    public async Task DeleteIsoFromStorage(string encodedFileName, CancellationToken cancellationToken)
+    {
+        var volumeId = ProxmoxIsoNaming.BuildVolumeId(_options.IsoStorage, encodedFileName);
+
+        await OnIsoStorageNode(
+            encodedFileName,
+            $"DeleteIsoFromStorage file={encodedFileName}",
+            async node =>
+            {
+                var result = await _pveClient.Nodes[node].Storage[_options.IsoStorage].Content[volumeId].Delete();
+
+                // Idempotent: a file that is already gone is the state the caller asked for. PVE reports
+                // this as a 500 with "does not exist" rather than a 404, so the message is all there is
+                // to match on.
+                if (!result.IsSuccessStatusCode)
+                {
+                    var error = result.GetError() ?? string.Empty;
+
+                    if (error.Contains("does not exist", StringComparison.OrdinalIgnoreCase) ||
+                        error.Contains("no such file", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _logger.LogInformation(
+                            "ISO {File} was already absent from Proxmox storage {Storage} on node {Node}",
+                            encodedFileName, _options.IsoStorage, node);
+                        return true;
+                    }
+                }
+
+                await WaitAndThrow(result, $"DeleteIsoFromStorage node={node} file={encodedFileName}", cancellationToken);
+                return true;
+            });
+    }
+
+    public async Task MountIso(ProxmoxVmInfo info, string isoVolumeId, CancellationToken cancellationToken)
+    {
+        // BadRequest rather than EnsureQemu's InvalidOperationException: an LXC container has no CD-ROM
+        // to swap, which is a property of the request, not a server fault.
+        if (info.Type != ProxmoxVmType.QEMU)
+            throw new BadRequestException("Mounting an ISO is only supported on QEMU virtual machines.");
+
+        var resource = await ResolveNode(info);
+
+        if (resource == null)
+            throw new InvalidOperationException($"Could not find vmid {info.Id} in Proxmox");
+
+        var config = await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.GetAsync(true);
+
+        // DisksAll, not Disks: CD-ROM drives are excluded from Disks.
+        var drives = (config.DisksAll ?? [])
+            .Where(x => x.Kind == VmDiskKind.Cdrom && !string.IsNullOrWhiteSpace(x.Id))
+            .ToList();
+
+        if (drives.Count == 0)
+        {
+            // Not auto-added on purpose. QEMU cannot hot-add an IDE drive, so adding ide2 to a running
+            // Vm lands in the pending config and appears to silently do nothing until a power cycle -
+            // worse than a clear error.
+            throw new BadRequestException(
+                $"vmid {info.Id} has no CD/DVD drive. Add one to the VM in Proxmox before mounting an ISO.");
+        }
+
+        // ide2 is the Proxmox convention for the optical drive and is what its own UI targets; anything
+        // else is only reached when a Vm was built differently.
+        var target = drives.FirstOrDefault(x => string.Equals(x.Id, "ide2", StringComparison.OrdinalIgnoreCase))
+            ?? drives.OrderBy(x => x.Id, StringComparer.OrdinalIgnoreCase).First();
+
+        var (bus, index) = ParseDriveId(target.Id);
+        var assignments = new Dictionary<int, string> { [index] = ReplaceCdromVolume(target.RawDefinition, isoVolumeId) };
+        var vmConfig = _pveClient.Nodes[info.Node].Qemu[info.Id].Config;
+
+        // Dispatched on the drive's actual bus rather than through the API's "cdrom" parameter, which is
+        // documented as an alias for -ide2 and would therefore retarget a Vm whose drive is sata0.
+        var result = bus switch
+        {
+            "ide" => await vmConfig.UpdateVmAsync(ideN: assignments),
+            "sata" => await vmConfig.UpdateVmAsync(sataN: assignments),
+            "scsi" => await vmConfig.UpdateVmAsync(scsiN: assignments),
+            _ => throw new BadRequestException(
+                $"The CD/DVD drive '{target.Id}' on vmid {info.Id} is on a bus that cannot be reconfigured.")
+        };
+
+        await WaitAndThrow(result, $"MountIso vmid={info.Id} drive={target.Id}", cancellationToken);
+        _proxmoxStateService.CheckState();
+    }
+
+    /// <summary>
+    /// Rebuilds a CD-ROM drive definition around a new volume, preserving the flags already on it.
+    /// </summary>
+    /// <remarks>
+    /// Built from the existing RawDefinition rather than as "{volid},media=cdrom" so that flags like
+    /// "ro" survive - the same approach <see cref="ReplaceBridge"/> takes for network adapters. The one
+    /// token deliberately dropped is "size=", which PVE appends itself and which describes the medium
+    /// being replaced; carrying it over to a different ISO would be wrong. PVE re-derives it.
+    /// </remarks>
+    internal static string ReplaceCdromVolume(string rawDefinition, string isoVolumeId)
+    {
+        if (string.IsNullOrWhiteSpace(rawDefinition))
+            return $"{isoVolumeId},media=cdrom";
+
+        var parts = rawDefinition.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList();
+
+        // The volume is the only positional token; everything else is key=value.
+        parts[0] = isoVolumeId;
+
+        parts.RemoveAll(x => x.StartsWith("size=", StringComparison.OrdinalIgnoreCase));
+
+        if (!parts.Any(x => string.Equals(x, "media=cdrom", StringComparison.OrdinalIgnoreCase)))
+            parts.Add("media=cdrom");
+
+        return string.Join(',', parts);
+    }
+
+    /// <summary>
+    /// Splits a drive key such as "ide2" or "sata0" into its bus and index, which is the shape the
+    /// config update's per-bus dictionaries take.
+    /// </summary>
+    internal static (string Bus, int Index) ParseDriveId(string driveId)
+    {
+        var match = DriveIdRegex.Match(driveId ?? string.Empty);
+
+        if (!match.Success)
+            throw new BadRequestException($"Unrecognized drive id '{driveId}'.");
+
+        return (match.Groups[1].Value.ToLowerInvariant(),
+                int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>
+    /// Nodes that currently offer the configured ISO storage, in the order they should be tried.
+    /// </summary>
+    /// <remarks>
+    /// A list rather than one node, because a single sick-but-online node would otherwise break every
+    /// ISO operation in the install. The order is deterministic per <paramref name="affinityKey"/>:
+    /// nodes sorted by name, then rotated by a stable hash of the key. That spreads concurrent uploads
+    /// across the cluster without making any one file's node choice random - so a retry lands on the
+    /// same node as the attempt it is retrying, and the logs are reproducible.
+    /// </remarks>
+    private async Task<IReadOnlyList<string>> ResolveIsoStorageNodes(string affinityKey)
+    {
+        EnsureIsoStorageConfigured();
+
+        if (!string.IsNullOrWhiteSpace(_options.IsoNode))
+            return [_options.IsoNode];
+
+        // One cluster-wide call rather than a storage query per node. Note GetResourcesAsync returns a
+        // single ClusterResource type that implements every resource interface, so the resource kind has
+        // to be filtered on ResourceType - an OfType<IClusterResourceStorage>() would match everything.
+        var resources = await _pveClient.GetResourcesAsync(ClusterResourceType.Storage);
+
+        var candidates = resources
+            .Where(x => x.ResourceType == ClusterResourceType.Storage
+                && string.Equals(x.Storage, _options.IsoStorage, StringComparison.Ordinal)
+                && x.IsAvailable
+                && !string.IsNullOrWhiteSpace(x.Node))
+            .ToList();
+
+        if (candidates.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"No online Proxmox node currently offers ISO storage '{_options.IsoStorage}'.");
+        }
+
+        if (!candidates[0].Shared)
+        {
+            // On a node-local storage an ISO uploaded via node A is invisible to a Vm on node B, and
+            // failing an upload over to a second node scatters one View's ISOs across nodes. Nothing
+            // here can fix that, but it should be loud in the logs when it happens.
+            _logger.LogWarning(
+                "Proxmox ISO storage {Storage} is not shared. ISOs will only be mountable by VMs on the node they were uploaded to; configure Proxmox.IsoNode to pin every operation to one node.",
+                _options.IsoStorage);
+        }
+
+        var ordered = candidates
+            .Select(x => x.Node)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(x => x, StringComparer.Ordinal)
+            .ToList();
+
+        var start = StableIndex(affinityKey, ordered.Count);
+
+        return [.. ordered.Skip(start), .. ordered.Take(start)];
+    }
+
+    /// <summary>
+    /// Runs a storage operation on the first candidate node that accepts it, logging and moving on when
+    /// one fails.
+    /// </summary>
+    private async Task<T> OnIsoStorageNode<T>(string affinityKey, string operation, Func<string, Task<T>> action)
+    {
+        var nodes = await ResolveIsoStorageNodes(affinityKey);
+        Exception lastError = null;
+
+        foreach (var node in nodes)
+        {
+            try
+            {
+                return await action(node);
+            }
+            catch (Exception ex)
+            {
+                lastError = ex;
+                _logger.LogWarning(ex,
+                    "{Operation} failed on Proxmox node {Node}; trying the next node offering storage {Storage}",
+                    operation, node, _options.IsoStorage);
+            }
+        }
+
+        throw new Exception(
+            $"{operation} failed on every Proxmox node offering ISO storage '{_options.IsoStorage}'.",
+            lastError);
+    }
+
+    private void EnsureIsoStorageConfigured()
+    {
+        if (string.IsNullOrWhiteSpace(_options.IsoStorage))
+            throw new InvalidOperationException("Proxmox ISO support requires Proxmox:IsoStorage to be set.");
+    }
+
+    /// <summary>
+    /// A stable index in [0, count) derived from a string. FNV-1a rather than string.GetHashCode,
+    /// which is randomized per process and would therefore pick a different node on every restart.
+    /// </summary>
+    private static int StableIndex(string key, int count)
+    {
+        if (count <= 1 || string.IsNullOrEmpty(key))
+            return 0;
+
+        unchecked
+        {
+            const uint offsetBasis = 2166136261;
+            const uint prime = 16777619;
+
+            var hash = offsetBasis;
+            foreach (var c in key)
+            {
+                hash ^= c;
+                hash *= prime;
+            }
+
+            return (int)(hash % (uint)count);
+        }
+    }
+
+    #endregion
 
     private async Task WaitAndThrow(
         Result result,

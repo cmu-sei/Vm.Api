@@ -17,4 +17,9 @@ public class ProxmoxVirtualMachine
     public NicOptions NetworkCards { get; set; }
 
     public bool CanAccessNicConfiguration { get; set; }
+
+    // Whether this Vm can accept an ISO at all: QEMU only (an LXC container has no CD-ROM), and only
+    // where the deployment has configured Proxmox ISO storage. Lets the UI hide the Mount ISO control
+    // rather than offer one that is guaranteed to 400.
+    public bool CanMountIso { get; set; }
 }

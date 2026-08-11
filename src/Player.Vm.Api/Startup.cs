@@ -293,6 +293,11 @@ public class Startup
         services.AddScoped<IViewService, ViewService>();
         services.AddScoped<Features.Files.IIsoService, Features.Files.IsoService>();
 
+        // One ISO provider per hypervisor. Registered as a set because a single deployment can have
+        // more than one enabled at once; IsoService fans out across whichever report Enabled.
+        services.AddScoped<Features.Files.Providers.IIsoProvider, Features.Files.Providers.VsphereIsoProvider>();
+        services.AddScoped<Features.Files.Providers.IIsoProvider, Features.Files.Providers.ProxmoxIsoProvider>();
+
         services.AddSingleton<CallbackBackgroundService>();
         services.AddSingleton<IHostedService>(x => x.GetService<CallbackBackgroundService>());
         services.AddSingleton<ICallbackBackgroundService>(x => x.GetService<CallbackBackgroundService>());

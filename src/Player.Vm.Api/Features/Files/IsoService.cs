@@ -7,13 +7,20 @@ using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using DiscUtils.Iso9660;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Primitives;
 using Player.Api.Client;
 using Player.Vm.Api.Domain.Services;
-using Player.Vm.Api.Domain.Vsphere.Models;
-using Player.Vm.Api.Domain.Vsphere.Services;
+using Player.Vm.Api.Features.Files.Models;
+using Player.Vm.Api.Features.Files.Providers;
 using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Exceptions;
+using Player.Vm.Api.Infrastructure.Options;
+
+// Aliased rather than imported wholesale: Domain.Models also defines Team and View, which would
+// collide with the Player.Api.Client types this file's ViewTeams record is built from.
+using VmType = Player.Vm.Api.Domain.Models.VmType;
 
 namespace Player.Vm.Api.Features.Files
 {
@@ -21,14 +28,27 @@ namespace Player.Vm.Api.Features.Files
     public record ViewTeams(View View, IReadOnlyCollection<Team> Teams);
 
     // Shared ISO logic used by more than one of the Files request handlers: permission/scope
-    // resolution for upload and delete, assembling the per-View listing, plus the pure filename/
-    // teamId parsing helpers. Per-endpoint orchestration lives in the Requests/* handlers.
+    // resolution for upload and delete, the write orchestration across every enabled hypervisor,
+    // assembling the per-View listing, plus the pure filename/teamId parsing helpers. Per-endpoint
+    // request shaping lives in the Requests/* handlers.
     public interface IIsoService
     {
         Task<IReadOnlyList<string>> ResolveUploadScopeIdsAsync(Guid viewId, string scope, IReadOnlyList<Guid> teamIds, CancellationToken ct);
         Task<string> ResolveDeleteScopeIdAsync(Guid viewId, string scope, Guid? teamId, CancellationToken ct);
+
+        // Writes the upload to every enabled provider, for every resolved scope. openUpload returns the
+        // raw request body; whether it is consumed directly or staged to disk first is decided here.
+        Task<IsoUploadResult> UploadAsync(Guid viewId, IReadOnlyList<string> scopeIds, string filename, Func<Stream> openUpload, CancellationToken ct);
+
+        Task<IsoUploadResult> DeleteAsync(Guid viewId, string scopeId, string filename, CancellationToken ct);
+
         Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
-        Task<IsoResult[]> BuildVmIsoResultsAsync(Guid vmId, IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
+        Task<IsoResult[]> BuildVmIsoResultsAsync(Guid vmId, VmType vmType, IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
+
+        // The Views (and the caller's teams within them) that a VM's teams place it in. Shared by every
+        // provider's per-VM ISO query so they resolve the listing scope identically.
+        Task<IReadOnlyList<ViewTeams>> ResolveViewTeamsForVmAsync(IEnumerable<Guid> teamIds, CancellationToken ct);
+
         string SanitizeFilename(string filename);
         IReadOnlyList<Guid> ParseTeamIds(StringValues values);
     }
@@ -36,15 +56,29 @@ namespace Player.Vm.Api.Features.Files
     public class IsoService : IIsoService
     {
         private readonly IPlayerService _playerService;
-        private readonly IVsphereService _vsphereService;
+        private readonly IViewService _viewService;
+        private readonly IReadOnlyList<IIsoProvider> _providers;
+        private readonly IsoUploadOptions _isoUploadOptions;
+        private readonly ILogger<IsoService> _logger;
 
         public IsoService(
             IPlayerService playerService,
-            IVsphereService vsphereService)
+            IViewService viewService,
+            IEnumerable<IIsoProvider> providers,
+            IsoUploadOptions isoUploadOptions,
+            ILogger<IsoService> logger)
         {
             _playerService = playerService;
-            _vsphereService = vsphereService;
+            _viewService = viewService;
+            _providers = providers.ToList();
+            _isoUploadOptions = isoUploadOptions;
+            _logger = logger;
         }
+
+        // The providers an operation actually targets. A provider that is not configured for ISOs is
+        // invisible rather than an error, so an install with only vSphere set up behaves exactly as it
+        // did before there was more than one provider.
+        private IReadOnlyList<IIsoProvider> EnabledProviders => _providers.Where(p => p.Enabled).ToList();
 
         // Enforces the ISO UPLOAD permissions and returns the scopeId(s) the ISO folder(s) are keyed on:
         //  - "view" scope: requires UploadViewIsos; a single scopeId of the view id.
@@ -137,29 +171,326 @@ namespace Player.Vm.Api.Features.Files
             return targetTeamId.ToString();
         }
 
+        // Writes an uploaded file, as an ISO, to every enabled provider and every resolved scope.
+        //
+        // The ISO namespace is View/team-scoped rather than VM-scoped: a View routinely holds both
+        // vSphere and Proxmox VMs, and whoever uploads a file picks a file, not a hypervisor. So the
+        // write fans out, and a provider that fails is reported in the counts rather than failing the
+        // request - the Files tab then shows the file as missing there, and re-uploading heals it.
+        public async Task<IsoUploadResult> UploadAsync(
+            Guid viewId, IReadOnlyList<string> scopeIds, string filename, Func<Stream> openUpload, CancellationToken ct)
+        {
+            var providers = EnabledProviders;
+
+            if (providers.Count == 0)
+                throw new BadRequestException("No hypervisor is configured to store ISOs.");
+
+            // A real ISO keeps its name; anything else is wrapped into an ISO and gains the extension.
+            var isIso = IsoFileNaming.IsIsoFile(filename);
+            var destName = NormalizeFilename(providers, isIso ? filename : filename + IsoFileNaming.Extension);
+
+            // Every provider vets the name before anything is written anywhere, so a name that is
+            // illegal on one hypervisor fails the whole upload with a 400 instead of landing on some
+            // providers and not others.
+            foreach (var provider in providers)
+            {
+                foreach (var scopeId in scopeIds)
+                {
+                    provider.ValidateFilename(viewId, scopeId, destName);
+                }
+            }
+
+            // The request body can only be read once. It can be handed straight to a provider only when
+            // exactly one provider and one scope want it and that provider can take a forward-only
+            // stream; otherwise it has to become a re-readable local file first. Preserving the
+            // straight-through case is what keeps existing single-scope NFS deployments free of the
+            // full-size temp-space requirement they never had.
+            var straightThrough = providers.Count == 1
+                && scopeIds.Count == 1
+                && !providers[0].RequiresStagedFile;
+
+            if (straightThrough)
+            {
+                var request = new IsoUploadRequest(viewId, scopeIds, destName, null,
+                    () => isIso ? openUpload() : BuildIsoStream(openUpload(), filename));
+
+                return await FanOutAsync(providers, p => p.UploadAsync(request, ct), "upload", "uploaded", destName, scopeIds.Count);
+            }
+
+            string tempPath = null;
+
+            try
+            {
+                tempPath = await StageIsoAsync(openUpload, filename, isIso, ct);
+                var request = new IsoUploadRequest(viewId, scopeIds, destName, tempPath, null);
+
+                return await FanOutAsync(providers, p => p.UploadAsync(request, ct), "upload", "uploaded", destName, scopeIds.Count);
+            }
+            finally
+            {
+                DeleteIfExists(tempPath);
+            }
+        }
+
+        public async Task<IsoUploadResult> DeleteAsync(Guid viewId, string scopeId, string filename, CancellationToken ct)
+        {
+            var providers = EnabledProviders;
+
+            if (providers.Count == 0)
+                throw new BadRequestException("No hypervisor is configured to store ISOs.");
+
+            // Normalized the same way as on upload, so the name reaching each provider is the one it
+            // actually stored. Callers normally echo a name straight back from a listing, in which case
+            // this is a no-op; it matters for a hand-built request.
+            var storedName = NormalizeFilename(providers, filename);
+
+            // One scope, so no multiplier: a delete targets a single ISO folder per provider.
+            return await FanOutAsync(providers, p => p.DeleteAsync(viewId, scopeId, storedName, ct), "delete", "deleted", storedName, 1);
+        }
+
+        // Fold a display filename through every enabled provider's character-set restrictions, so one
+        // uploaded file has one name everywhere and the Files tab can merge rows by name. Order does not
+        // matter and the normalizers are individually idempotent, so applying all of them is stable.
+        // With only vSphere enabled every normalizer is the identity and the name is untouched.
+        private static string NormalizeFilename(IReadOnlyList<IIsoProvider> providers, string filename)
+        {
+            foreach (var provider in providers)
+            {
+                filename = provider.NormalizeFilename(filename);
+            }
+
+            return filename;
+        }
+
+        // What one provider contributed to a fan-out. Threw distinguishes a provider that failed
+        // outright - and so reached none of its targets - from one that reported some of its own hosts
+        // failing, which only vSphere's multi-vCenter datastore mode can do.
+        internal readonly record struct ProviderOutcome(VmType Provider, bool Threw, int FailedHostCount, int TotalHostCount);
+
+        // Run one write operation on every provider concurrently and reduce the outcomes to the counts
+        // and provider names the API returns. A single provider's failure is caught and logged rather
+        // than faulting the batch - the same tolerance VsphereService already applies across hosts -
+        // and only a total failure throws.
+        //
+        // targetMultiplier is how many scopes the operation was meant to reach on each provider: a
+        // successful provider reports its counts summed over every scope, so a provider that never ran
+        // has to be charged the same way or a multi-team upload would understate what it missed.
+        private async Task<IsoUploadResult> FanOutAsync(
+            IReadOnlyList<IIsoProvider> providers,
+            Func<IIsoProvider, Task<IsoOperationOutcome>> operation,
+            string operationName,
+            string pastTense,
+            string filename,
+            int targetMultiplier)
+        {
+            var outcomes = await Task.WhenAll(providers.Select(async provider =>
+            {
+                try
+                {
+                    var outcome = await operation(provider);
+                    return new ProviderOutcome(provider.ProviderType, false, outcome.FailedHostCount, outcome.TotalHostCount);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex,
+                        "ISO {File} failed to {Operation} on provider {Provider} ({Instance})",
+                        filename, operationName, provider.ProviderType, provider.ProviderInstanceId);
+
+                    // The response names the hypervisor type but never this instance's address or the
+                    // reason it failed - those stay in the log line above. Hosts that were never reached
+                    // still count as targeted, or a total failure here would look like a complete success.
+                    var targets = Math.Max(provider.TargetCount, 1) * targetMultiplier;
+                    return new ProviderOutcome(provider.ProviderType, true, targets, targets);
+                }
+            }));
+
+            return SummarizeFanOut(outcomes, operationName, pastTense);
+        }
+
+        // The pure reduction of a fan-out to its result. Internal so the tests can exercise the message
+        // wording and the counts without standing up an IsoService and a pair of fake hypervisors.
+        internal static IsoUploadResult SummarizeFanOut(
+            IReadOnlyList<ProviderOutcome> outcomes, string operationName, string pastTense)
+        {
+            var failures = outcomes.Where(o => o.FailedHostCount > 0).ToList();
+            var failedProviderCount = outcomes.Count(o => o.Threw);
+
+            if (failedProviderCount == outcomes.Count)
+            {
+                throw new Exception(
+                    $"ISO {operationName} failed on {DescribeFailures(failures)}. Try again, or contact an administrator if the issue persists.");
+            }
+
+            var failedHostCount = outcomes.Sum(o => o.FailedHostCount);
+            var totalHostCount = outcomes.Sum(o => o.TotalHostCount);
+
+            if (failedHostCount > 0)
+            {
+                return new IsoUploadResult
+                {
+                    Message = $"ISO {pastTense}, but failed on {DescribeFailures(failures)}. Try again, or contact an administrator if the issue persists.",
+                    FailedHostCount = failedHostCount,
+                    TotalHostCount = totalHostCount,
+                    FailedProviderCount = failedProviderCount,
+                    TotalProviderCount = outcomes.Count,
+                    FailedProviders = failures.Select(f => f.Provider).ToList()
+                };
+            }
+
+            return new IsoUploadResult
+            {
+                Message = $"ISO was {pastTense}",
+                TotalHostCount = totalHostCount,
+                TotalProviderCount = outcomes.Count
+            };
+        }
+
+        // Name the hypervisors an operation failed on. The host tally is only included for a provider
+        // that had more than one target - "Proxmox (1 of 1 hosts)" is noise, since a Proxmox cluster is
+        // always a single write target, whereas "Vsphere (1 of 3 hosts)" says the upload partly landed.
+        private static string DescribeFailures(IReadOnlyList<ProviderOutcome> failures)
+        {
+            var clauses = failures
+                .Select(f => f.TotalHostCount > 1
+                    ? $"{f.Provider} ({f.FailedHostCount} of {f.TotalHostCount} hosts)"
+                    : f.Provider.ToString())
+                .ToList();
+
+            return clauses.Count switch
+            {
+                0 => "an unknown hypervisor",   // unreachable: only called with at least one failure
+                1 => clauses[0],
+                _ => string.Join(", ", clauses.Take(clauses.Count - 1)) + " and " + clauses[^1]
+            };
+        }
+
         // Assemble the view-wide + per-team ISO listing for one or more Views. View-wide ISOs are keyed
-        // on the view id; each team's on the team id. A SINGLE recursive datastore-browser task lists
-        // every scope: scoped to the one View when a single View is requested, else rooted at the base
-        // folder for all Views.
+        // on the view id; each team's on the team id.
+        //
+        // This is the management listing (the Files tab), which never mounts, so results from every
+        // enabled provider are merged into one row per filename with MissingProviders recording where
+        // the file is absent.
         public async Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct)
         {
             // Scope the search to the single View when only one is requested (smaller search); otherwise
             // enumerate every View in one pass.
             var scopeViewId = views.Count == 1 ? views.First().View.Id : (Guid?)null;
-            var isosByScope = await _vsphereService.ListIsos(scopeViewId);
+
+            var providers = EnabledProviders;
+            var listings = await Task.WhenAll(providers.Select(async provider =>
+            {
+                try
+                {
+                    return await provider.ListAsync(scopeViewId, ct);
+                }
+                catch (Exception ex)
+                {
+                    // A provider that cannot be listed right now is excluded from the merge entirely,
+                    // rather than counted as "missing this file" - otherwise a transient outage would
+                    // mark every row on every other provider as incomplete.
+                    _logger.LogError(ex, "Failed to list ISOs from provider {Provider} ({Instance})",
+                        provider.ProviderType, provider.ProviderInstanceId);
+                    return null;
+                }
+            }));
+
+            var available = providers.Where((_, i) => listings[i] != null).ToList();
+            var isosByScope = MergeListings(
+                available.Select(p => p.ProviderType).Distinct().ToList(),
+                listings.Where(l => l != null).ToList());
 
             return views.Select(v => AssembleViewIsoResult(v, isosByScope)).ToArray();
         }
 
-        // Same shape as BuildViewIsoResultsAsync, but lists from the host the given VM runs on. Used by
-        // the VM mount picker, whose result is fed back to MountIso - see ListIsosForVm for why the
-        // connection must come from the VM rather than from an arbitrary connected host.
-        public async Task<IsoResult[]> BuildVmIsoResultsAsync(Guid vmId, IReadOnlyCollection<ViewTeams> views, CancellationToken ct)
+        // Same shape as BuildViewIsoResultsAsync, but for the mount picker on a single VM - so it lists
+        // from the ONE provider that VM belongs to. No merging: the rows are handed straight back to a
+        // mount command, and only that provider's tokens are valid for that VM. It also preserves
+        // vSphere's host affinity, where the datastore path must come from the host the VM runs on.
+        public async Task<IsoResult[]> BuildVmIsoResultsAsync(Guid vmId, VmType vmType, IReadOnlyCollection<ViewTeams> views, CancellationToken ct)
         {
+            var provider = EnabledProviders.FirstOrDefault(p => p.ProviderType == vmType);
+
+            if (provider == null)
+                return views.Select(v => AssembleViewIsoResult(v, new Dictionary<Guid, IReadOnlyList<IsoFile>>())).ToArray();
+
             var scopeViewId = views.Count == 1 ? views.First().View.Id : (Guid?)null;
-            var isosByScope = await _vsphereService.ListIsosForVm(vmId, scopeViewId);
+            var isosByScope = await provider.ListForVmAsync(vmId, scopeViewId, ct);
 
             return views.Select(v => AssembleViewIsoResult(v, isosByScope)).ToArray();
+        }
+
+        // Collapse several providers' listings into one row per (scope, filename), recording which
+        // providers were missing each file. Filenames are compared case-insensitively: the same upload
+        // can come back cased differently from a case-preserving datastore and a normalizing one, and
+        // showing it twice would be worse than picking one spelling.
+        // Internal rather than private so the tests can exercise the merge directly - it is the one
+        // piece of listing logic with enough cases (overlap, disjoint files, casing, a provider that
+        // failed) to be worth testing without standing up a whole IsoService.
+        internal static IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>> MergeListings(
+            IReadOnlyList<VmType> availableProviderTypes,
+            IReadOnlyList<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> listings)
+        {
+            var merged = new Dictionary<Guid, IReadOnlyList<IsoFile>>();
+
+            foreach (var scopeId in listings.SelectMany(l => l.Keys).Distinct())
+            {
+                var present = new Dictionary<string, (IsoFile File, HashSet<VmType> Providers)>(StringComparer.OrdinalIgnoreCase);
+
+                foreach (var listing in listings)
+                {
+                    if (!listing.TryGetValue(scopeId, out var isos))
+                        continue;
+
+                    foreach (var iso in isos)
+                    {
+                        if (!present.TryGetValue(iso.Filename, out var entry))
+                        {
+                            entry = (iso, new HashSet<VmType>());
+                            present[iso.Filename] = entry;
+                        }
+
+                        if (iso.ProviderType.HasValue)
+                            entry.Providers.Add(iso.ProviderType.Value);
+                    }
+                }
+
+                merged[scopeId] = present.Values
+                    .Select(entry => new IsoFile(null, entry.File.Filename)
+                    {
+                        // Both null on a merged row: with the file possibly on several providers there
+                        // is no single path, and mounting never goes through this listing.
+                        MountValue = null,
+                        ProviderType = null,
+                        ProviderInstanceId = null,
+                        MissingProviders = availableProviderTypes.Where(t => !entry.Providers.Contains(t)).ToList()
+                    })
+                    .ToList();
+            }
+
+            return merged;
+        }
+
+        // The Views a VM's teams place it in, paired with the teams the caller can see in each. A View
+        // the caller has no teams in is dropped, which is what keeps the listing scoped to their access.
+        public async Task<IReadOnlyList<ViewTeams>> ResolveViewTeamsForVmAsync(IEnumerable<Guid> teamIds, CancellationToken ct)
+        {
+            var viewIds = await _viewService.GetViewIdsForTeams(teamIds, ct);
+
+            var viewTeamsTasks = viewIds.Select(async viewId =>
+            {
+                var teams = (await _playerService.GetTeamsByViewIdAsync(viewId, ct)).ToList();
+
+                // No teams => caller has no access to this View; skip it.
+                if (teams.Count == 0)
+                    return (ViewTeams)null;
+
+                var view = await _playerService.GetViewByIdAsync(viewId, ct);
+                return new ViewTeams(view, teams);
+            });
+
+            return (await Task.WhenAll(viewTeamsTasks))
+                .Where(vt => vt != null)
+                .ToList();
         }
 
         // Bucket the scope-keyed ISO listing into the view-wide + per-team shape. View-wide ISOs are
@@ -187,6 +518,83 @@ namespace Player.Vm.Api.Features.Files
             }
 
             return result;
+        }
+
+        // Resolve the staging directory and write the upload to a local temp file as a finished ISO.
+        // Real ISOs are streamed to disk directly; any other file is wrapped into a single-file ISO.
+        // The caller owns deleting the returned path - but only once this returns, so a failure
+        // part-way through has to clean up the partial file here or it would be leaked.
+        private async Task<string> StageIsoAsync(Func<Stream> openUpload, string filename, bool isIso, CancellationToken ct)
+        {
+            var stagingDir = string.IsNullOrWhiteSpace(_isoUploadOptions.TempStagingPath)
+                ? Path.GetTempPath()
+                : _isoUploadOptions.TempStagingPath;
+            Directory.CreateDirectory(stagingDir);
+
+            var tempPath = Path.Combine(stagingDir, Guid.NewGuid().ToString() + IsoFileNaming.Extension);
+
+            try
+            {
+                using var sourceStream = openUpload();
+
+                if (isIso)
+                {
+                    using var destStream = File.Create(tempPath);
+                    await sourceStream.CopyToAsync(destStream, ct);
+                }
+                else
+                {
+                    BuildIso(sourceStream, filename, tempPath);
+                }
+            }
+            catch
+            {
+                DeleteIfExists(tempPath);
+                throw;
+            }
+
+            return tempPath;
+        }
+
+        // Best-effort removal of a staged temp file. Never throws: a cleanup failure must not mask the
+        // outcome (or the exception) of the upload itself.
+        private static void DeleteIfExists(string path)
+        {
+            if (path == null)
+                return;
+
+            try
+            {
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
+            catch { /* best-effort cleanup */ }
+        }
+
+        // Wrap an arbitrary uploaded file into a single-file ISO at destPath (Joliet, "PlayerIso" volume).
+        private static void BuildIso(Stream source, string filename, string destPath)
+        {
+            var builder = NewIsoBuilder(source, filename);
+            builder.Build(destPath);
+        }
+
+        // Same conversion, but produced as a stream rather than a file, so the straight-through upload
+        // path can still accept a non-ISO file without forcing a full-size temp copy first. The
+        // returned stream reads from `source` on demand, so disposing it is the caller's job.
+        private static Stream BuildIsoStream(Stream source, string filename)
+        {
+            return NewIsoBuilder(source, filename).Build();
+        }
+
+        private static CDBuilder NewIsoBuilder(Stream source, string filename)
+        {
+            var builder = new CDBuilder
+            {
+                UseJoliet = true,
+                VolumeIdentifier = "PlayerIso"
+            };
+            builder.AddFile(filename, source);
+            return builder;
         }
 
         // GetPrimaryTeamByViewIdAsync returns null both when Player does not know the View and when the

@@ -3,7 +3,7 @@
 
 using System;
 using System.Collections.Generic;
-using Player.Vm.Api.Domain.Vsphere.Models;
+using Player.Vm.Api.Features.Files.Models;
 
 namespace Player.Vm.Api.Features.Files
 {

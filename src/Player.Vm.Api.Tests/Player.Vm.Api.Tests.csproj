@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <IsPackable>false</IsPackable>
+    <!-- xunit v3 test projects are executables and supply their own entry point, so the test SDK's
+         generated Program must be suppressed or the two collide. -->
+    <OutputType>Exe</OutputType>
+    <GenerateProgramFile>false</GenerateProgramFile>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- IVsphereService has ~32 members and only one of them matters to these tests, so a substitute
+         beats hand-writing a stub that would need editing every time the interface grows. -->
+    <PackageReference Include="NSubstitute" Version="5.3.0" />
+    <PackageReference Include="xunit.v3" Version="3.2.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Player.Vm.Api\Player.Vm.Api.csproj" />
+  </ItemGroup>
+</Project>
