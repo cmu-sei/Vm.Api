@@ -144,4 +144,106 @@ public class VsphereIsoProviderTests
         // Never asked for a listing it could not trust.
         await vsphere.DidNotReceive().ListIsos(Arg.Any<Guid?>());
     }
+
+    // ---- ResolveMountTarget: the whole authorization boundary for a vSphere mount ----
+    //
+    // A datastore path names any file the datastore will serve, so the decoder is what stops a
+    // submitted string from reaching the cdrom backing. Anything it accepts is rebuilt from the
+    // decoded parts; anything else is null, which IsoService turns into a 403.
+
+    private static readonly Guid ViewId = Guid.Parse("11111111-1111-1111-1111-111111111111");
+    private static readonly Guid ScopeId = Guid.Parse("22222222-2222-2222-2222-222222222222");
+
+    private static VsphereHost IsoHost(string baseFolder = "player") =>
+        new() { Enabled = true, Address = "vcenter.example.test", DsName = "ds1", BaseFolder = baseFolder };
+
+    private static string Canonical(string baseFolder = "player", string filename = "tools.iso") =>
+        baseFolder.Length == 0
+            ? $"[ds1] {ViewId}/{ScopeId}/{filename}"
+            : $"[ds1] {baseFolder}/{ViewId}/{ScopeId}/{filename}";
+
+    [Fact]
+    public void ResolveMountTarget_DecodesAListingPathAndRebuildsIt()
+    {
+        var target = VsphereIsoProvider.ResolveMountTarget(IsoHost(), Canonical());
+
+        Assert.NotNull(target);
+        Assert.Equal(ViewId, target.ViewId);
+        Assert.Equal(ScopeId, target.ScopeId);
+        Assert.Equal("tools.iso", target.FileName);
+        Assert.Equal(Canonical(), target.MountValue);
+    }
+
+    // A nested BaseFolder is one more fixed prefix, and no BaseFolder at all means the View id is the
+    // first segment - both have to rebuild through the same layout helper the writer uses.
+    [Theory]
+    [InlineData("player")]
+    [InlineData("isos/player")]
+    [InlineData("")]
+    public void ResolveMountTarget_HandlesEveryBaseFolderShape(string baseFolder)
+    {
+        var value = Canonical(baseFolder);
+
+        var target = VsphereIsoProvider.ResolveMountTarget(IsoHost(baseFolder), value);
+
+        Assert.Equal(value, target.MountValue);
+    }
+
+    // A view-scoped ISO lives in a folder named for the View twice; the mount rule skips the team check
+    // for those, so the decoder must report it rather than fold it away.
+    [Fact]
+    public void ResolveMountTarget_ReportsAViewScopedIsoAsScopedToItsView()
+    {
+        var target = VsphereIsoProvider.ResolveMountTarget(
+            IsoHost(), $"[ds1] player/{ViewId}/{ViewId}/tools.iso");
+
+        Assert.Equal(ViewId, target.ViewId);
+        Assert.Equal(ViewId, target.ScopeId);
+    }
+
+    [Fact]
+    public void ResolveMountTarget_RejectsEverythingWhenTheVmsHostIsUnknown()
+    {
+        // No host resolved for the VM (unknown to vSphere, or no DsName configured) means nothing can be
+        // authorized - not that the path passes unchecked.
+        Assert.Null(VsphereIsoProvider.ResolveMountTarget(null, Canonical()));
+        Assert.Null(VsphereIsoProvider.ResolveMountTarget(
+            new VsphereHost { Enabled = true, Address = "vcenter.example.test", BaseFolder = "player" },
+            Canonical()));
+    }
+
+    [Theory]
+    // Another datastore on the same host, which is the one part of the path a caller can retarget.
+    [InlineData("[ds2] player/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/tools.iso")]
+    // A datastore whose name merely starts the same.
+    [InlineData("[ds10] player/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/tools.iso")]
+    [InlineData("[] player/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/tools.iso")]
+    // Somewhere else on our own datastore.
+    [InlineData("[ds1] templates/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/tools.iso")]
+    [InlineData("[ds1] some-vm/some-vm.vmdk")]
+    // Traversal, both out of the base folder and out of a scope folder.
+    [InlineData("[ds1] player/../../etc/passwd")]
+    [InlineData("[ds1] player/11111111-1111-1111-1111-111111111111/../22222222-2222-2222-2222-222222222222/tools.iso")]
+    [InlineData("[ds1] player/11111111-1111-1111-1111-111111111111/./tools.iso")]
+    // A missing segment (the View folder itself) and an extra one (a subfolder of a scope).
+    [InlineData("[ds1] player/11111111-1111-1111-1111-111111111111/tools.iso")]
+    [InlineData("[ds1] player/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/sub/tools.iso")]
+    // An empty segment would otherwise satisfy the segment count with a folder that is not there.
+    [InlineData("[ds1] player//11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/tools.iso")]
+    // Neither scope segment may be anything but a GUID.
+    [InlineData("[ds1] player/not-a-guid/22222222-2222-2222-2222-222222222222/tools.iso")]
+    [InlineData("[ds1] player/11111111-1111-1111-1111-111111111111/not-a-guid/tools.iso")]
+    // Not an ISO at all - a disk parked in an ISO folder must not become a readable CD.
+    [InlineData("[ds1] player/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/disk.vmdk")]
+    // The folder, with vSphere's own trailing slash, rather than a file in it.
+    [InlineData("[ds1] player/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/")]
+    // No datastore prefix at all.
+    [InlineData("player/11111111-1111-1111-1111-111111111111/22222222-2222-2222-2222-222222222222/tools.iso")]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public void ResolveMountTarget_RejectsAnythingItDidNotIssue(string mountValue)
+    {
+        Assert.Null(VsphereIsoProvider.ResolveMountTarget(IsoHost(), mountValue));
+    }
 }

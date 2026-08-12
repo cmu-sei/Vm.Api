@@ -45,9 +45,14 @@ namespace Player.Vm.Api.Features.Files
         Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
         Task<IsoResult[]> BuildVmIsoResultsAsync(Guid vmId, VmType vmType, IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
 
-        // The Views (and the caller's teams within them) that a VM's teams place it in. Shared by every
-        // provider's per-VM ISO query so they resolve the listing scope identically.
+        // The Views a VM's teams place it in, paired with the teams whose ISOs may be mounted on that VM.
+        // Shared by every provider's per-VM ISO query so the picker and ResolveMountValueAsync agree.
         Task<IReadOnlyList<ViewTeams>> ResolveViewTeamsForVmAsync(IEnumerable<Guid> teamIds, CancellationToken ct);
+
+        // Authorize a client-submitted mount value against the scope encoded in it and return the
+        // canonical token to mount. Throws ForbiddenException if the value is not a Player-managed ISO
+        // in a scope this VM and this caller may both use.
+        Task<string> ResolveMountValueAsync(Guid vmId, VmType vmType, IEnumerable<Guid> vmTeamIds, string mountValue, CancellationToken ct);
 
         string SanitizeFilename(string filename);
         IReadOnlyList<Guid> ParseTeamIds(StringValues values);
@@ -470,18 +475,68 @@ namespace Player.Vm.Api.Features.Files
             return merged;
         }
 
-        // The Views a VM's teams place it in, paired with the teams the caller can see in each. A View
-        // the caller has no teams in is dropped, which is what keeps the listing scoped to their access.
+        // The Views a VM's teams place it in, paired with the teams whose ISOs may be mounted on it.
+        //
+        // Scoped to the VM, not to the caller: mounting an ISO publishes it to everyone who can reach the
+        // VM's console, so the audience is the VM's teams. A team the caller belongs to that the VM does
+        // not is therefore excluded (its ISOs are not the VM's to expose), while one of the VM's own teams
+        // the caller is not a member of is included as long as they hold edit rights over it - which is
+        // exactly what ResolveMountValueAsync enforces, so the picker offers what a mount will accept.
+        //
+        // View-scoped ISOs need no team check: their audience is the whole View, which contains the VM.
         public async Task<IReadOnlyList<ViewTeams>> ResolveViewTeamsForVmAsync(IEnumerable<Guid> teamIds, CancellationToken ct)
         {
-            var viewIds = await _viewService.GetViewIdsForTeams(teamIds, ct);
+            var vmTeamIds = teamIds.Where(x => x != Guid.Empty).Distinct().ToList();
+            var viewIds = await _viewService.GetViewIdsForTeams(vmTeamIds, ct);
+
+            // Which View each of the VM's teams sits in, so a multi-View VM does not offer one View's
+            // teams under another. Resolved once rather than per View; both lookups are cached.
+            var viewIdByTeamId = new Dictionary<Guid, Guid>();
+            foreach (var teamId in vmTeamIds)
+            {
+                var teamViewId = await _viewService.GetViewIdForTeam(teamId, ct);
+
+                if (teamViewId.HasValue)
+                    viewIdByTeamId[teamId] = teamViewId.Value;
+            }
 
             var viewTeamsTasks = viewIds.Select(async viewId =>
             {
-                var teams = (await _playerService.GetTeamsByViewIdAsync(viewId, ct)).ToList();
+                // Null when Player does not know the View. Empty is not "no access" any more: a view-admin
+                // who is not a member of any team still gets the View's ISOs and its teams' ISOs.
+                var callerTeams = (await _playerService.GetTeamsByViewIdAsync(viewId, ct))?.ToList() ?? [];
 
-                // No teams => caller has no access to this View; skip it.
-                if (teams.Count == 0)
+                var candidates = vmTeamIds
+                    .Where(id => viewIdByTeamId.TryGetValue(id, out var v) && v == viewId)
+                    .ToList();
+
+                var teams = new List<Team>();
+                List<Team> allViewTeams = null;
+
+                foreach (var teamId in candidates)
+                {
+                    if (!await CanUseTeamIsoAsync(teamId, ct))
+                        continue;
+
+                    var team = callerTeams.FirstOrDefault(t => t.Id == teamId);
+
+                    if (team == null)
+                    {
+                        // Only reached for a team the caller is not a member of, which by the check above
+                        // means they hold view- or system-level authority - the population the privileged
+                        // GetViewTeams endpoint exists for. vm.api believing that is no guarantee
+                        // player.api agrees, so a refusal degrades to an id-only row rather than failing
+                        // the whole listing.
+                        allViewTeams ??= await GetAllViewTeamsOrEmptyAsync(viewId, ct);
+                        team = allViewTeams.FirstOrDefault(t => t.Id == teamId)
+                            ?? new Team { Id = teamId, Name = teamId.ToString() };
+                    }
+
+                    teams.Add(team);
+                }
+
+                // Nothing to show and no reason to think the caller can see this View at all.
+                if (teams.Count == 0 && callerTeams.Count == 0)
                     return (ViewTeams)null;
 
                 var view = await _playerService.GetViewByIdAsync(viewId, ct);
@@ -491,6 +546,85 @@ namespace Player.Vm.Api.Features.Files
             return (await Task.WhenAll(viewTeamsTasks))
                 .Where(vt => vt != null)
                 .ToList();
+        }
+
+        // Authorize a mount value the client submitted, and return the token to actually mount.
+        //
+        // The value is never trusted and never passed through: the provider decodes the scope out of it
+        // and rebuilds a canonical token (see IIsoProvider.ResolveMountTargetAsync), then the scope is
+        // checked twice - once against the VM, because mounting exposes the ISO to the VM's teams, and
+        // once against the caller, with the same permission set GetVmForEditing just applied to the VM.
+        //
+        // Existence is deliberately not verified: the picker only offers files that exist, and a mount of
+        // a correctly scoped ISO that has since been deleted is the caller's own team's problem, not
+        // worth a datastore browse on every mount.
+        public async Task<string> ResolveMountValueAsync(
+            Guid vmId, VmType vmType, IEnumerable<Guid> vmTeamIds, string mountValue, CancellationToken ct)
+        {
+            var teamIds = vmTeamIds.Where(x => x != Guid.Empty).Distinct().ToList();
+            var provider = EnabledProviders.FirstOrDefault(p => p.ProviderType == vmType);
+
+            if (provider == null)
+                throw RejectMount(vmId, mountValue, $"no enabled ISO provider for {vmType}");
+
+            var target = await provider.ResolveMountTargetAsync(vmId, mountValue, ct);
+
+            if (target == null)
+                throw RejectMount(vmId, mountValue, $"not a Player-managed ISO on the {vmType} storage this Vm can reach");
+
+            var vmViewIds = await _viewService.GetViewIdsForTeams(teamIds, ct);
+
+            if (!vmViewIds.Contains(target.ViewId))
+                throw RejectMount(vmId, mountValue, $"View {target.ViewId} does not contain this Vm");
+
+            // ScopeId == ViewId is a view-scoped ISO: its audience is the whole View, and the caller has
+            // already been authorized to edit a Vm in it, so there is nothing further to check.
+            if (target.ScopeId != target.ViewId)
+            {
+                if (!teamIds.Contains(target.ScopeId))
+                    throw RejectMount(vmId, mountValue, $"Team {target.ScopeId} is not one of this Vm's teams");
+
+                // Rejects a hand-crafted (view, team) pair from two different Views, which would encode a
+                // scope no upload could ever have produced.
+                if (await _viewService.GetViewIdForTeam(target.ScopeId, ct) != target.ViewId)
+                    throw RejectMount(vmId, mountValue, $"Team {target.ScopeId} is not in View {target.ViewId}");
+
+                if (!await CanUseTeamIsoAsync(target.ScopeId, ct))
+                    throw RejectMount(vmId, mountValue, $"caller cannot edit team {target.ScopeId}");
+            }
+
+            return target.MountValue;
+        }
+
+        // Whether the caller may use a team's ISOs on a VM of that team. The same permission set
+        // BaseHandler.GetVmForEditing applies to the VM's teams, so on a single-team VM this is implied by
+        // the check the handler already made and it only bites where a VM is shared between teams - which
+        // is the only place a team's ISO can reach an audience beyond that team.
+        private Task<bool> CanUseTeamIsoAsync(Guid teamId, CancellationToken ct) =>
+            _playerService.CanEditTeams([teamId], ct);
+
+        private async Task<List<Team>> GetAllViewTeamsOrEmptyAsync(Guid viewId, CancellationToken ct)
+        {
+            try
+            {
+                return (await _playerService.GetAllTeamsByViewIdAsync(viewId, ct))?.ToList() ?? [];
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not list all teams in View {ViewId} to name a team the caller is not a member of", viewId);
+                return [];
+            }
+        }
+
+        // One log line per refusal, because the response deliberately says nothing about why: the reason
+        // would otherwise tell a caller probing for other tenants' ISOs exactly how far they got.
+        private ForbiddenException RejectMount(Guid vmId, string mountValue, string reason)
+        {
+            _logger.LogInformation(
+                "Refused to mount an ISO on Vm {VmId}: {Reason}. Submitted value: {MountValue}",
+                vmId, reason, mountValue);
+
+            return new ForbiddenException("The specified iso is not available to this Vm");
         }
 
         // Bucket the scope-keyed ISO listing into the view-wide + per-team shape. View-wide ISOs are

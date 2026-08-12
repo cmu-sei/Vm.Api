@@ -35,6 +35,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<NicOptions> GetNicOptions(Guid id, bool canManage, Dictionary<string, string> allowedNetworks, VsphereVirtualMachine machine);
         Task<Dictionary<string, string>> GetVmNetworks(VsphereVirtualMachine machine, bool canManage, Dictionary<string, string> allowedNetworks);
         Task<string> GetConnectionAddress(Guid vmId);
+        Task<VsphereHost> GetHostForVm(Guid vmId);
         Task<string> PowerOnVm(Guid id);
         Task<string> PowerOffVm(Guid id);
         Task<string> RebootVm(Guid id);
@@ -997,6 +998,16 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return aggregate?.Connection?.Address;
         }
 
+        // The host config behind the connection a VM is reached through - i.e. the DsName/BaseFolder its
+        // ISO paths are built from. Same resolution ListIsosForVm uses, exposed because authorizing a
+        // submitted ISO path means rebuilding it against the datastore layout of THIS VM's host, not of
+        // whichever host happened to answer first.
+        public async Task<VsphereHost> GetHostForVm(Guid vmId)
+        {
+            var aggregate = await this.GetVm(vmId);
+            return aggregate?.Connection?.Host;
+        }
+
         public async Task<Dictionary<string, string>> GetVmNetworks(VsphereVirtualMachine machine, bool canManage, Dictionary<string, string> allowedNetworks)
         {
             var aggregate = await this.GetVm(machine.Id);
@@ -1079,8 +1090,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         }
 
         // Single source of truth for the datastore-relative ISO folder layout, shared by the ISO
-        // search (GetIsos) and the datastore upload (UploadIsoToConnection) so they never diverge.
-        private static string BuildIsoFolderRelative(string baseFolder, string viewId, string scopeId)
+        // search (GetIsos), the datastore upload (UploadIsoToConnection) and the reverse parse that
+        // authorizes a mount (VsphereIsoProvider.ResolveMountTargetAsync) so they never diverge.
+        public static string BuildIsoFolderRelative(string baseFolder, string viewId, string scopeId)
         {
             return $"{baseFolder}/{viewId}/{scopeId}";
         }

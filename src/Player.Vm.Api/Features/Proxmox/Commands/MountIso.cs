@@ -28,7 +28,8 @@ public class MountIso
 
         /// <summary>
         /// The Proxmox volume id of the ISO to mount, as returned in the MountValue of
-        /// GET vms/proxmox/{id}/isos. Only values from that listing are accepted.
+        /// GET vms/proxmox/{id}/isos. Only volumes on the configured ISO storage whose name encodes a
+        /// View and team of this Vm are accepted.
         /// </summary>
         public string Iso { get; set; }
     }
@@ -61,24 +62,14 @@ public class MountIso
                 throw new BadRequestException("An iso is required");
 
             // The volume id goes straight into the Vm's cdrom drive definition, and a Proxmox volid can
-            // name any volume on the storage - including another Vm's disk image, which would then be
-            // readable as a CD. So it is never taken on trust: it has to be one of the volume ids THIS
-            // caller's own listing for THIS Vm just returned, which is already scoped to the Views and
-            // teams they can see.
-            var viewTeams = await _isoService.ResolveViewTeamsForVmAsync(
-                vm.VmTeams.Select(x => x.TeamId), cancellationToken);
+            // name any volume the cluster has - including another Vm's disk image, which would then be
+            // readable as a CD. So it is never taken on trust: it has to decode to an ISO scope that
+            // belongs to this Vm, with the caller holding edit rights over that scope, and what gets
+            // mounted is the volid rebuilt from that scope rather than the one submitted.
+            var iso = await _isoService.ResolveMountValueAsync(
+                vm.Id, VmType.Proxmox, vm.VmTeams.Select(x => x.TeamId), request.Iso, cancellationToken);
 
-            var allowed = await _isoService.BuildVmIsoResultsAsync(
-                vm.Id, VmType.Proxmox, viewTeams, cancellationToken);
-
-            var isAllowed = allowed
-                .SelectMany(result => result.Isos.Concat(result.TeamIsoResults.SelectMany(t => t.Isos)))
-                .Any(iso => string.Equals(iso.MountValue, request.Iso, StringComparison.Ordinal));
-
-            if (!isAllowed)
-                throw new ForbiddenException("The specified iso is not available to this Vm");
-
-            await _proxmoxService.MountIso(vm.ProxmoxVmInfo, request.Iso, cancellationToken);
+            await _proxmoxService.MountIso(vm.ProxmoxVmInfo, iso, cancellationToken);
 
             var permissions = await _networkService.GetPermissions(vm, cancellationToken);
             return await _networkService.ToResponse(vm, permissions, cancellationToken);

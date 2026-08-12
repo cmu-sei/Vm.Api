@@ -68,7 +68,24 @@ namespace Player.Vm.Api.Features.Files.Providers
         // picker and are handed back to a mount command, so they must be actionable for that VM -
         // see VsphereService.ListIsosForVm and the node handling in ProxmoxIsoProvider.
         Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListForVmAsync(Guid vmId, Guid? viewId, CancellationToken ct);
+
+        // The reverse of this provider's naming scheme: read the scope back out of a mount value a
+        // client submitted, and rebuild the canonical token for those parts. Only the provider can do
+        // this - the scope lives in the filename on Proxmox and in the folder path on vSphere.
+        //
+        // Null for anything this provider would not itself have issued for this VM, which is what makes
+        // it an authorization primitive rather than a parser: a foreign storage or datastore, a disk
+        // image, a traversal attempt, or a name that was never Player-scoped all fail here. The VM
+        // matters because vSphere's layout is per-host (DsName/BaseFolder).
+        //
+        // Callers mount IsoMountTarget.MountValue, never the string they were given.
+        Task<IsoMountTarget> ResolveMountTargetAsync(Guid vmId, string mountValue, CancellationToken ct);
     }
+
+    // A mount value decoded back to the scope that owns it. ScopeId equal to ViewId means a view-scoped
+    // ISO, otherwise it is a team id - the same convention the write path uses for its scope folder /
+    // filename segment. MountValue is the canonical token rebuilt from the other three fields.
+    public sealed record IsoMountTarget(Guid ViewId, Guid ScopeId, string FileName, string MountValue);
 
     // The upload payload, shared by IsoService and every provider so there is one shape end to end.
     // Exactly one of StagedFilePath / OpenSource is set:

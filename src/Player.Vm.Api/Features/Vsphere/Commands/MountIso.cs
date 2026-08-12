@@ -2,7 +2,6 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
-using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
@@ -30,7 +29,8 @@ namespace Player.Vm.Api.Features.Vsphere
 
             /// <summary>
             /// The datastore path of the ISO to mount, as returned in the MountValue of
-            /// GET vms/vsphere/{id}/isos. Only values from that listing are accepted.
+            /// GET vms/vsphere/{id}/isos. Only paths within an ISO folder belonging to a View and team
+            /// of this Vm are accepted.
             /// </summary>
             public string Iso { get; set; }
         }
@@ -67,22 +67,13 @@ namespace Player.Vm.Api.Features.Vsphere
 
                 // The path goes straight into the Vm's cdrom backing, and it can name any file the
                 // datastore will serve - including another View's or team's ISO. Edit rights on THIS Vm
-                // are not permission to read THAT file, so the path is never taken on trust: it has to
-                // be one of the paths this caller's own listing for this Vm just returned, which is
-                // already scoped to the Views and teams they can see.
-                var viewTeams = await _isoService.ResolveViewTeamsForVmAsync(vm.TeamIds, cancellationToken);
+                // are not permission to read THAT file, so the path is never taken on trust: the scope it
+                // encodes has to belong to this Vm and the caller has to hold edit rights over that
+                // scope. What gets mounted is the path rebuilt from that scope, not the one submitted.
+                var iso = await _isoService.ResolveMountValueAsync(
+                    vm.Id, VmType.Vsphere, vm.TeamIds, request.Iso, cancellationToken);
 
-                var allowed = await _isoService.BuildVmIsoResultsAsync(
-                    vm.Id, VmType.Vsphere, viewTeams, cancellationToken);
-
-                var isAllowed = allowed
-                    .SelectMany(result => result.Isos.Concat(result.TeamIsoResults.SelectMany(t => t.Isos)))
-                    .Any(iso => string.Equals(iso.MountValue, request.Iso, StringComparison.Ordinal));
-
-                if (!isAllowed)
-                    throw new ForbiddenException("The specified iso is not available to this Vm");
-
-                await _vsphereService.ReconfigureVm(request.Id, Feature.iso, "", request.Iso);
+                await _vsphereService.ReconfigureVm(request.Id, Feature.iso, "", iso);
 
                 return await base.GetVsphereVirtualMachine(vm, cancellationToken);
             }

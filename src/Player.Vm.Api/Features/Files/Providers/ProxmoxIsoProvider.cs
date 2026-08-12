@@ -188,6 +188,45 @@ namespace Player.Vm.Api.Features.Files.Providers
             return GroupByScope(await _proxmoxService.ListStorageIsosForVm(vmId, ct), viewId);
         }
 
+        // A PVE volume id names any volume on any storage the cluster has - including another VM's disk
+        // image, which would be readable as a CD once mounted - so nothing here trusts the submitted
+        // string. It has to be on the one configured ISO storage and carry a decodable Player scope, and
+        // what comes back out is rebuilt from the decoded parts rather than echoed.
+        public Task<IsoMountTarget> ResolveMountTargetAsync(Guid vmId, string mountValue, CancellationToken ct)
+        {
+            // No I/O and no need for the VM: a Proxmox ISO's scope is entirely in its name, and the
+            // storage is cluster-wide, so there is nothing host-specific to resolve.
+            return Task.FromResult(ResolveMountTarget(mountValue));
+        }
+
+        internal IsoMountTarget ResolveMountTarget(string mountValue)
+        {
+            if (string.IsNullOrWhiteSpace(mountValue))
+                return null;
+
+            // A volid is "{storage}:{path}". Anchoring on the configured storage rejects every volume
+            // outside it, so a disk image on 'local' cannot be named at all.
+            if (!mountValue.StartsWith(_proxmoxOptions.IsoStorage + ":", StringComparison.Ordinal))
+                return null;
+
+            var separator = _proxmoxOptions.IsoScopeSeparator;
+
+            // VolumeFileName takes the last '/' segment, so a traversal attempt collapses to its final
+            // component - which then has to decode as a Player-scoped ISO name like any other.
+            if (!ProxmoxIsoNaming.TryDecode(
+                    ProxmoxIsoNaming.VolumeFileName(mountValue), separator,
+                    out var viewId, out var scopeId, out var displayName))
+                return null;
+
+            // Rebuilt, not compared: PVE reports both "storage:iso/x" and "storage:/iso/x" and a listing
+            // hands the volid back verbatim, so the rebuild is what makes the two spellings one token.
+            var canonical = ProxmoxIsoNaming.BuildVolumeId(
+                _proxmoxOptions.IsoStorage,
+                ProxmoxIsoNaming.Encode(viewId, scopeId.ToString(), displayName, separator));
+
+            return new IsoMountTarget(viewId, scopeId, displayName, canonical);
+        }
+
         // Decode the scope back out of each filename and bucket by it, dropping anything that is not one
         // of ours. A Proxmox ISO storage is routinely shared with hand-placed installer ISOs, PVE's own
         // templates, and (where TopoMojo shares the store) its 2-segment names - none of which belong to

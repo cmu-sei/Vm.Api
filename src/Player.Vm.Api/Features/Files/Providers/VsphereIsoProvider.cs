@@ -183,6 +183,65 @@ namespace Player.Vm.Api.Features.Files.Providers
             return Decorate(await _vsphereService.ListIsosForVm(vmId, viewId));
         }
 
+        // A datastore path names any file the datastore will serve - another View's ISO, another team's,
+        // or anything else readable - so a submitted path is never trusted. It has to sit exactly where
+        // this provider writes ISOs, on the datastore of the host THIS VM is reached through, and the
+        // path that gets mounted is rebuilt from the decoded parts rather than echoed back.
+        public async Task<IsoMountTarget> ResolveMountTargetAsync(Guid vmId, string mountValue, CancellationToken ct)
+        {
+            // The layout is per-host, so a path listed from some other vCenter must not authorize a
+            // mount here - which is the same host-affinity rule ListIsosForVm follows.
+            return ResolveMountTarget(await _vsphereService.GetHostForVm(vmId), mountValue);
+        }
+
+        // Split out and internal so the tests can drive every rejection case with a plain host config
+        // and no vSphere at all. Pure, and the whole security boundary for a vSphere mount.
+        internal static IsoMountTarget ResolveMountTarget(VsphereHost host, string mountValue)
+        {
+            if (host == null || string.IsNullOrWhiteSpace(host.DsName) || string.IsNullOrWhiteSpace(mountValue))
+                return null;
+
+            // Anchoring on the datastore rejects every other datastore the host can see. Case-insensitive
+            // because the datastore browser echoes vSphere's own spelling, which need not match config's.
+            var prefix = $"[{host.DsName}] ";
+
+            if (!mountValue.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                return null;
+
+            var baseFolder = (host.BaseFolder ?? string.Empty).Trim('/');
+            var baseSegments = baseFolder.Length == 0 ? [] : baseFolder.Split('/');
+            var segments = mountValue[prefix.Length..].Split('/');
+
+            // Exactly the ISO layout: {baseFolder}/{viewId}/{scopeId}/{filename}. A fixed segment count
+            // is what stops both a shallower path (the View or base folder itself) and a deeper one.
+            if (segments.Length != baseSegments.Length + 3)
+                return null;
+
+            // No empty, '.', '..' or otherwise nested segment survives, so nothing can climb out of the
+            // ISO tree or smuggle a separator through the filename.
+            if (segments.Any(s => s.Length == 0 || s == "." || s == ".." || s.Contains('\\')))
+                return null;
+
+            if (baseSegments.Where((s, i) => !string.Equals(s, segments[i], StringComparison.OrdinalIgnoreCase)).Any())
+                return null;
+
+            if (!Guid.TryParse(segments[^3], out var viewId) || !Guid.TryParse(segments[^2], out var scopeId))
+                return null;
+
+            var filename = segments[^1];
+
+            if (!IsoFileNaming.IsIsoFile(filename))
+                return null;
+
+            // Rebuilt through the same helper the search and the upload use, so a change to the layout
+            // cannot leave this parse authorizing paths nothing writes to any more.
+            var folder = baseSegments.Length == 0
+                ? $"{viewId}/{scopeId}"
+                : VsphereService.BuildIsoFolderRelative(baseFolder, viewId.ToString(), scopeId.ToString());
+
+            return new IsoMountTarget(viewId, scopeId, filename, $"[{host.DsName}] {folder}/{filename}");
+        }
+
         // Stamp provenance and the mount token onto a listing. VsphereService reports the folder path
         // and filename separately because that is what the datastore browser returns; the token
         // MountIso wants is the two concatenated, and computing it here means no client has to know

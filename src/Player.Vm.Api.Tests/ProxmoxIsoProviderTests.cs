@@ -185,4 +185,78 @@ public class ProxmoxIsoProviderTests
 
         Assert.False(Provider(options).Enabled);
     }
+
+    // ---- ResolveMountTarget: the whole authorization boundary for a Proxmox mount ----
+    //
+    // A PVE volid can name anything the cluster holds, including another VM's disk image, so the
+    // decoder is what stops a submitted string from reaching the drive definition. Everything it
+    // accepts is rebuilt from the decoded parts; everything else is null, which IsoService turns into a
+    // 403.
+
+    private const string Canonical =
+        "nfs:iso/11111111-1111-1111-1111-111111111111__22222222-2222-2222-2222-222222222222__tools.iso";
+
+    [Fact]
+    public void ResolveMountTarget_DecodesAListingVolidAndRebuildsIt()
+    {
+        var target = Provider(EnabledOptions()).ResolveMountTarget(Canonical);
+
+        Assert.NotNull(target);
+        Assert.Equal(ViewId, target.ViewId);
+        Assert.Equal(ScopeId, target.ScopeId);
+        Assert.Equal("tools.iso", target.FileName);
+        Assert.Equal(Canonical, target.MountValue);
+    }
+
+    // PVE reports the volume path both ways and the listing hands the volid straight back, so the
+    // rebuild - not a string comparison against the input - is what normalizes it.
+    [Fact]
+    public void ResolveMountTarget_AcceptsBothVolidSpellingsAndCanonicalizesThem()
+    {
+        var target = Provider(EnabledOptions()).ResolveMountTarget(Canonical.Replace(":iso/", ":/iso/"));
+
+        Assert.Equal(Canonical, target.MountValue);
+    }
+
+    // A view-scoped ISO encodes the view id in both positions; the caller check is skipped for those, so
+    // the decoder has to report it faithfully rather than fold it away.
+    [Fact]
+    public void ResolveMountTarget_ReportsAViewScopedIsoAsScopedToItsView()
+    {
+        var value = $"nfs:iso/{ViewId}__{ViewId}__tools.iso";
+
+        var target = Provider(EnabledOptions()).ResolveMountTarget(value);
+
+        Assert.Equal(ViewId, target.ViewId);
+        Assert.Equal(ViewId, target.ScopeId);
+    }
+
+    [Theory]
+    // Another storage entirely - the one thing a volid can change to reach outside our ISO store.
+    [InlineData("local:iso/11111111-1111-1111-1111-111111111111__22222222-2222-2222-2222-222222222222__tools.iso")]
+    // Storage id that merely starts the same, so the prefix test cannot be a bare StartsWith on the name.
+    [InlineData("nfs2:iso/11111111-1111-1111-1111-111111111111__22222222-2222-2222-2222-222222222222__tools.iso")]
+    // Another VM's disk image, which would otherwise be readable as a CD.
+    [InlineData("local:100/vm-100-disk-0.qcow2")]
+    [InlineData("nfs:100/vm-100-disk-0.qcow2")]
+    // Traversal: VolumeFileName keeps only the last '/' segment, so nothing can climb out.
+    [InlineData("nfs:iso/../../etc/passwd")]
+    [InlineData("nfs:iso/11111111-1111-1111-1111-111111111111__22222222-2222-2222-2222-222222222222__../x.iso")]
+    // TopoMojo's 2-segment names share the store; they are not Player's to mount.
+    [InlineData("nfs:iso/11111111-1111-1111-1111-111111111111__tools.iso")]
+    // A fourth segment would make the scope ambiguous.
+    [InlineData("nfs:iso/11111111-1111-1111-1111-111111111111__22222222-2222-2222-2222-222222222222__a__b.iso")]
+    // Neither segment may be anything but a GUID.
+    [InlineData("nfs:iso/not-a-guid__22222222-2222-2222-2222-222222222222__tools.iso")]
+    [InlineData("nfs:iso/11111111-1111-1111-1111-111111111111__not-a-guid__tools.iso")]
+    // A hand-placed or template file in the same store.
+    [InlineData("nfs:iso/11111111-1111-1111-1111-111111111111__22222222-2222-2222-2222-222222222222__tools.qcow2")]
+    [InlineData("nfs:iso/ubuntu-24.04.iso")]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public void ResolveMountTarget_RejectsAnythingItDidNotIssue(string mountValue)
+    {
+        Assert.Null(Provider(EnabledOptions()).ResolveMountTarget(mountValue));
+    }
 }
