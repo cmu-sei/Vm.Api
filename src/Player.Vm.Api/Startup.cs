@@ -321,6 +321,7 @@ public class Startup
 
         // Proxmox Services
         services.AddScoped<IProxmoxService, ProxmoxService>();
+        services.AddScoped<IProxmoxIsoStorageService, ProxmoxIsoStorageService>();
         services.AddSingleton<ProxmoxStateService>();
         services.AddSingleton<IHostedService>(x => x.GetService<ProxmoxStateService>());
         services.AddSingleton<IProxmoxStateService>(x => x.GetService<ProxmoxStateService>());

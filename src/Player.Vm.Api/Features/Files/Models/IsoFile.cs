@@ -31,10 +31,6 @@ namespace Player.Vm.Api.Features.Files.Models
         // rows from a VM-scoped listing where exactly one provider answered.
         public string MountValue { get; set; }
 
-        public VmType? ProviderType { get; set; }
-
-        public string ProviderInstanceId { get; set; }
-
         // Management listing only: enabled providers that do NOT have this file. Non-empty means an
         // earlier upload only partly succeeded; re-uploading the same name heals it.
         public List<VmType> MissingProviders { get; set; } = new();

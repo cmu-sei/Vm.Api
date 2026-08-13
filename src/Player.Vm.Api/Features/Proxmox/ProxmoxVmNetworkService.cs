@@ -86,7 +86,8 @@ namespace Player.Vm.Api.Features.Proxmox
             CancellationToken ct)
         {
             var allowedNetworks = permissions.Permissions.AllowedNetworks ?? new();
-            var currentNetworks = await _proxmoxService.GetCurrentNetworks(vm.ProxmoxVmInfo, ct);
+            var config = await _proxmoxService.GetVmConfigSummary(vm.ProxmoxVmInfo, ct);
+            var currentNetworks = config.CurrentNetworks;
 
             // A Vm can already sit on a network the caller is not allowed to select. Those are still
             // shown, by name where one is registered, but as read-only options.
@@ -112,7 +113,12 @@ namespace Player.Vm.Api.Features.Proxmox
                     allowedNetworks,
                     networkNames),
                 CanAccessNicConfiguration = allowedNetworks.Count > 0,
-                CanMountIso = _isoProviderEnabled && vm.ProxmoxVmInfo.Type == ProxmoxVmType.QEMU
+                // Drive presence included, not just the Vm type: Proxmox cannot hot-add an IDE drive, so
+                // a QEMU Vm built without one can never accept a mount and offering the control would only
+                // produce a 400 once the picker had already been filled in.
+                CanMountIso = _isoProviderEnabled
+                    && vm.ProxmoxVmInfo.Type == ProxmoxVmType.QEMU
+                    && config.HasCdromDrive
             };
         }
     }

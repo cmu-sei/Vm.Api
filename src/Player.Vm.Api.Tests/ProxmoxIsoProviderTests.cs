@@ -2,9 +2,14 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
 using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Proxmox.Options;
+using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Features.Files.Providers;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using Xunit;
@@ -18,10 +23,13 @@ public class ProxmoxIsoProviderTests
     private static readonly Guid ViewId = Guid.Parse("11111111-1111-1111-1111-111111111111");
     private static readonly Guid ScopeId = Guid.Parse("22222222-2222-2222-2222-222222222222");
 
-    // The IProxmoxService is left null deliberately: nothing under test here talks to Proxmox, and a
-    // null makes it obvious if that ever stops being true.
-    private static ProxmoxIsoProvider Provider(ProxmoxOptions options) =>
-        new(options, null, NullLogger<ProxmoxIsoProvider>.Instance);
+    // The storage service is left null deliberately in most cases: nothing under test there talks to
+    // Proxmox, and a null makes it obvious if that ever stops being true. The write-mode tests pass a
+    // substitute instead.
+    private static ProxmoxIsoProvider Provider(
+        ProxmoxOptions options,
+        IProxmoxIsoStorageService storage = null) =>
+        new(options, storage, NullLogger<ProxmoxIsoProvider>.Instance);
 
     private static ProxmoxOptions EnabledOptions() => new()
     {
@@ -33,13 +41,11 @@ public class ProxmoxIsoProviderTests
     };
 
     [Fact]
-    public void Provider_IdentifiesItselfByClusterHost()
+    public void Provider_IdentifiesItsHypervisorTypeAndNothingElse()
     {
-        var provider = Provider(EnabledOptions());
-
-        Assert.Equal(VmType.Proxmox, provider.ProviderType);
-        Assert.Equal("pve.example.test", provider.ProviderInstanceId);
-        Assert.Equal(1, provider.TargetCount);
+        // The type is all the contract exposes: which cluster this provider talks to is privileged
+        // deployment detail and stays in this provider's own logs.
+        Assert.Equal(VmType.Proxmox, Provider(EnabledOptions()).ProviderType);
     }
 
     // An unconfigured Proxmox section has to leave a vSphere-only install untouched rather than fail its
@@ -258,5 +264,173 @@ public class ProxmoxIsoProviderTests
     public void ResolveMountTarget_RejectsAnythingItDidNotIssue(string mountValue)
     {
         Assert.Null(Provider(EnabledOptions()).ResolveMountTarget(mountValue));
+    }
+
+    // ---- The two write modes ----
+    //
+    // Both have to agree about the stored name, because flipping UploadToStorage on an existing
+    // deployment must not orphan the files already on the storage.
+
+    private const string EncodedName =
+        "11111111-1111-1111-1111-111111111111__22222222-2222-2222-2222-222222222222__tools.iso";
+
+    // A directory under the test's own temp root, so an IsoRoot write touches nothing real. Not
+    // pre-created: the provider is responsible for creating IsoRoot on first write.
+    private static string TempIsoRoot() =>
+        Path.Combine(Path.GetTempPath(), "player-iso-tests", Guid.NewGuid().ToString());
+
+    private static IsoUploadRequest Request(string stagedFilePath, string fileName = "tools.iso") =>
+        new(ViewId, [ScopeId.ToString()], fileName, stagedFilePath, null);
+
+    private static string StagedFile(string contents = "iso-bytes")
+    {
+        var path = Path.Combine(Path.GetTempPath(), "player-iso-tests", Guid.NewGuid() + ".iso");
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+        File.WriteAllText(path, contents);
+        return path;
+    }
+
+    [Fact]
+    public async Task Upload_InIsoRootMode_WritesTheScopedNameIntoIsoRoot()
+    {
+        var options = EnabledOptions();
+        options.IsoRoot = TempIsoRoot();
+        var staged = StagedFile();
+
+        try
+        {
+            await Provider(options).UploadAsync(Request(staged), CancellationToken.None);
+
+            var written = Path.Combine(options.IsoRoot, EncodedName);
+            Assert.True(File.Exists(written));
+            Assert.Equal("iso-bytes", File.ReadAllText(written));
+        }
+        finally
+        {
+            Directory.Delete(options.IsoRoot, true);
+            File.Delete(staged);
+        }
+    }
+
+    [Fact]
+    public async Task Upload_InStorageApiMode_PushesTheScopedNameThroughTheStorageService()
+    {
+        var options = EnabledOptions();
+        options.UploadToStorage = true;
+        var storage = Substitute.For<IProxmoxIsoStorageService>();
+
+        await Provider(options, storage).UploadAsync(Request("/tmp/staged.iso"), CancellationToken.None);
+
+        await storage.Received(1).UploadIso(EncodedName, "/tmp/staged.iso", Arg.Any<CancellationToken>());
+    }
+
+    // RequiresStagedFile is true in this mode, so IsoService always stages first; if that ever stops
+    // being true it must fail loudly rather than upload nothing and report success.
+    [Fact]
+    public async Task Upload_InStorageApiMode_RefusesToUploadWithoutAStagedFile()
+    {
+        var options = EnabledOptions();
+        options.UploadToStorage = true;
+        var storage = Substitute.For<IProxmoxIsoStorageService>();
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => Provider(options, storage).UploadAsync(Request(null), CancellationToken.None));
+
+        await storage.DidNotReceive().UploadIso(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Delete_InIsoRootMode_RemovesTheScopedFile()
+    {
+        var options = EnabledOptions();
+        options.IsoRoot = TempIsoRoot();
+        Directory.CreateDirectory(options.IsoRoot);
+        var written = Path.Combine(options.IsoRoot, EncodedName);
+        File.WriteAllText(written, "iso-bytes");
+
+        try
+        {
+            await Provider(options).DeleteAsync(ViewId, ScopeId.ToString(), "tools.iso", CancellationToken.None);
+
+            Assert.False(File.Exists(written));
+        }
+        finally
+        {
+            Directory.Delete(options.IsoRoot, true);
+        }
+    }
+
+    // Idempotent, like the vSphere NFS path: a file already gone is success, which is what lets a
+    // delete that partly failed be retried.
+    [Fact]
+    public async Task Delete_InIsoRootMode_TreatsAMissingFileAsSuccess()
+    {
+        var options = EnabledOptions();
+        options.IsoRoot = TempIsoRoot();
+        Directory.CreateDirectory(options.IsoRoot);
+
+        try
+        {
+            await Provider(options).DeleteAsync(ViewId, ScopeId.ToString(), "gone.iso", CancellationToken.None);
+        }
+        finally
+        {
+            Directory.Delete(options.IsoRoot, true);
+        }
+    }
+
+    [Fact]
+    public async Task Delete_InStorageApiMode_DeletesTheScopedNameThroughTheStorageService()
+    {
+        var options = EnabledOptions();
+        options.UploadToStorage = true;
+        var storage = Substitute.For<IProxmoxIsoStorageService>();
+
+        await Provider(options, storage).DeleteAsync(
+            ViewId, ScopeId.ToString(), "tools.iso", CancellationToken.None);
+
+        await storage.Received(1).DeleteIso(EncodedName, Arg.Any<CancellationToken>());
+    }
+
+    // The legacy-name case. IsoService deliberately stops folding filenames on delete, because the
+    // caller echoes a name out of a listing and vSphere's real stored name may contain spaces. Proxmox
+    // stores that same file folded, so the provider has to fold on its own way in - otherwise a
+    // vSphere-only install that later configures Proxmox can never delete its pre-existing 'Win 10.iso'.
+    [Fact]
+    public async Task Delete_NormalizesALegacyNameInternally()
+    {
+        var options = EnabledOptions();
+        options.UploadToStorage = true;
+        var storage = Substitute.For<IProxmoxIsoStorageService>();
+
+        await Provider(options, storage).DeleteAsync(
+            ViewId, ScopeId.ToString(), "Win 10 (x64).iso", CancellationToken.None);
+
+        await storage.Received(1).DeleteIso(
+            $"{ViewId}__{ScopeId}__Win_10_x64_.iso", Arg.Any<CancellationToken>());
+    }
+
+    // The same fold, in the other write mode: the two modes must resolve a legacy name to one file.
+    [Fact]
+    public async Task Delete_InIsoRootMode_NormalizesALegacyNameInternally()
+    {
+        var options = EnabledOptions();
+        options.IsoRoot = TempIsoRoot();
+        Directory.CreateDirectory(options.IsoRoot);
+        var stored = Path.Combine(options.IsoRoot, $"{ViewId}__{ScopeId}__Win_10_x64_.iso");
+        File.WriteAllText(stored, "iso-bytes");
+
+        try
+        {
+            await Provider(options).DeleteAsync(
+                ViewId, ScopeId.ToString(), "Win 10 (x64).iso", CancellationToken.None);
+
+            Assert.False(File.Exists(stored));
+        }
+        finally
+        {
+            Directory.Delete(options.IsoRoot, true);
+        }
     }
 }

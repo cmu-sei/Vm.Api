@@ -16,23 +16,19 @@ namespace Player.Vm.Api.Features.Files.Providers
     // fans upload/delete/list out across every enabled provider rather than picking one.
     //
     // Per-provider *host* fan-out stays inside the implementation: VsphereIsoProvider writes to all
-    // connected vCenters itself, which is why the outcome counts are per-host and TargetCount exists.
+    // connected vCenters itself, which is why the outcome counts it returns are per-host.
+    //
+    // Nothing here exposes WHICH deployment a provider talks to. A provider host or cluster address is
+    // privileged deployment detail; it belongs in that provider's own server-side logs, never in a
+    // shared contract that feeds API responses.
     public interface IIsoProvider
     {
         VmType ProviderType { get; }
-
-        // Identifies which deployment of this provider a listing came from, for logs and for the UI's
-        // "missing on X" detail. Proxmox reports its cluster host; vSphere reports "" because its
-        // multi-vCenter fan-out is internal and no single address describes the result.
-        string ProviderInstanceId { get; }
 
         // False when this provider is not configured for ISOs at all, in which case IsoService skips
         // it entirely. An unconfigured provider must be invisible, not an error - that is what keeps
         // an existing vSphere-only install behaving exactly as it did.
         bool Enabled { get; }
-
-        // Number of write targets a single scope's upload touches, used only for the response counts.
-        int TargetCount { get; }
 
         // True when this provider cannot consume a forward-only stream and needs a file on disk.
         // IsoService uses this - not a mode flag it would have to know about - to decide whether an

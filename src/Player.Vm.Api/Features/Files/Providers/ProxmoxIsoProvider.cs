@@ -35,19 +35,19 @@ namespace Player.Vm.Api.Features.Files.Providers
     public class ProxmoxIsoProvider : IIsoProvider
     {
         private readonly ProxmoxOptions _proxmoxOptions;
-        private readonly IProxmoxService _proxmoxService;
+        private readonly IProxmoxIsoStorageService _isoStorageService;
         private readonly ILogger<ProxmoxIsoProvider> _logger;
 
         // No IsoUploadOptions: staging is IsoService's job, and the upload timeout belongs to the
-        // "proxmoxIsoUpload" HttpClient that ProxmoxService uses. Nothing under IsoUpload is this
-        // provider's concern.
+        // "proxmoxIsoUpload" HttpClient that ProxmoxIsoStorageService uses. Nothing under IsoUpload is
+        // this provider's concern.
         public ProxmoxIsoProvider(
             ProxmoxOptions proxmoxOptions,
-            IProxmoxService proxmoxService,
+            IProxmoxIsoStorageService isoStorageService,
             ILogger<ProxmoxIsoProvider> logger)
         {
             _proxmoxOptions = proxmoxOptions;
-            _proxmoxService = proxmoxService;
+            _isoStorageService = isoStorageService;
             _logger = logger;
 
             // Guarded on Enabled so a deployment that never opted in is never blocked from starting by
@@ -60,8 +60,6 @@ namespace Player.Vm.Api.Features.Files.Providers
 
         public VmType ProviderType => VmType.Proxmox;
 
-        public string ProviderInstanceId => _proxmoxOptions.Host;
-
         // IsoEnabled null follows the cluster's own Enabled flag, so an existing Proxmox deployment gains
         // ISO support the moment it sets IsoStorage with no second flag to remember - while still being
         // able to switch ISOs off on their own. IsoStorage folds into Enabled rather than throwing
@@ -70,9 +68,6 @@ namespace Player.Vm.Api.Features.Files.Providers
         public bool Enabled =>
             (_proxmoxOptions.IsoEnabled ?? _proxmoxOptions.Enabled)
             && !string.IsNullOrWhiteSpace(_proxmoxOptions.IsoStorage);
-
-        // One storage, however many nodes front it, so an upload has exactly one write target.
-        public int TargetCount => 1;
 
         // The upload API sends a multipart body it has to be able to measure, so it needs a real file;
         // an IsoRoot write can take the request body as it streams.
@@ -119,7 +114,7 @@ namespace Player.Vm.Api.Features.Files.Providers
                     if (request.StagedFilePath == null)
                         throw new InvalidOperationException("The Proxmox storage upload path requires a staged file.");
 
-                    await _proxmoxService.UploadIsoToStorage(encodedName, request.StagedFilePath, ct);
+                    await _isoStorageService.UploadIso(encodedName, request.StagedFilePath, ct);
                 }
                 else
                 {
@@ -162,7 +157,7 @@ namespace Player.Vm.Api.Features.Files.Providers
 
             if (_proxmoxOptions.UploadToStorage)
             {
-                await _proxmoxService.DeleteIsoFromStorage(encodedName, ct);
+                await _isoStorageService.DeleteIso(encodedName, ct);
             }
             else
             {
@@ -180,12 +175,12 @@ namespace Player.Vm.Api.Features.Files.Providers
 
         public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListAsync(Guid? viewId, CancellationToken ct)
         {
-            return GroupByScope(await _proxmoxService.ListStorageIsos(ct), viewId);
+            return GroupByScope(await _isoStorageService.ListIsos(ct), viewId);
         }
 
         public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListForVmAsync(Guid vmId, Guid? viewId, CancellationToken ct)
         {
-            return GroupByScope(await _proxmoxService.ListStorageIsosForVm(vmId, ct), viewId);
+            return GroupByScope(await _isoStorageService.ListIsosForVm(vmId, ct), viewId);
         }
 
         // A PVE volume id names any volume on any storage the cluster has - including another VM's disk
@@ -261,9 +256,7 @@ namespace Player.Vm.Api.Features.Files.Providers
                     // Path stays null: a Proxmox ISO has no folder, and the token a mount takes is the
                     // volume id, carried verbatim from PVE so it is immune to any normalization PVE
                     // applied on the way in.
-                    MountValue = volume.VolumeId,
-                    ProviderType = ProviderType,
-                    ProviderInstanceId = ProviderInstanceId
+                    MountValue = volume.VolumeId
                 });
             }
 
@@ -277,8 +270,12 @@ namespace Player.Vm.Api.Features.Files.Providers
             return grouped.ToDictionary(x => x.Key, x => (IReadOnlyList<IsoFile>)x.Value);
         }
 
+        // Normalize here rather than relying on the caller: a name that came through an upload is
+        // already a fixed point, but a delete of a file that predates this provider (a vSphere-only
+        // install that later configured Proxmox) arrives verbatim, and Proxmox stores it folded.
         private string Encode(Guid viewId, string scopeId, string filename) =>
-            ProxmoxIsoNaming.Encode(viewId, scopeId, filename, _proxmoxOptions.IsoScopeSeparator);
+            ProxmoxIsoNaming.Encode(
+                viewId, scopeId, ProxmoxIsoNaming.Normalize(filename), _proxmoxOptions.IsoScopeSeparator);
 
         // Fail at startup rather than on the first upload: every one of these is a deployment mistake
         // that would otherwise surface as a confusing runtime error, or worse, as files written where

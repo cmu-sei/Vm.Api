@@ -40,10 +40,6 @@ namespace Player.Vm.Api.Features.Files.Providers
 
         public VmType ProviderType => VmType.Vsphere;
 
-        // Intentionally blank: an upload fans out across every connected vCenter, so no single address
-        // describes where a listing came from.
-        public string ProviderInstanceId => string.Empty;
-
         // A hypervisor nobody configured is invisible rather than an error, exactly as
         // ProxmoxIsoProvider treats a missing IsoStorage. Both conditions matter: VsphereHost.Enabled
         // defaults to true in code while the shipped appsettings.json sets it false, and a host entry
@@ -59,10 +55,6 @@ namespace Player.Vm.Api.Features.Files.Providers
         // the request body directly, which is what keeps single-scope NFS uploads free of any
         // temp-space requirement.
         public bool RequiresStagedFile => _isoUploadOptions.UploadToDatastore;
-
-        public int TargetCount => _isoUploadOptions.UploadToDatastore
-            ? _vsphereService.GetEnabledConnectionCount()
-            : 1;
 
         // Identity. Folding names here would silently rename files for vSphere-only installs, which have
         // no reason to accept a narrower character set than the filesystem does.
@@ -242,17 +234,15 @@ namespace Player.Vm.Api.Features.Files.Providers
             return new IsoMountTarget(viewId, scopeId, filename, $"[{host.DsName}] {folder}/{filename}");
         }
 
-        // Stamp provenance and the mount token onto a listing. VsphereService reports the folder path
-        // and filename separately because that is what the datastore browser returns; the token
-        // MountIso wants is the two concatenated, and computing it here means no client has to know
-        // that vSphere's paths already carry a trailing slash.
+        // Stamp the mount token onto a listing. VsphereService reports the folder path and filename
+        // separately because that is what the datastore browser returns; the token MountIso wants is the
+        // two concatenated, and computing it here means no client has to know that vSphere's paths
+        // already carry a trailing slash.
         private Dictionary<Guid, IReadOnlyList<IsoFile>> Decorate(
             IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>> isosByScope)
         {
             foreach (var iso in isosByScope.Values.SelectMany(x => x))
             {
-                iso.ProviderType = ProviderType;
-                iso.ProviderInstanceId = ProviderInstanceId;
                 iso.MountValue = iso.Path + iso.Filename;
             }
 

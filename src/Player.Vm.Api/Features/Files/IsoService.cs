@@ -219,7 +219,7 @@ namespace Player.Vm.Api.Features.Files
                 var request = new IsoUploadRequest(viewId, scopeIds, destName, null,
                     () => isIso ? openUpload() : BuildIsoStream(openUpload(), filename));
 
-                return await FanOutAsync(providers, p => p.UploadAsync(request, ct), "upload", "uploaded", destName, scopeIds.Count);
+                return await FanOutAsync(providers, p => p.UploadAsync(request, ct), "upload", "uploaded", destName);
             }
 
             string tempPath = null;
@@ -229,7 +229,7 @@ namespace Player.Vm.Api.Features.Files
                 tempPath = await StageIsoAsync(openUpload, filename, isIso, ct);
                 var request = new IsoUploadRequest(viewId, scopeIds, destName, tempPath, null);
 
-                return await FanOutAsync(providers, p => p.UploadAsync(request, ct), "upload", "uploaded", destName, scopeIds.Count);
+                return await FanOutAsync(providers, p => p.UploadAsync(request, ct), "upload", "uploaded", destName);
             }
             finally
             {
@@ -244,13 +244,13 @@ namespace Player.Vm.Api.Features.Files
             if (providers.Count == 0)
                 throw new BadRequestException("No hypervisor is configured to store ISOs.");
 
-            // Normalized the same way as on upload, so the name reaching each provider is the one it
-            // actually stored. Callers normally echo a name straight back from a listing, in which case
-            // this is a no-op; it matters for a hand-built request.
-            var storedName = NormalizeFilename(providers, filename);
-
-            // One scope, so no multiplier: a delete targets a single ISO folder per provider.
-            return await FanOutAsync(providers, p => p.DeleteAsync(viewId, scopeId, storedName, ct), "delete", "deleted", storedName, 1);
+            // Verbatim, deliberately: the name comes back out of a listing, which is the real stored name
+            // on whichever provider holds the file. Folding it through every provider's normalizer here
+            // would rewrite a name that predates a newly configured provider - a vSphere-only install that
+            // later enables Proxmox could no longer delete its own "Win 10.iso", because the request would
+            // become "Win_10.iso" and the NFS path treats a miss as success. Each provider normalizes for
+            // its own storage internally instead.
+            return await FanOutAsync(providers, p => p.DeleteAsync(viewId, scopeId, filename, ct), "delete", "deleted", filename);
         }
 
         // Fold a display filename through every enabled provider's character-set restrictions, so one
@@ -272,21 +272,23 @@ namespace Player.Vm.Api.Features.Files
         // failing, which only vSphere's multi-vCenter datastore mode can do.
         internal readonly record struct ProviderOutcome(VmType Provider, bool Threw, int FailedHostCount, int TotalHostCount);
 
-        // Run one write operation on every provider concurrently and reduce the outcomes to the counts
-        // and provider names the API returns. A single provider's failure is caught and logged rather
-        // than faulting the batch - the same tolerance VsphereService already applies across hosts -
-        // and only a total failure throws.
-        //
-        // targetMultiplier is how many scopes the operation was meant to reach on each provider: a
-        // successful provider reports its counts summed over every scope, so a provider that never ran
-        // has to be charged the same way or a multi-team upload would understate what it missed.
+        // One provider's listing, with the provider carried alongside it rather than stamped onto every
+        // IsoFile. Internal, and never serialized: which hypervisor answered is merge input, and a
+        // provider's own identity is server-side only.
+        internal readonly record struct ProviderListing(
+            VmType Provider,
+            IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>> Isos);
+
+        // Run one write operation on every provider concurrently and reduce the outcomes to the result
+        // the API returns. A single provider's failure is caught and logged rather than faulting the
+        // batch - the same tolerance VsphereService already applies across hosts - and only a total
+        // failure throws.
         private async Task<IsoUploadResult> FanOutAsync(
             IReadOnlyList<IIsoProvider> providers,
             Func<IIsoProvider, Task<IsoOperationOutcome>> operation,
             string operationName,
             string pastTense,
-            string filename,
-            int targetMultiplier)
+            string filename)
         {
             var outcomes = await Task.WhenAll(providers.Select(async provider =>
             {
@@ -298,14 +300,13 @@ namespace Player.Vm.Api.Features.Files
                 catch (Exception ex)
                 {
                     _logger.LogError(ex,
-                        "ISO {File} failed to {Operation} on provider {Provider} ({Instance})",
-                        filename, operationName, provider.ProviderType, provider.ProviderInstanceId);
+                        "ISO {File} failed to {Operation} on provider {Provider}",
+                        filename, operationName, provider.ProviderType);
 
-                    // The response names the hypervisor type but never this instance's address or the
-                    // reason it failed - those stay in the log line above. Hosts that were never reached
-                    // still count as targeted, or a total failure here would look like a complete success.
-                    var targets = Math.Max(provider.TargetCount, 1) * targetMultiplier;
-                    return new ProviderOutcome(provider.ProviderType, true, targets, targets);
+                    // No host numbers invented for a provider that never ran: only it knows how many
+                    // targets it would have had, and a storage-backed mode has none to report. The
+                    // failure is carried by Threw, which is what sets PartialFailure.
+                    return new ProviderOutcome(provider.ProviderType, true, 0, 0);
                 }
             }));
 
@@ -317,10 +318,10 @@ namespace Player.Vm.Api.Features.Files
         internal static IsoUploadResult SummarizeFanOut(
             IReadOnlyList<ProviderOutcome> outcomes, string operationName, string pastTense)
         {
-            var failures = outcomes.Where(o => o.FailedHostCount > 0).ToList();
-            var failedProviderCount = outcomes.Count(o => o.Threw);
+            // Anything short of complete success, whether a whole hypervisor or some of one's hosts.
+            var failures = outcomes.Where(o => o.Threw || o.FailedHostCount > 0).ToList();
 
-            if (failedProviderCount == outcomes.Count)
+            if (outcomes.Count > 0 && outcomes.All(o => o.Threw))
             {
                 throw new Exception(
                     $"ISO {operationName} failed on {DescribeFailures(failures)}. Try again, or contact an administrator if the issue persists.");
@@ -329,24 +330,21 @@ namespace Player.Vm.Api.Features.Files
             var failedHostCount = outcomes.Sum(o => o.FailedHostCount);
             var totalHostCount = outcomes.Sum(o => o.TotalHostCount);
 
-            if (failedHostCount > 0)
+            if (failures.Count > 0)
             {
                 return new IsoUploadResult
                 {
                     Message = $"ISO {pastTense}, but failed on {DescribeFailures(failures)}. Try again, or contact an administrator if the issue persists.",
                     FailedHostCount = failedHostCount,
                     TotalHostCount = totalHostCount,
-                    FailedProviderCount = failedProviderCount,
-                    TotalProviderCount = outcomes.Count,
-                    FailedProviders = failures.Select(f => f.Provider).ToList()
+                    PartialFailure = true
                 };
             }
 
             return new IsoUploadResult
             {
                 Message = $"ISO was {pastTense}",
-                TotalHostCount = totalHostCount,
-                TotalProviderCount = outcomes.Count
+                TotalHostCount = totalHostCount
             };
         }
 
@@ -355,15 +353,20 @@ namespace Player.Vm.Api.Features.Files
         // always a single write target, whereas "Vsphere (1 of 3 hosts)" says the upload partly landed.
         private static string DescribeFailures(IReadOnlyList<ProviderOutcome> failures)
         {
-            var clauses = failures
+            return JoinNames(failures
                 .Select(f => f.TotalHostCount > 1
                     ? $"{f.Provider} ({f.FailedHostCount} of {f.TotalHostCount} hosts)"
-                    : f.Provider.ToString())
-                .ToList();
+                    : f.Provider.ToString()));
+        }
+
+        // "A", "A and B", "A, B and C".
+        private static string JoinNames(IEnumerable<string> names)
+        {
+            var clauses = names.ToList();
 
             return clauses.Count switch
             {
-                0 => "an unknown hypervisor",   // unreachable: only called with at least one failure
+                0 => "an unknown hypervisor",   // unreachable: only called with at least one name
                 1 => clauses[0],
                 _ => string.Join(", ", clauses.Take(clauses.Count - 1)) + " and " + clauses[^1]
             };
@@ -382,27 +385,36 @@ namespace Player.Vm.Api.Features.Files
             var scopeViewId = views.Count == 1 ? views.First().View.Id : (Guid?)null;
 
             var providers = EnabledProviders;
-            var listings = await Task.WhenAll(providers.Select(async provider =>
+            var results = await Task.WhenAll(providers.Select(async provider =>
             {
                 try
                 {
-                    return await provider.ListAsync(scopeViewId, ct);
+                    return (Type: provider.ProviderType, Isos: await provider.ListAsync(scopeViewId, ct), Error: (Exception)null);
                 }
                 catch (Exception ex)
                 {
                     // A provider that cannot be listed right now is excluded from the merge entirely,
                     // rather than counted as "missing this file" - otherwise a transient outage would
                     // mark every row on every other provider as incomplete.
-                    _logger.LogError(ex, "Failed to list ISOs from provider {Provider} ({Instance})",
-                        provider.ProviderType, provider.ProviderInstanceId);
-                    return null;
+                    _logger.LogError(ex, "Failed to list ISOs from provider {Provider}", provider.ProviderType);
+                    return (provider.ProviderType, null, ex);
                 }
             }));
 
-            var available = providers.Where((_, i) => listings[i] != null).ToList();
+            var available = results.Where(r => r.Error == null).ToList();
+
+            // Every provider failing is an error, not an empty listing: "no files" is rendered next to a
+            // Delete button and read as "the upload never landed", so it must not be what an outage looks
+            // like. A partial failure still degrades quietly, above.
+            if (providers.Count > 0 && available.Count == 0)
+            {
+                throw new Exception(
+                    $"Could not list ISOs from {JoinNames(results.Select(r => r.Type.ToString()))}. Try again, or contact an administrator if the issue persists.",
+                    results[0].Error);
+            }
+
             var isosByScope = MergeListings(
-                available.Select(p => p.ProviderType).Distinct().ToList(),
-                listings.Where(l => l != null).ToList());
+                available.Select(r => new ProviderListing(r.Type, r.Isos)).ToList());
 
             return views.Select(v => AssembleViewIsoResult(v, isosByScope)).ToArray();
         }
@@ -432,41 +444,38 @@ namespace Player.Vm.Api.Features.Files
         // piece of listing logic with enough cases (overlap, disjoint files, casing, a provider that
         // failed) to be worth testing without standing up a whole IsoService.
         internal static IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>> MergeListings(
-            IReadOnlyList<VmType> availableProviderTypes,
-            IReadOnlyList<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> listings)
+            IReadOnlyList<ProviderListing> listings)
         {
+            var availableProviderTypes = listings.Select(l => l.Provider).Distinct().ToList();
             var merged = new Dictionary<Guid, IReadOnlyList<IsoFile>>();
 
-            foreach (var scopeId in listings.SelectMany(l => l.Keys).Distinct())
+            foreach (var scopeId in listings.SelectMany(l => l.Isos.Keys).Distinct())
             {
-                var present = new Dictionary<string, (IsoFile File, HashSet<VmType> Providers)>(StringComparer.OrdinalIgnoreCase);
+                var present = new Dictionary<string, (string Filename, HashSet<VmType> Providers)>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var listing in listings)
                 {
-                    if (!listing.TryGetValue(scopeId, out var isos))
+                    if (!listing.Isos.TryGetValue(scopeId, out var isos))
                         continue;
 
                     foreach (var iso in isos)
                     {
                         if (!present.TryGetValue(iso.Filename, out var entry))
                         {
-                            entry = (iso, new HashSet<VmType>());
+                            entry = (iso.Filename, new HashSet<VmType>());
                             present[iso.Filename] = entry;
                         }
 
-                        if (iso.ProviderType.HasValue)
-                            entry.Providers.Add(iso.ProviderType.Value);
+                        entry.Providers.Add(listing.Provider);
                     }
                 }
 
                 merged[scopeId] = present.Values
-                    .Select(entry => new IsoFile(null, entry.File.Filename)
+                    .Select(entry => new IsoFile(null, entry.Filename)
                     {
-                        // Both null on a merged row: with the file possibly on several providers there
-                        // is no single path, and mounting never goes through this listing.
+                        // Null on a merged row: with the file possibly on several providers there is no
+                        // single path or token, and mounting never goes through this listing.
                         MountValue = null,
-                        ProviderType = null,
-                        ProviderInstanceId = null,
                         MissingProviders = availableProviderTypes.Where(t => !entry.Providers.Contains(t)).ToList()
                     })
                     .ToList();

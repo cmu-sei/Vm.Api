@@ -2,12 +2,14 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using System.IO;
 using System.Threading;
 using System.Threading.Tasks;
 using NSubstitute;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Services;
+using Player.Vm.Api.Features.Files.Models;
 using Player.Vm.Api.Features.Files.Providers;
 using Player.Vm.Api.Infrastructure.Options;
 using Xunit;
@@ -30,15 +32,12 @@ public class VsphereIsoProviderTests
     private static VsphereHost GoodHost() => new() { Enabled = true, Address = "vcenter.example.test" };
 
     [Fact]
-    public void Provider_IdentifiesItselfAsVsphereWithNoInstance()
+    public void Provider_IdentifiesItsHypervisorTypeAndNothingElse()
     {
-        var provider = Provider(WithHosts(GoodHost()));
-
-        Assert.Equal(VmType.Vsphere, provider.ProviderType);
-
-        // Blank on purpose: an upload fans out across every connected vCenter, so no single address
-        // describes it.
-        Assert.Equal(string.Empty, provider.ProviderInstanceId);
+        // The type is all the contract exposes. There was never a single address to report here anyway -
+        // an upload fans out across every connected vCenter - and a vCenter address is privileged
+        // deployment detail that belongs in the server logs.
+        Assert.Equal(VmType.Vsphere, Provider(WithHosts(GoodHost())).ProviderType);
     }
 
     [Fact]
@@ -94,21 +93,6 @@ public class VsphereIsoProviderTests
             new IsoUploadOptions { UploadToDatastore = uploadToDatastore });
 
         Assert.Equal(expected, provider.RequiresStagedFile);
-    }
-
-    [Fact]
-    public void TargetCount_IsTheConnectedHostCountInDatastoreModeAndOneOverNfs()
-    {
-        var vsphere = Substitute.For<IVsphereService>();
-        vsphere.GetEnabledConnectionCount().Returns(3);
-
-        Assert.Equal(3, Provider(WithHosts(GoodHost()),
-            new IsoUploadOptions { UploadToDatastore = true }, vsphere).TargetCount);
-
-        // An NFS write goes to a share, not to individual hosts, so it is one target however many
-        // vCenters are connected.
-        Assert.Equal(1, Provider(WithHosts(GoodHost()),
-            new IsoUploadOptions { UploadToDatastore = false }, vsphere).TargetCount);
     }
 
     [Fact]
@@ -245,5 +229,162 @@ public class VsphereIsoProviderTests
     public void ResolveMountTarget_RejectsAnythingItDidNotIssue(string mountValue)
     {
         Assert.Null(VsphereIsoProvider.ResolveMountTarget(IsoHost(), mountValue));
+    }
+
+    // ---- The two write modes ----
+
+    private static string TempBasePath() =>
+        Path.Combine(Path.GetTempPath(), "player-iso-tests", Guid.NewGuid().ToString());
+
+    private static IsoUploadRequest Request(
+        string stagedFilePath, string fileName = "tools.iso", params string[] scopeIds) =>
+        new(ViewId, scopeIds.Length == 0 ? [ScopeId.ToString()] : scopeIds, fileName, stagedFilePath, null);
+
+    private static string StagedFile(string contents = "iso-bytes")
+    {
+        var path = Path.Combine(Path.GetTempPath(), "player-iso-tests", Guid.NewGuid() + ".iso");
+        Directory.CreateDirectory(Path.GetDirectoryName(path));
+        File.WriteAllText(path, contents);
+        return path;
+    }
+
+    [Fact]
+    public async Task Upload_InNfsMode_WritesOneCopyPerScopeFolderUnderBasePath()
+    {
+        var basePath = TempBasePath();
+        var otherScope = Guid.NewGuid();
+        var staged = StagedFile();
+
+        try
+        {
+            var provider = Provider(
+                WithHosts(GoodHost()),
+                new IsoUploadOptions { BasePath = basePath });
+
+            var result = await provider.UploadAsync(
+                Request(staged, "tools.iso", ScopeId.ToString(), otherScope.ToString()),
+                CancellationToken.None);
+
+            foreach (var scope in new[] { ScopeId, otherScope })
+            {
+                var written = Path.Combine(basePath, ViewId.ToString(), scope.ToString(), "tools.iso");
+                Assert.True(File.Exists(written));
+                Assert.Equal("iso-bytes", File.ReadAllText(written));
+            }
+
+            // A share is not a host, so this mode reports no per-host tally - which is what it has
+            // always put on the wire.
+            Assert.Equal(0, result.TotalHostCount);
+            Assert.Equal(0, result.FailedHostCount);
+        }
+        finally
+        {
+            Directory.Delete(basePath, true);
+            File.Delete(staged);
+        }
+    }
+
+    // Datastore mode is the one that has hosts to count, and it fans out per scope inside
+    // VsphereService - so the provider's job is to sum what each scope reported.
+    [Fact]
+    public async Task Upload_InDatastoreMode_SumsThePerHostCountsAcrossScopes()
+    {
+        var otherScope = Guid.NewGuid();
+        var vsphere = Substitute.For<IVsphereService>();
+        vsphere.UploadIso(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
+            .Returns(new IsoOperationOutcome { FailedHostCount = 1, TotalHostCount = 3 });
+
+        var provider = Provider(
+            WithHosts(GoodHost()),
+            new IsoUploadOptions { UploadToDatastore = true },
+            vsphere);
+
+        var result = await provider.UploadAsync(
+            Request("/tmp/staged.iso", "tools.iso", ScopeId.ToString(), otherScope.ToString()),
+            CancellationToken.None);
+
+        await vsphere.Received(1).UploadIso(
+            ViewId.ToString(), ScopeId.ToString(), "tools.iso", "/tmp/staged.iso");
+        await vsphere.Received(1).UploadIso(
+            ViewId.ToString(), otherScope.ToString(), "tools.iso", "/tmp/staged.iso");
+
+        Assert.Equal(2, result.FailedHostCount);
+        Assert.Equal(6, result.TotalHostCount);
+    }
+
+    [Fact]
+    public async Task Upload_InDatastoreMode_RefusesToUploadWithoutAStagedFile()
+    {
+        var vsphere = Substitute.For<IVsphereService>();
+
+        var provider = Provider(
+            WithHosts(GoodHost()),
+            new IsoUploadOptions { UploadToDatastore = true },
+            vsphere);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(
+            () => provider.UploadAsync(Request(null), CancellationToken.None));
+
+        await vsphere.DidNotReceive().UploadIso(
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>());
+    }
+
+    // The legacy-name case, and the reason IsoService stopped folding filenames on delete: this
+    // provider's stored names are whatever the filesystem accepted, spaces and all, so a delete has to
+    // reach exactly the name the listing reported.
+    [Fact]
+    public async Task Delete_InNfsMode_RemovesTheFileUnderTheNameItWasGivenVerbatim()
+    {
+        var basePath = TempBasePath();
+        var folder = Path.Combine(basePath, ViewId.ToString(), ScopeId.ToString());
+        Directory.CreateDirectory(folder);
+        var stored = Path.Combine(folder, "Win 10 (x64).iso");
+        File.WriteAllText(stored, "iso-bytes");
+
+        try
+        {
+            var provider = Provider(WithHosts(GoodHost()), new IsoUploadOptions { BasePath = basePath });
+
+            await provider.DeleteAsync(
+                ViewId, ScopeId.ToString(), "Win 10 (x64).iso", CancellationToken.None);
+
+            Assert.False(File.Exists(stored));
+        }
+        finally
+        {
+            Directory.Delete(basePath, true);
+        }
+    }
+
+    [Fact]
+    public async Task Delete_InNfsMode_TreatsAMissingFileAsSuccess()
+    {
+        var basePath = TempBasePath();
+
+        var provider = Provider(WithHosts(GoodHost()), new IsoUploadOptions { BasePath = basePath });
+
+        await provider.DeleteAsync(ViewId, ScopeId.ToString(), "gone.iso", CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Delete_InDatastoreMode_PassesTheNameThroughVerbatimAndReportsItsHostCounts()
+    {
+        var vsphere = Substitute.For<IVsphereService>();
+        vsphere.DeleteIso(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
+            .Returns(new IsoOperationOutcome { FailedHostCount = 1, TotalHostCount = 2 });
+
+        var provider = Provider(
+            WithHosts(GoodHost()),
+            new IsoUploadOptions { UploadToDatastore = true },
+            vsphere);
+
+        var result = await provider.DeleteAsync(
+            ViewId, ScopeId.ToString(), "Win 10 (x64).iso", CancellationToken.None);
+
+        await vsphere.Received(1).DeleteIso(
+            ViewId.ToString(), ScopeId.ToString(), "Win 10 (x64).iso");
+
+        Assert.Equal(1, result.FailedHostCount);
+        Assert.Equal(2, result.TotalHostCount);
     }
 }
