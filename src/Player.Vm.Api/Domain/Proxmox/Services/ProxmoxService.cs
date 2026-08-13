@@ -89,10 +89,10 @@ public interface IProxmoxService
     Task<string> DeleteSnapshot(ProxmoxVmInfo info, string snapshotName);
 }
 
-public class ProxmoxService : IProxmoxService
+public partial class ProxmoxService : IProxmoxService
 {
-    private static readonly System.Text.RegularExpressions.Regex DriveIdRegex =
-        new(@"^([a-zA-Z]+)(\d+)$", System.Text.RegularExpressions.RegexOptions.Compiled);
+    [System.Text.RegularExpressions.GeneratedRegex(@"^([a-zA-Z]+)(\d+)$")]
+    private static partial System.Text.RegularExpressions.Regex DriveIdRegex();
 
     private readonly ProxmoxOptions _options;
     private readonly ILogger<ProxmoxService> _logger;
@@ -248,10 +248,9 @@ public class ProxmoxService : IProxmoxService
             var config = await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.GetAsync(true);
             networks = config.Networks ?? [];
 
-            // The same source MountIso targets, so what this reports and what a mount can find cannot
-            // disagree. DisksAll, not Disks: CD-ROM drives are excluded from Disks.
-            hasCdromDrive = (config.DisksAll ?? [])
-                .Any(x => x.Kind == VmDiskKind.Cdrom && !string.IsNullOrWhiteSpace(x.Id));
+            // The same helper MountIso selects from, so what this reports and what a mount can find
+            // cannot disagree.
+            hasCdromDrive = GetCdromDrives(config).Count > 0;
         }
         else
         {
@@ -681,8 +680,6 @@ public class ProxmoxService : IProxmoxService
         return $"snapshot {snapshotName} deleted on vmid {info.Id}";
     }
 
-    #region ISO mounting
-
     public async Task MountIso(ProxmoxVmInfo info, string isoVolumeId, CancellationToken cancellationToken)
     {
         // BadRequest rather than EnsureQemu's InvalidOperationException: an LXC container has no CD-ROM
@@ -697,10 +694,7 @@ public class ProxmoxService : IProxmoxService
 
         var config = await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.GetAsync(true);
 
-        // DisksAll, not Disks: CD-ROM drives are excluded from Disks.
-        var drives = (config.DisksAll ?? [])
-            .Where(x => x.Kind == VmDiskKind.Cdrom && !string.IsNullOrWhiteSpace(x.Id))
-            .ToList();
+        var drives = GetCdromDrives(config);
 
         if (drives.Count == 0)
         {
@@ -711,17 +705,15 @@ public class ProxmoxService : IProxmoxService
                 $"vmid {info.Id} has no CD/DVD drive. Add one to the VM in Proxmox before mounting an ISO.");
         }
 
-        // ide2 is the Proxmox convention for the optical drive and is what its own UI targets; anything
-        // else is only reached when a Vm was built differently.
-        var target = drives.FirstOrDefault(x => string.Equals(x.Id, "ide2", StringComparison.OrdinalIgnoreCase))
-            ?? drives.OrderBy(x => x.Id, StringComparer.OrdinalIgnoreCase).First();
+        var target = ChooseCdromDrive(drives);
 
         var (bus, index) = ParseDriveId(target.Id);
         var assignments = new Dictionary<int, string> { [index] = ReplaceCdromVolume(target.RawDefinition, isoVolumeId) };
         var vmConfig = _pveClient.Nodes[info.Node].Qemu[info.Id].Config;
 
-        // Dispatched on the drive's actual bus rather than through the API's "cdrom" parameter, which is
-        // documented as an alias for -ide2 and would therefore retarget a Vm whose drive is sata0.
+        // Dispatched on the drive's actual bus. PVE's "cdrom" update parameter is documented as an alias
+        // for -ide2, so using it would write ide2 on a Vm whose optical drive is sata0 - creating a
+        // second drive instead of loading the one that is there.
         var result = bus switch
         {
             "ide" => await vmConfig.UpdateVmAsync(ideN: assignments),
@@ -734,6 +726,36 @@ public class ProxmoxService : IProxmoxService
         await _pveClient.WaitAndThrow(result, $"MountIso vmid={info.Id} drive={target.Id}", cancellationToken);
         _proxmoxStateService.CheckState();
     }
+
+    /// <summary>
+    /// The VM's CD/DVD drives, in config order.
+    /// </summary>
+    /// <remarks>
+    /// DisksAll, not Disks: CD-ROM drives are excluded from Disks. A definition with no key is
+    /// unaddressable in a config update, so it is dropped here rather than checked at each use.
+    /// </remarks>
+    private static List<VmDisk> GetCdromDrives(VmConfig config) =>
+        (config.DisksAll ?? [])
+            .Where(x => x.Kind == VmDiskKind.Cdrom && !string.IsNullOrWhiteSpace(x.Id))
+            .ToList();
+
+    /// <summary>
+    /// Picks the one drive whose medium a mount replaces.
+    /// </summary>
+    /// <remarks>
+    /// ide2 is preferred because it is the Proxmox convention for the optical drive and what PVE's own
+    /// UI targets; any other bus is only reached on a Vm that was built differently, and is resolved by
+    /// key so the choice is stable rather than dependent on config ordering.
+    /// <para>
+    /// What is currently loaded is deliberately ignored. Preferring an empty drive would mean the next
+    /// mount on the same Vm picked a different drive - leaving the first ISO still inserted - whereas
+    /// replacing the medium in one stable drive is idempotent and matches what re-mounting means in
+    /// Proxmox itself.
+    /// </para>
+    /// </remarks>
+    internal static VmDisk ChooseCdromDrive(IReadOnlyList<VmDisk> drives) =>
+        drives.FirstOrDefault(x => string.Equals(x.Id, "ide2", StringComparison.OrdinalIgnoreCase))
+            ?? drives.OrderBy(x => x.Id, StringComparer.OrdinalIgnoreCase).First();
 
     /// <summary>
     /// Rebuilds a CD-ROM drive definition around a new volume, preserving the flags already on it.
@@ -768,7 +790,7 @@ public class ProxmoxService : IProxmoxService
     /// </summary>
     internal static (string Bus, int Index) ParseDriveId(string driveId)
     {
-        var match = DriveIdRegex.Match(driveId ?? string.Empty);
+        var match = DriveIdRegex().Match(driveId ?? string.Empty);
 
         if (!match.Success)
             throw new BadRequestException($"Unrecognized drive id '{driveId}'.");
@@ -776,7 +798,6 @@ public class ProxmoxService : IProxmoxService
         return (match.Groups[1].Value.ToLowerInvariant(),
                 int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture));
     }
-    #endregion
 
     private static void EnsureQemu(ProxmoxVmInfo info, string operation)
     {

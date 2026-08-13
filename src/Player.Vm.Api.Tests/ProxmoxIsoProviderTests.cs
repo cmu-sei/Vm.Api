@@ -68,29 +68,14 @@ public class ProxmoxIsoProviderTests
         Assert.False(Provider(options).Enabled);
     }
 
-    // IsoEnabled overrides the cluster flag in both directions, so ISOs can be turned off without
-    // turning off Proxmox, and on before Proxmox VMs exist.
-    [Theory]
-    [InlineData(true, false, true)]
-    [InlineData(false, true, false)]
-    [InlineData(null, true, true)]
-    public void IsoEnabled_OverridesTheClusterFlag(bool? isoEnabled, bool enabled, bool expected)
-    {
-        var options = EnabledOptions();
-        options.Enabled = enabled;
-        options.IsoEnabled = isoEnabled;
-
-        Assert.Equal(expected, Provider(options).Enabled);
-    }
-
     // The upload API needs a measurable multipart body; an IsoRoot write can consume the request stream.
     [Theory]
     [InlineData(true, true)]
     [InlineData(false, false)]
-    public void RequiresStagedFile_TracksTheWriteMode(bool uploadToStorage, bool expected)
+    public void RequiresStagedFile_TracksTheWriteMode(bool uploadViaApi, bool expected)
     {
         var options = EnabledOptions();
-        options.UploadToStorage = uploadToStorage;
+        options.UploadViaApi = uploadViaApi;
 
         Assert.Equal(expected, Provider(options).RequiresStagedFile);
     }
@@ -165,7 +150,7 @@ public class ProxmoxIsoProviderTests
     public void Construction_ThrowsWhenTheSeparatorWouldNotSurvivePvesUploadApi()
     {
         var options = EnabledOptions();
-        options.UploadToStorage = true;
+        options.UploadViaApi = true;
         options.IsoScopeSeparator = "#";
 
         var ex = Assert.Throws<InvalidOperationException>(() => Provider(options));
@@ -268,7 +253,7 @@ public class ProxmoxIsoProviderTests
 
     // ---- The two write modes ----
     //
-    // Both have to agree about the stored name, because flipping UploadToStorage on an existing
+    // Both have to agree about the stored name, because flipping UploadViaApi on an existing
     // deployment must not orphan the files already on the storage.
 
     private const string EncodedName =
@@ -316,7 +301,7 @@ public class ProxmoxIsoProviderTests
     public async Task Upload_InStorageApiMode_PushesTheScopedNameThroughTheStorageService()
     {
         var options = EnabledOptions();
-        options.UploadToStorage = true;
+        options.UploadViaApi = true;
         var storage = Substitute.For<IProxmoxIsoStorageService>();
 
         await Provider(options, storage).UploadAsync(Request("/tmp/staged.iso"), CancellationToken.None);
@@ -330,7 +315,7 @@ public class ProxmoxIsoProviderTests
     public async Task Upload_InStorageApiMode_RefusesToUploadWithoutAStagedFile()
     {
         var options = EnabledOptions();
-        options.UploadToStorage = true;
+        options.UploadViaApi = true;
         var storage = Substitute.For<IProxmoxIsoStorageService>();
 
         await Assert.ThrowsAsync<InvalidOperationException>(
@@ -384,7 +369,7 @@ public class ProxmoxIsoProviderTests
     public async Task Delete_InStorageApiMode_DeletesTheScopedNameThroughTheStorageService()
     {
         var options = EnabledOptions();
-        options.UploadToStorage = true;
+        options.UploadViaApi = true;
         var storage = Substitute.For<IProxmoxIsoStorageService>();
 
         await Provider(options, storage).DeleteAsync(
@@ -401,7 +386,7 @@ public class ProxmoxIsoProviderTests
     public async Task Delete_NormalizesALegacyNameInternally()
     {
         var options = EnabledOptions();
-        options.UploadToStorage = true;
+        options.UploadViaApi = true;
         var storage = Substitute.For<IProxmoxIsoStorageService>();
 
         await Provider(options, storage).DeleteAsync(

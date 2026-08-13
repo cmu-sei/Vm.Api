@@ -19,13 +19,13 @@ namespace Player.Vm.Api.Features.Proxmox.Queries;
 public class GetIsos
 {
     [DataContract(Name = "GetProxmoxVirtualMachineIsos")]
-    public class Query : IRequest<IsoResult[]>
+    public class Query : IRequest<MountableIsoResult[]>
     {
         [JsonIgnore]
         public Guid Id { get; set; }
     }
 
-    public class Handler : BaseHandler, IRequestHandler<Query, IsoResult[]>
+    public class Handler : BaseHandler, IRequestHandler<Query, MountableIsoResult[]>
     {
         private readonly IIsoService _isoService;
 
@@ -39,7 +39,7 @@ public class GetIsos
             _isoService = isoService;
         }
 
-        public async Task<IsoResult[]> Handle(Query request, CancellationToken cancellationToken)
+        public async Task<MountableIsoResult[]> Handle(Query request, CancellationToken cancellationToken)
         {
             // No extra permissions beyond being able to see the Vm: listing is what populates the mount
             // picker, and mounting itself is what requires edit rights.
@@ -50,7 +50,7 @@ public class GetIsos
                 cancellationToken);
 
             if (viewTeams.Count == 0)
-                return Array.Empty<IsoResult>();
+                return Array.Empty<MountableIsoResult>();
 
             // Vm-scoped rather than View-scoped: the MountValues come back straight to MountIso, so they
             // have to be volume ids from the storage this Vm's node can actually see.

@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -44,7 +45,7 @@ public interface IProxmoxIsoStorageService
     Task<IReadOnlyList<ProxmoxIsoVolume>> ListIsosForVm(Guid vmId, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Pushes a local file to the ISO storage through PVE's own upload API (UploadToStorage mode).
+    /// Pushes a local file to the ISO storage through PVE's own upload API (UploadViaApi mode).
     /// Overwrites an existing file of the same name.
     /// </summary>
     Task UploadIso(string encodedFileName, string localFilePath, CancellationToken cancellationToken);
@@ -137,23 +138,40 @@ public class ProxmoxIsoStorageService : IProxmoxIsoStorageService
 
         var result = await _pveClient.Nodes[node].Storage[_options.IsoStorage].Content[volumeId].Delete();
 
-        // Idempotent: a file that is already gone is the state the caller asked for. PVE reports this
-        // as a 500 with "does not exist" rather than a 404, so the message is all there is to match on.
-        if (!result.IsSuccessStatusCode)
+        if (IsAlreadyGone(result, volumeId))
         {
-            var error = result.GetError() ?? string.Empty;
-
-            if (error.Contains("does not exist", StringComparison.OrdinalIgnoreCase) ||
-                error.Contains("no such file", StringComparison.OrdinalIgnoreCase))
-            {
-                _logger.LogInformation(
-                    "ISO {File} was already absent from Proxmox storage {Storage} on node {Node}",
-                    encodedFileName, _options.IsoStorage, node);
-                return;
-            }
+            _logger.LogInformation(
+                "ISO {File} was already absent from Proxmox storage {Storage} on node {Node}",
+                encodedFileName, _options.IsoStorage, node);
+            return;
         }
 
         await _pveClient.WaitAndThrow(result, $"DeleteIso node={node} file={encodedFileName}", cancellationToken);
+    }
+
+    /// <summary>
+    /// Whether a failed delete failed only because the volume was not there, which makes the delete
+    /// idempotent - already gone is the state the caller asked for.
+    /// </summary>
+    /// <remarks>
+    /// PVE reports a missing volume as a 500 carrying "does not exist" rather than a 404, and only in
+    /// the flattened error text, so there is no structured signal to key on. All three conditions are
+    /// required so that an unrelated 500, or a 401/403 that happens to mention a missing something,
+    /// cannot be read as a successful delete: the status has to be exactly the 500 PVE uses, and the
+    /// error has to name this volume as well as matching a known phrase.
+    /// </remarks>
+    internal static bool IsAlreadyGone(Result result, string volumeId)
+    {
+        if (result.IsSuccessStatusCode || result.StatusCode != HttpStatusCode.InternalServerError)
+            return false;
+
+        var error = result.GetError() ?? string.Empty;
+
+        if (!error.Contains(volumeId, StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        return error.Contains("does not exist", StringComparison.OrdinalIgnoreCase)
+            || error.Contains("no such file", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<IReadOnlyList<ProxmoxIsoVolume>> ListIsosOnNode(string node, CancellationToken cancellationToken)
@@ -177,13 +195,7 @@ public class ProxmoxIsoStorageService : IProxmoxIsoStorageService
     {
         EnsureIsoStorageConfigured();
 
-        // Pinned: no discovery at all, which is also the escape hatch for a non-shared storage. The
-        // candidate list stays null in that case so it is obvious nothing queried PVE.
-        var candidates = string.IsNullOrWhiteSpace(_options.IsoNode)
-            ? await FindIsoStorageCandidates()
-            : null;
-
-        return ChooseNode(_options.IsoNode, _options.IsoStorage, candidates);
+        return ChooseNode(_options.IsoStorage, await FindIsoStorageCandidates());
     }
 
     /// <summary>Every online node PVE currently reports the configured ISO storage on.</summary>
@@ -213,9 +225,6 @@ public class ProxmoxIsoStorageService : IProxmoxIsoStorageService
     /// Picks the one node an ISO operation runs through.
     /// </summary>
     /// <remarks>
-    /// A configured node wins outright and <paramref name="candidates"/> is then ignored (and null),
-    /// because a pinned node is precisely the answer to a cluster this could not resolve on its own.
-    ///
     /// One node, with no failover: a retry that lands on a different node is only safe on a shared
     /// storage, and on a non-shared one it is what scatters a View's ISOs across the cluster - an
     /// upload on node A that a Vm on node B cannot see. So a cluster that cannot be resolved to an
@@ -226,12 +235,8 @@ public class ProxmoxIsoStorageService : IProxmoxIsoStorageService
     ///
     /// Internal and separate from the PVE query so the policy can be tested without a cluster.
     /// </remarks>
-    internal static string ChooseNode(
-        string configuredNode, string storageName, IReadOnlyList<IsoStorageCandidate> candidates)
+    internal static string ChooseNode(string storageName, IReadOnlyList<IsoStorageCandidate> candidates)
     {
-        if (!string.IsNullOrWhiteSpace(configuredNode))
-            return configuredNode;
-
         var nodes = candidates
             .Select(x => x.Node)
             .Distinct(StringComparer.Ordinal)
@@ -256,7 +261,7 @@ public class ProxmoxIsoStorageService : IProxmoxIsoStorageService
             // decides which VMs can ever mount it. Nothing here can pick correctly on the operator's
             // behalf.
             throw new InvalidOperationException(
-                $"Proxmox ISO storage '{storageName}' is not shared and is offered by {nodes.Count} nodes ({string.Join(", ", nodes)}), so an ISO written through one node would not be mountable by VMs on the others. Set Proxmox:IsoNode to pin every ISO operation to one node, or use a shared storage.");
+                $"Proxmox ISO storage '{storageName}' is not shared and is offered by {nodes.Count} nodes ({string.Join(", ", nodes)}), so an ISO written through one node would not be mountable by VMs on the others. Point Proxmox:IsoStorage at a shared storage instead.");
         }
 
         return nodes[Random.Shared.Next(nodes.Count)];

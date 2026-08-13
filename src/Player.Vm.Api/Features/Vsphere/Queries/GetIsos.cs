@@ -18,13 +18,13 @@ namespace Player.Vm.Api.Features.Vsphere
     public class GetIsos
     {
         [DataContract(Name = "GetVsphereVirtualMachineIsos")]
-        public class Query : IRequest<IsoResult[]>
+        public class Query : IRequest<MountableIsoResult[]>
         {
             [JsonIgnore]
             public Guid Id { get; set; }
         }
 
-        public class Handler : IRequestHandler<Query, IsoResult[]>
+        public class Handler : IRequestHandler<Query, MountableIsoResult[]>
         {
             private readonly IVmService _vmService;
             private readonly IIsoService _isoService;
@@ -37,7 +37,7 @@ namespace Player.Vm.Api.Features.Vsphere
                 _isoService = isoService;
             }
 
-            public async Task<IsoResult[]> Handle(Query request, CancellationToken cancellationToken)
+            public async Task<MountableIsoResult[]> Handle(Query request, CancellationToken cancellationToken)
             {
                 var vm = await _vmService.GetAsync(request.Id, cancellationToken);
 
@@ -47,7 +47,7 @@ namespace Player.Vm.Api.Features.Vsphere
                 var viewTeams = await _isoService.ResolveViewTeamsForVmAsync(vm.TeamIds, cancellationToken);
 
                 if (viewTeams.Count == 0)
-                    return Array.Empty<IsoResult>();
+                    return Array.Empty<MountableIsoResult>();
 
                 // VM-scoped listing: the returned paths are handed back to MountIso, so they must come
                 // from the host this VM runs on rather than any connected host.

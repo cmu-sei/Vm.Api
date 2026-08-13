@@ -42,8 +42,8 @@ namespace Player.Vm.Api.Features.Files
 
         Task<IsoUploadResult> DeleteAsync(Guid viewId, string scopeId, string filename, CancellationToken ct);
 
-        Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
-        Task<IsoResult[]> BuildVmIsoResultsAsync(Guid vmId, VmType vmType, IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
+        Task<ManagedIsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
+        Task<MountableIsoResult[]> BuildVmIsoResultsAsync(Guid vmId, VmType vmType, IReadOnlyCollection<ViewTeams> views, CancellationToken ct);
 
         // The Views a VM's teams place it in, paired with the teams whose ISOs may be mounted on that VM.
         // Shared by every provider's per-VM ISO query so the picker and ResolveMountValueAsync agree.
@@ -83,7 +83,13 @@ namespace Player.Vm.Api.Features.Files
         // The providers an operation actually targets. A provider that is not configured for ISOs is
         // invisible rather than an error, so an install with only vSphere set up behaves exactly as it
         // did before there was more than one provider.
-        private IReadOnlyList<IIsoProvider> EnabledProviders => _providers.Where(p => p.Enabled).ToList();
+        //
+        // Computed once per instance rather than per read: this is a scoped service and every provider's
+        // Enabled reads a per-request options snapshot, so it cannot change part-way through a request.
+        private IReadOnlyList<IIsoProvider> EnabledProviders =>
+            _enabledProviders ??= _providers.Where(p => p.Enabled).ToList();
+
+        private IReadOnlyList<IIsoProvider> _enabledProviders;
 
         // Enforces the ISO UPLOAD permissions and returns the scopeId(s) the ISO folder(s) are keyed on:
         //  - "view" scope: requires UploadViewIsos; a single scopeId of the view id.
@@ -273,11 +279,11 @@ namespace Player.Vm.Api.Features.Files
         internal readonly record struct ProviderOutcome(VmType Provider, bool Threw, int FailedHostCount, int TotalHostCount);
 
         // One provider's listing, with the provider carried alongside it rather than stamped onto every
-        // IsoFile. Internal, and never serialized: which hypervisor answered is merge input, and a
+        // entry. Internal, and never serialized: which hypervisor answered is merge input, and a
         // provider's own identity is server-side only.
         internal readonly record struct ProviderListing(
             VmType Provider,
-            IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>> Isos);
+            IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>> Isos);
 
         // Run one write operation on every provider concurrently and reduce the outcomes to the result
         // the API returns. A single provider's failure is caught and logged rather than faulting the
@@ -378,7 +384,7 @@ namespace Player.Vm.Api.Features.Files
         // This is the management listing (the Files tab), which never mounts, so results from every
         // enabled provider are merged into one row per filename with MissingProviders recording where
         // the file is absent.
-        public async Task<IsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct)
+        public async Task<ManagedIsoResult[]> BuildViewIsoResultsAsync(IReadOnlyCollection<ViewTeams> views, CancellationToken ct)
         {
             // Scope the search to the single View when only one is requested (smaller search); otherwise
             // enumerate every View in one pass.
@@ -416,24 +422,24 @@ namespace Player.Vm.Api.Features.Files
             var isosByScope = MergeListings(
                 available.Select(r => new ProviderListing(r.Type, r.Isos)).ToList());
 
-            return views.Select(v => AssembleViewIsoResult(v, isosByScope)).ToArray();
+            return views.Select(v => AssembleManagedIsoResult(v, isosByScope)).ToArray();
         }
 
         // Same shape as BuildViewIsoResultsAsync, but for the mount picker on a single VM - so it lists
         // from the ONE provider that VM belongs to. No merging: the rows are handed straight back to a
         // mount command, and only that provider's tokens are valid for that VM. It also preserves
         // vSphere's host affinity, where the datastore path must come from the host the VM runs on.
-        public async Task<IsoResult[]> BuildVmIsoResultsAsync(Guid vmId, VmType vmType, IReadOnlyCollection<ViewTeams> views, CancellationToken ct)
+        public async Task<MountableIsoResult[]> BuildVmIsoResultsAsync(Guid vmId, VmType vmType, IReadOnlyCollection<ViewTeams> views, CancellationToken ct)
         {
             var provider = EnabledProviders.FirstOrDefault(p => p.ProviderType == vmType);
 
             if (provider == null)
-                return views.Select(v => AssembleViewIsoResult(v, new Dictionary<Guid, IReadOnlyList<IsoFile>>())).ToArray();
+                return views.Select(v => AssembleMountableIsoResult(v, new Dictionary<Guid, IReadOnlyList<IsoListingEntry>>())).ToArray();
 
             var scopeViewId = views.Count == 1 ? views.First().View.Id : (Guid?)null;
             var isosByScope = await provider.ListForVmAsync(vmId, scopeViewId, ct);
 
-            return views.Select(v => AssembleViewIsoResult(v, isosByScope)).ToArray();
+            return views.Select(v => AssembleMountableIsoResult(v, isosByScope)).ToArray();
         }
 
         // Collapse several providers' listings into one row per (scope, filename), recording which
@@ -443,15 +449,17 @@ namespace Player.Vm.Api.Features.Files
         // Internal rather than private so the tests can exercise the merge directly - it is the one
         // piece of listing logic with enough cases (overlap, disjoint files, casing, a provider that
         // failed) to be worth testing without standing up a whole IsoService.
-        internal static IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>> MergeListings(
+        internal static IReadOnlyDictionary<Guid, IReadOnlyList<ManagedIsoFile>> MergeListings(
             IReadOnlyList<ProviderListing> listings)
         {
             var availableProviderTypes = listings.Select(l => l.Provider).Distinct().ToList();
-            var merged = new Dictionary<Guid, IReadOnlyList<IsoFile>>();
+            var merged = new Dictionary<Guid, IReadOnlyList<ManagedIsoFile>>();
 
             foreach (var scopeId in listings.SelectMany(l => l.Isos.Keys).Distinct())
             {
-                var present = new Dictionary<string, (string Filename, HashSet<VmType> Providers)>(StringComparer.OrdinalIgnoreCase);
+                // The key is the merged row's filename: an OrdinalIgnoreCase dictionary keeps the
+                // spelling of whichever provider reported the file first, which is the one to show.
+                var providersByFilename = new Dictionary<string, HashSet<VmType>>(StringComparer.OrdinalIgnoreCase);
 
                 foreach (var listing in listings)
                 {
@@ -460,23 +468,20 @@ namespace Player.Vm.Api.Features.Files
 
                     foreach (var iso in isos)
                     {
-                        if (!present.TryGetValue(iso.Filename, out var entry))
+                        if (!providersByFilename.TryGetValue(iso.Filename, out var providers))
                         {
-                            entry = (iso.Filename, new HashSet<VmType>());
-                            present[iso.Filename] = entry;
+                            providers = new HashSet<VmType>();
+                            providersByFilename[iso.Filename] = providers;
                         }
 
-                        entry.Providers.Add(listing.Provider);
+                        providers.Add(listing.Provider);
                     }
                 }
 
-                merged[scopeId] = present.Values
-                    .Select(entry => new IsoFile(null, entry.Filename)
+                merged[scopeId] = providersByFilename
+                    .Select(entry => new ManagedIsoFile(entry.Key)
                     {
-                        // Null on a merged row: with the file possibly on several providers there is no
-                        // single path or token, and mounting never goes through this listing.
-                        MountValue = null,
-                        MissingProviders = availableProviderTypes.Where(t => !entry.Providers.Contains(t)).ToList()
+                        MissingProviders = availableProviderTypes.Where(t => !entry.Value.Contains(t)).ToList()
                     })
                     .ToList();
             }
@@ -638,12 +643,15 @@ namespace Player.Vm.Api.Features.Files
 
         // Bucket the scope-keyed ISO listing into the view-wide + per-team shape. View-wide ISOs are
         // keyed on the view id; each team's on the team id. Scopes with no ISOs yield empty arrays.
-        private static IsoResult AssembleViewIsoResult(ViewTeams viewTeams, IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>> isosByScope)
+        // One method per result shape: the two differ only in their element type, and a single generic
+        // over three type parameters would cost more than the duplication saves.
+        private static ManagedIsoResult AssembleManagedIsoResult(
+            ViewTeams viewTeams, IReadOnlyDictionary<Guid, IReadOnlyList<ManagedIsoFile>> isosByScope)
         {
-            IsoFile[] IsosFor(Guid scopeId) =>
-                isosByScope.TryGetValue(scopeId, out var isos) ? isos.ToArray() : Array.Empty<IsoFile>();
+            ManagedIsoFile[] IsosFor(Guid scopeId) =>
+                isosByScope.TryGetValue(scopeId, out var isos) ? isos.ToArray() : Array.Empty<ManagedIsoFile>();
 
-            var result = new IsoResult
+            var result = new ManagedIsoResult
             {
                 ViewId = viewTeams.View.Id,
                 ViewName = viewTeams.View.Name,
@@ -652,7 +660,35 @@ namespace Player.Vm.Api.Features.Files
 
             foreach (var team in viewTeams.Teams)
             {
-                result.TeamIsoResults.Add(new TeamIsoResult
+                result.TeamIsoResults.Add(new ManagedTeamIsoResult
+                {
+                    TeamId = team.Id,
+                    TeamName = team.Name,
+                    Isos = IsosFor(team.Id)
+                });
+            }
+
+            return result;
+        }
+
+        private static MountableIsoResult AssembleMountableIsoResult(
+            ViewTeams viewTeams, IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>> isosByScope)
+        {
+            MountableIsoFile[] IsosFor(Guid scopeId) =>
+                isosByScope.TryGetValue(scopeId, out var isos)
+                    ? isos.Select(x => new MountableIsoFile(x.Filename, x.MountValue)).ToArray()
+                    : Array.Empty<MountableIsoFile>();
+
+            var result = new MountableIsoResult
+            {
+                ViewId = viewTeams.View.Id,
+                ViewName = viewTeams.View.Name,
+                Isos = IsosFor(viewTeams.View.Id)
+            };
+
+            foreach (var team in viewTeams.Teams)
+            {
+                result.TeamIsoResults.Add(new MountableTeamIsoResult
                 {
                     TeamId = team.Id,
                     TeamName = team.Name,
@@ -753,15 +789,12 @@ namespace Player.Vm.Api.Features.Files
             return primaryTeam.Id;
         }
 
-        public string SanitizeFilename(string filename)
-        {
-            string fn = "";
-            char[] bad = Path.GetInvalidFileNameChars();
-            foreach (char c in filename.ToCharArray())
-                if (!bad.Contains(c))
-                    fn += c;
-            return fn;
-        }
+        // Hoisted because Path.GetInvalidFileNameChars() allocates a fresh array on every call.
+        private static readonly char[] InvalidFileNameChars = Path.GetInvalidFileNameChars();
+
+        // Drop every character the filesystem will not accept in a name.
+        public string SanitizeFilename(string filename) =>
+            string.Concat(filename.Split(InvalidFileNameChars));
 
         // Parse the optional "teamIds" form field, which may arrive as repeated values and/or
         // comma-separated lists. Invalid/empty entries are ignored.

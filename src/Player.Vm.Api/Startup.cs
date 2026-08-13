@@ -16,6 +16,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Logging;
 using Player.Vm.Api.Data;
@@ -370,8 +371,13 @@ public class Startup
     }
 
     // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
-    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env, ILoggerFactory loggerFactory)
     {
+        // Reports ISO configuration that has moved or cannot take effect. Deliberately only logs - see
+        // IsoOptionsCheck for why a bad ISO destination must not stop the API from booting.
+        Features.Files.IsoOptionsCheck.Log(
+            Configuration, loggerFactory.CreateLogger(typeof(Features.Files.IsoOptionsCheck)));
+
         if (env.IsDevelopment())
         {
             IdentityModelEventSource.ShowPII = true;

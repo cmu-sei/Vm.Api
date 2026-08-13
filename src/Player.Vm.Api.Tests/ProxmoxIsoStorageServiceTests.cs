@@ -2,7 +2,11 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using System.Collections.Generic;
+using System.Dynamic;
 using System.Linq;
+using System.Net;
+using Corsinvest.ProxmoxVE.Api;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Xunit;
 
@@ -19,9 +23,8 @@ public class ProxmoxIsoStorageServiceTests
     private static ProxmoxIsoStorageService.IsoStorageCandidate Candidate(string node, bool shared = true) =>
         new(node, shared);
 
-    // No configured node, so the policy has to resolve the cluster on its own.
     private static string Choose(params ProxmoxIsoStorageService.IsoStorageCandidate[] candidates) =>
-        ProxmoxIsoStorageService.ChooseNode(null, "nfs", candidates);
+        ProxmoxIsoStorageService.ChooseNode("nfs", candidates);
 
     // A single-node cluster, or a storage only one node offers: unambiguous, so it needs no
     // configuration at all. Shared or not does not matter - there is nowhere else to write and nowhere
@@ -59,14 +62,14 @@ public class ProxmoxIsoStorageServiceTests
 
     // Each node has its own copy of the storage, so an upload through pve1 is invisible to a Vm on
     // pve2. Nothing here can pick correctly on the operator's behalf, so it is a configuration error
-    // rather than something to guess at - and the message has to say what to set.
+    // rather than something to guess at - and the message has to say what will fix it.
     [Fact]
-    public void SeveralNonSharedCandidates_ThrowTellingTheOperatorToPinANode()
+    public void SeveralNonSharedCandidates_ThrowTellingTheOperatorToUseASharedStorage()
     {
         var ex = Assert.Throws<InvalidOperationException>(
             () => Choose(Candidate("pve1", false), Candidate("pve2", false)));
 
-        Assert.Contains("IsoNode", ex.Message);
+        Assert.Contains("shared", ex.Message);
         Assert.Contains("pve1", ex.Message);
         Assert.Contains("pve2", ex.Message);
     }
@@ -85,32 +88,74 @@ public class ProxmoxIsoStorageServiceTests
     public void NoCandidates_Throws()
     {
         var ex = Assert.Throws<InvalidOperationException>(
-            () => ProxmoxIsoStorageService.ChooseNode(
-                null, "nfs", Array.Empty<ProxmoxIsoStorageService.IsoStorageCandidate>()));
+            () => Choose());
 
         Assert.Contains("nfs", ex.Message);
     }
 
-    // Proxmox:IsoNode wins outright, and it is the escape hatch for exactly the cluster the policy
-    // refuses to guess at: several nodes, storage not shared. The caller passes no candidates at all
-    // when a node is pinned - it never queries PVE - so a pin must not depend on discovery having run.
-    [Fact]
-    public void APinnedNode_WinsOutrightWithoutConsultingTheCluster()
-    {
-        Assert.Equal("pve2", ProxmoxIsoStorageService.ChooseNode("pve2", "nfs", null));
+    // ---- IsAlreadyGone: what makes a failed delete idempotent rather than swallowed ----
 
-        // Even over candidates that would otherwise be rejected as ambiguous.
-        Assert.Equal("pve2", ProxmoxIsoStorageService.ChooseNode(
-            "pve2", "nfs", [Candidate("pve1", false), Candidate("pve3", false)]));
+    private const string VolumeId = "nfs:iso/a.iso";
+
+    // The shape PVE's client produces for a failed call: the response is an ExpandoObject carrying an
+    // 'errors' member, which is the only thing Result.GetError() reads.
+    private static Result Failure(HttpStatusCode statusCode, string message)
+    {
+        dynamic errors = new ExpandoObject();
+        errors.volid = message;
+
+        dynamic response = new ExpandoObject();
+        response.errors = errors;
+
+        return new Result(
+            response,
+            statusCode,
+            statusCode.ToString(),
+            false,
+            "/nodes/pve1/storage/nfs/content",
+            new Dictionary<string, object>(),
+            MethodType.Delete,
+            ResponseType.Json,
+            TimeSpan.Zero);
     }
 
-    // A blank setting is not a pin - IsoNode is unset in every deployment that has not needed it.
+    // The case this exists for: PVE reports a volume that is not there as a 500 naming it, and a delete
+    // of something already deleted is the state the caller asked for.
     [Theory]
-    [InlineData("")]
-    [InlineData("   ")]
-    [InlineData(null)]
-    public void ABlankPinnedNode_FallsBackToTheCluster(string configuredNode)
+    [InlineData("unable to parse volume ID 'nfs:iso/a.iso' - does not exist")]
+    [InlineData("no such file 'nfs:iso/a.iso'")]
+    public void AMissingVolume_IsAlreadyGone(string message)
     {
-        Assert.Equal("pve1", ProxmoxIsoStorageService.ChooseNode(configuredNode, "nfs", [Candidate("pve1")]));
+        Assert.True(ProxmoxIsoStorageService.IsAlreadyGone(
+            Failure(HttpStatusCode.InternalServerError, message), VolumeId));
+    }
+
+    // Naming a different volume means something other than our delete target is missing, which is a
+    // real failure - our file may well still be there.
+    [Fact]
+    public void AMissingPhraseAboutAnotherVolume_IsNotAlreadyGone()
+    {
+        Assert.False(ProxmoxIsoStorageService.IsAlreadyGone(
+            Failure(HttpStatusCode.InternalServerError, "storage 'other' does not exist"), VolumeId));
+    }
+
+    // A 500 that is not about a missing file must surface, or a storage outage would report every
+    // delete as a success.
+    [Fact]
+    public void AnUnrelated500_IsNotAlreadyGone()
+    {
+        Assert.False(ProxmoxIsoStorageService.IsAlreadyGone(
+            Failure(HttpStatusCode.InternalServerError, "storage 'nfs:iso/a.iso' is not online"), VolumeId));
+    }
+
+    // An authorization failure names nothing about the file's existence, so it can never be read as a
+    // completed delete - the file is still there and the token simply cannot remove it.
+    [Theory]
+    [InlineData(HttpStatusCode.Forbidden)]
+    [InlineData(HttpStatusCode.Unauthorized)]
+    public void ANonServerErrorStatus_IsNotAlreadyGone(HttpStatusCode statusCode)
+    {
+        Assert.False(ProxmoxIsoStorageService.IsAlreadyGone(
+            Failure(statusCode, "permission check failed for 'nfs:iso/a.iso' - does not exist"), VolumeId));
     }
 }

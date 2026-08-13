@@ -11,30 +11,31 @@ namespace Player.Vm.Api.Domain.Proxmox
     //
     // vSphere scopes ISOs with a datastore folder hierarchy ({baseFolder}/{viewId}/{scopeId}), but a
     // Proxmox storage keeps every ISO in one template/iso directory and '/' is not legal in a
-    // filename, so there is no folder dimension to scope on. TopoMojo solved this by folding the
-    // scope GUID into the name with '#'; we use the same trick with three segments rather than two:
+    // filename, so there is no folder dimension to scope on. The scope is folded into the name
+    // instead:
     //
     //     {viewId}__{scopeId}__{displayName}.iso
     //
-    // Three segments mean a delete can rebuild the exact filename from (viewId, scopeId, filename)
-    // with no listing first, a View-scoped list is a prefix match, and the names cannot be confused
-    // with TopoMojo's 2-segment ones if both products share a storage.
+    // Both ids are carried so a delete can rebuild the exact filename from (viewId, scopeId,
+    // filename) with no listing first, and a View-scoped list is a prefix match.
     //
     // The separator is a parameter rather than a constant: it comes from
     // ProxmoxOptions.IsoScopeSeparator so that a change to how PVE normalizes uploaded filenames is
-    // a config fix instead of a code change. It defaults to '__' rather than TopoMojo's '#' because
-    // PVE's storage upload API rewrites '#' - see Normalize below.
-    public static class ProxmoxIsoNaming
+    // a config fix instead of a code change. It defaults to '__' because PVE's storage upload API
+    // rewrites most punctuation - see Normalize below.
+    public static partial class ProxmoxIsoNaming
     {
         public const int SegmentCount = 3;
 
         // Characters PVE's storage upload API leaves alone. Everything else it rewrites to '_', so a
         // name pushed through that API comes back changed unless it is already within this set. Both
-        // write modes normalize, not just the API one, so switching UploadToStorage does not orphan
+        // write modes normalize, not just the API one, so switching UploadViaApi does not orphan
         // the files already written under the other mode's naming.
-        private static readonly Regex Disallowed = new(@"[^-a-zA-Z0-9_.]", RegexOptions.Compiled);
+        [GeneratedRegex(@"[^-a-zA-Z0-9_.]")]
+        private static partial Regex Disallowed();
 
-        private static readonly Regex UnderscoreRun = new(@"_{2,}", RegexOptions.Compiled);
+        [GeneratedRegex(@"_{2,}")]
+        private static partial Regex UnderscoreRun();
 
         // Fold a display filename into the set above, exactly as PVE would, then collapse runs of '_'
         // to one. The collapse is what makes '__' safe to use as the scope separator: without it,
@@ -47,7 +48,7 @@ namespace Player.Vm.Api.Domain.Proxmox
             if (string.IsNullOrEmpty(filename))
                 return filename;
 
-            return UnderscoreRun.Replace(Disallowed.Replace(filename, "_"), "_");
+            return UnderscoreRun().Replace(Disallowed().Replace(filename, "_"), "_");
         }
 
         // Whether PVE's upload API would leave a string alone. Distinct from Normalize, which also
@@ -55,7 +56,7 @@ namespace Player.Vm.Api.Domain.Proxmox
         // safe and must be checked against the charset rule only.
         public static bool SurvivesUpload(string value)
         {
-            return !string.IsNullOrEmpty(value) && !Disallowed.IsMatch(value);
+            return !string.IsNullOrEmpty(value) && !Disallowed().IsMatch(value);
         }
 
         // Longest filename most storage backends accept, in bytes. The two GUIDs and two separators
@@ -70,8 +71,8 @@ namespace Player.Vm.Api.Domain.Proxmox
 
         // Parses an encoded ISO filename back into its scope. Deliberately strict: anything that is
         // not exactly three separator-delimited parts with two parseable GUIDs and an .iso extension
-        // is rejected, so hand-placed ISOs, PVE's own templates, and TopoMojo's 2-segment names are
-        // skipped rather than surfaced under some arbitrary View.
+        // is rejected, so hand-placed ISOs and PVE's own templates are skipped rather than surfaced
+        // under some arbitrary View.
         public static bool TryDecode(
             string volumeFileName,
             string separator,
@@ -111,7 +112,7 @@ namespace Player.Vm.Api.Domain.Proxmox
 
         // The filename portion of a PVE volume id. PVE reports both "storage:iso/name.iso" and
         // "storage:/iso/name.iso" depending on the storage type, and the filename never contains a
-        // '/', so taking the last segment covers both. Matches TopoMojo's PveIso.Name.
+        // '/', so taking the last segment covers both.
         public static string VolumeFileName(string volumeId)
         {
             if (string.IsNullOrEmpty(volumeId))

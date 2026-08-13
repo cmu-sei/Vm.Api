@@ -21,6 +21,19 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
         public string GuestProcessTempPath { get; set; }
         public int GuestProcessDefaultTimeoutSeconds { get; set; } = 300;
 
+        // True to push ISOs to every connected vCenter's datastore through its HTTP file API; null or
+        // false (default) to write them into IsoRoot. Required by VMware Cloud on AWS SDDCs, which
+        // have no NFS datastore. The Proxmox equivalent is Proxmox:UploadViaApi.
+        //
+        // Nullable so that a blank value reads as unset: an environment-variable deployment cannot
+        // remove a key, only blank it, and the configuration binder throws converting "" to bool -
+        // which, bound from a background service, stops the host.
+        public bool? UploadViaApi { get; set; }
+
+        // Local path, on a share the hosts also mount, holding the {viewId}/{scopeId} ISO folders.
+        // Required when UploadViaApi is false.
+        public string IsoRoot { get; set; }
+
         public VsphereHost[] Hosts { get; set; }
     }
 

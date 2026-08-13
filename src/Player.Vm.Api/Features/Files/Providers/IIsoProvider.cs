@@ -58,12 +58,12 @@ namespace Player.Vm.Api.Features.Files.Providers
 
         // Every ISO this provider holds, keyed on scope id (view id for view-wide, else team id).
         // Scoped to one View when viewId is given.
-        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListAsync(Guid? viewId, CancellationToken ct);
+        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListAsync(Guid? viewId, CancellationToken ct);
 
         // Same, but from the storage the given VM can actually reach. The results feed the mount
         // picker and are handed back to a mount command, so they must be actionable for that VM -
         // see VsphereService.ListIsosForVm and the node handling in ProxmoxIsoProvider.
-        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListForVmAsync(Guid vmId, Guid? viewId, CancellationToken ct);
+        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListForVmAsync(Guid vmId, Guid? viewId, CancellationToken ct);
 
         // The reverse of this provider's naming scheme: read the scope back out of a mount value a
         // client submitted, and rebuild the canonical token for those parts. Only the provider can do

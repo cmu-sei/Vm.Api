@@ -18,13 +18,13 @@ using Player.Vm.Api.Infrastructure.Exceptions;
 
 namespace Player.Vm.Api.Features.Files.Providers
 {
-    // Proxmox ISO storage. Two write modes, chosen with ProxmoxOptions.UploadToStorage:
+    // Proxmox ISO storage. Two write modes, chosen with ProxmoxOptions.UploadViaApi:
     //  - false (the default): write the file into IsoRoot, a local mount of the storage's template/iso
     //    directory. PVE re-reads that directory whenever its content index is queried, so nothing has
-    //    to be told the file arrived. This is the shape TopoMojo runs in production.
+    //    to be told the file arrived.
     //  - true: push the bytes through PVE's own storage upload API. Needed where vm.api cannot mount the
-    //    storage. Deliberately a separate flag from IsoUpload.UploadToDatastore so a mixed deployment
-    //    can pair, say, vSphere-over-NFS with Proxmox-over-API.
+    //    storage. Separate from Vsphere:UploadViaApi so a mixed deployment can pair, say,
+    //    vSphere-over-NFS with Proxmox-over-API.
     //
     // Listing goes through PVE either way, since PVE is the only thing that knows the volume ids a mount
     // will need.
@@ -60,23 +60,24 @@ namespace Player.Vm.Api.Features.Files.Providers
 
         public VmType ProviderType => VmType.Proxmox;
 
-        // IsoEnabled null follows the cluster's own Enabled flag, so an existing Proxmox deployment gains
-        // ISO support the moment it sets IsoStorage with no second flag to remember - while still being
-        // able to switch ISOs off on their own. IsoStorage folds into Enabled rather than throwing
+        // IsoStorage is the ISO opt-in and the opt-out: clearing it switches ISO support off while
+        // leaving the rest of the Proxmox integration alone. It folds into Enabled rather than throwing
         // because an unconfigured Proxmox section has to leave a vSphere-only install completely
         // untouched, not fail its uploads.
         public bool Enabled =>
-            (_proxmoxOptions.IsoEnabled ?? _proxmoxOptions.Enabled)
-            && !string.IsNullOrWhiteSpace(_proxmoxOptions.IsoStorage);
+            _proxmoxOptions.Enabled && !string.IsNullOrWhiteSpace(_proxmoxOptions.IsoStorage);
+
+        // Unset - which includes blank, see ProxmoxOptions.UploadViaApi - is the IsoRoot mode.
+        private bool UploadViaApi => _proxmoxOptions.UploadViaApi == true;
 
         // The upload API sends a multipart body it has to be able to measure, so it needs a real file;
         // an IsoRoot write can take the request body as it streams.
-        public bool RequiresStagedFile => _proxmoxOptions.UploadToStorage;
+        public bool RequiresStagedFile => UploadViaApi;
 
         // PVE's upload API rewrites anything outside [-a-zA-Z0-9_.] to '_'. Applying that ourselves, in
         // both write modes, keeps the name we store equal to the name delete and mount rebuild from
         // (viewId, scopeId, filename) - and keeps the two write modes agreeing about naming, so flipping
-        // UploadToStorage does not orphan the files already there.
+        // UploadViaApi does not orphan the files already there.
         public string NormalizeFilename(string filename) => ProxmoxIsoNaming.Normalize(filename);
 
         public void ValidateFilename(Guid viewId, string scopeId, string filename)
@@ -108,7 +109,7 @@ namespace Player.Vm.Api.Features.Files.Providers
             {
                 var encodedName = Encode(request.ViewId, scopeId, request.FileName);
 
-                if (_proxmoxOptions.UploadToStorage)
+                if (UploadViaApi)
                 {
                     // RequiresStagedFile is true in this mode, so IsoService always hands us a file.
                     if (request.StagedFilePath == null)
@@ -128,7 +129,7 @@ namespace Player.Vm.Api.Features.Files.Providers
             return new IsoOperationOutcome();
         }
 
-        // Write into IsoRoot - one copy per scope, exactly as the vSphere NFS path writes one copy per
+        // Write into IsoRoot - one copy per scope, exactly as the vSphere share path writes one copy per
         // scope folder. Only the single-scope, single-provider case arrives with OpenSource instead of a
         // staged file (IsoService's straight-through condition), so the forward-only source is never
         // asked to produce a second copy.
@@ -155,13 +156,13 @@ namespace Player.Vm.Api.Features.Files.Providers
         {
             var encodedName = Encode(viewId, scopeId, filename);
 
-            if (_proxmoxOptions.UploadToStorage)
+            if (UploadViaApi)
             {
                 await _isoStorageService.DeleteIso(encodedName, ct);
             }
             else
             {
-                // Best-effort, like the vSphere NFS path: a file that is already gone is success.
+                // Best-effort, like the vSphere share path: a file that is already gone is success.
                 var destFile = Path.Combine(_proxmoxOptions.IsoRoot, encodedName);
 
                 if (File.Exists(destFile))
@@ -173,12 +174,12 @@ namespace Player.Vm.Api.Features.Files.Providers
             return new IsoOperationOutcome();
         }
 
-        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListAsync(Guid? viewId, CancellationToken ct)
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListAsync(Guid? viewId, CancellationToken ct)
         {
             return GroupByScope(await _isoStorageService.ListIsos(ct), viewId);
         }
 
-        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListForVmAsync(Guid vmId, Guid? viewId, CancellationToken ct)
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListForVmAsync(Guid vmId, Guid? viewId, CancellationToken ct)
         {
             return GroupByScope(await _isoStorageService.ListIsosForVm(vmId, ct), viewId);
         }
@@ -223,15 +224,15 @@ namespace Player.Vm.Api.Features.Files.Providers
         }
 
         // Decode the scope back out of each filename and bucket by it, dropping anything that is not one
-        // of ours. A Proxmox ISO storage is routinely shared with hand-placed installer ISOs, PVE's own
-        // templates, and (where TopoMojo shares the store) its 2-segment names - none of which belong to
-        // any View, so surfacing them under an arbitrary one would be worse than hiding them.
-        private Dictionary<Guid, IReadOnlyList<IsoFile>> GroupByScope(
+        // of ours. A Proxmox ISO storage is routinely shared with hand-placed installer ISOs and PVE's
+        // own templates, none of which belong to any View, so surfacing them under an arbitrary one
+        // would be worse than hiding them.
+        private Dictionary<Guid, IReadOnlyList<IsoListingEntry>> GroupByScope(
             IReadOnlyList<ProxmoxIsoVolume> volumes,
             Guid? viewId)
         {
             var separator = _proxmoxOptions.IsoScopeSeparator;
-            var grouped = new Dictionary<Guid, List<IsoFile>>();
+            var grouped = new Dictionary<Guid, List<IsoListingEntry>>();
             var skipped = 0;
 
             foreach (var volume in volumes)
@@ -251,13 +252,9 @@ namespace Player.Vm.Api.Features.Files.Providers
                     grouped[scopeId] = isos;
                 }
 
-                isos.Add(new IsoFile(null, displayName)
-                {
-                    // Path stays null: a Proxmox ISO has no folder, and the token a mount takes is the
-                    // volume id, carried verbatim from PVE so it is immune to any normalization PVE
-                    // applied on the way in.
-                    MountValue = volume.VolumeId
-                });
+                // The volume id is carried verbatim from PVE, so it is immune to any normalization PVE
+                // applied on the way in.
+                isos.Add(new IsoListingEntry(displayName, volume.VolumeId));
             }
 
             if (skipped > 0)
@@ -267,7 +264,7 @@ namespace Player.Vm.Api.Features.Files.Providers
                     skipped, _proxmoxOptions.IsoStorage);
             }
 
-            return grouped.ToDictionary(x => x.Key, x => (IReadOnlyList<IsoFile>)x.Value);
+            return grouped.ToDictionary(x => x.Key, x => (IReadOnlyList<IsoListingEntry>)x.Value);
         }
 
         // Normalize here rather than relying on the caller: a name that came through an upload is
@@ -292,18 +289,17 @@ namespace Player.Vm.Api.Features.Files.Providers
 
             // PVE's upload API rewrites anything outside [-a-zA-Z0-9_.], which would silently mangle the
             // separator and make every uploaded ISO undecodable. Only enforced in the mode that goes
-            // through that API; an IsoRoot write stores whatever it is given, so an install already
-            // using '#' there keeps working.
-            if (_proxmoxOptions.UploadToStorage && !ProxmoxIsoNaming.SurvivesUpload(separator))
+            // through that API; an IsoRoot write stores whatever it is given.
+            if (UploadViaApi && !ProxmoxIsoNaming.SurvivesUpload(separator))
             {
                 throw new InvalidOperationException(
-                    $"Proxmox:IsoScopeSeparator '{separator}' cannot be used with UploadToStorage, because Proxmox's upload API rewrites any character outside [-a-zA-Z0-9_.]. Use '__'.");
+                    $"Proxmox:IsoScopeSeparator '{separator}' cannot be used with Proxmox:UploadViaApi, because Proxmox's upload API rewrites any character outside [-a-zA-Z0-9_.]. Use '__'.");
             }
 
-            if (!_proxmoxOptions.UploadToStorage && string.IsNullOrWhiteSpace(_proxmoxOptions.IsoRoot))
+            if (!UploadViaApi && string.IsNullOrWhiteSpace(_proxmoxOptions.IsoRoot))
             {
                 throw new InvalidOperationException(
-                    "Proxmox:IsoRoot is required when Proxmox:UploadToStorage is false. Set it to a local mount of the ISO storage's template/iso directory, or enable UploadToStorage to push ISOs through Proxmox's API instead.");
+                    "Proxmox:IsoRoot is required when Proxmox:UploadViaApi is false. Set it to a local mount of the ISO storage's template/iso directory, or enable Proxmox:UploadViaApi to push ISOs through Proxmox's API instead.");
             }
         }
     }

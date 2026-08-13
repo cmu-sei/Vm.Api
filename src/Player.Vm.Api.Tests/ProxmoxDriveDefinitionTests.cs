@@ -1,14 +1,16 @@
 // Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
+using Corsinvest.ProxmoxVE.Api.Shared.Models.Vm;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using Xunit;
 
 namespace Player.Vm.Api.Tests;
 
-// The CD-ROM drive definition is rebuilt from PVE's existing raw definition rather than composed from
-// scratch, so these cases pin down which tokens survive that rewrite.
+// Everything an ISO mount decides about a Vm's optical drive without needing a cluster: which drive it
+// targets, and how that drive's definition is rewritten. The definition is rebuilt from PVE's existing
+// raw definition rather than composed from scratch, so these cases pin down which tokens survive.
 public class ProxmoxDriveDefinitionTests
 {
     private const string Volid = "nfs:iso/new.iso";
@@ -90,5 +92,62 @@ public class ProxmoxDriveDefinitionTests
     public void ParseDriveId_RejectsAnythingElse(string driveId)
     {
         Assert.Throws<BadRequestException>(() => ProxmoxService.ParseDriveId(driveId));
+    }
+
+    // ---- ChooseCdromDrive: which of a Vm's optical drives a mount loads ----
+    //
+    // The choice is deliberately independent of what is currently in the drive, so mounting twice in a
+    // row replaces one medium rather than filling a second drive.
+
+    private static VmDisk Drive(string id, string rawDefinition = "none,media=cdrom") =>
+        new() { Id = id, RawDefinition = rawDefinition };
+
+    // The overwhelmingly common shape, and the Proxmox convention.
+    [Fact]
+    public void ChooseCdromDrive_TakesTheOnlyDrive_WhenItIsIde2()
+    {
+        Assert.Equal("ide2", ProxmoxService.ChooseCdromDrive([Drive("ide2")]).Id);
+    }
+
+    // A Vm built without ide2 still has to be mountable - which is why the update is dispatched on the
+    // drive's real bus rather than through PVE's ide2-only "cdrom" parameter.
+    [Fact]
+    public void ChooseCdromDrive_TakesTheOnlyDrive_WhenThereIsNoIde2()
+    {
+        Assert.Equal("sata0", ProxmoxService.ChooseCdromDrive([Drive("sata0")]).Id);
+    }
+
+    [Theory]
+    [InlineData("ide2", "sata0")]
+    [InlineData("sata0", "ide2")]   // config order must not decide it
+    [InlineData("ide2", "IDE2")]
+    public void ChooseCdromDrive_PrefersIde2_WhenThereIsMoreThanOneDrive(string first, string second)
+    {
+        var chosen = ProxmoxService.ChooseCdromDrive([Drive(first), Drive(second)]);
+
+        Assert.Equal("ide2", chosen.Id, ignoreCase: true);
+    }
+
+    // The stability rule, and the reason an empty drive is not preferred: if mounting picked whichever
+    // drive was free, a second mount on the same Vm would land in a different drive and leave the first
+    // ISO still inserted.
+    [Fact]
+    public void ChooseCdromDrive_StillPrefersAnOccupiedIde2_OverAnEmptyDrive()
+    {
+        var chosen = ProxmoxService.ChooseCdromDrive(
+            [Drive("ide2", "nfs:iso/already-mounted.iso,media=cdrom"), Drive("sata0")]);
+
+        Assert.Equal("ide2", chosen.Id);
+    }
+
+    // No ide2 to prefer, so the drive is resolved by key - a fixed answer for a given Vm, whatever order
+    // PVE happens to report its drives in.
+    [Theory]
+    [InlineData("sata0", "scsi1")]
+    [InlineData("scsi1", "sata0")]
+    public void ChooseCdromDrive_WithNoIde2_PicksTheLowestKeyRatherThanTheFirstReported(
+        string first, string second)
+    {
+        Assert.Equal("sata0", ProxmoxService.ChooseCdromDrive([Drive(first), Drive(second)]).Id);
     }
 }

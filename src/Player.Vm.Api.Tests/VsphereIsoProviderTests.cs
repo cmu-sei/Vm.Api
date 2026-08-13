@@ -11,7 +11,6 @@ using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Files.Models;
 using Player.Vm.Api.Features.Files.Providers;
-using Player.Vm.Api.Infrastructure.Options;
 using Xunit;
 
 namespace Player.Vm.Api.Tests;
@@ -23,13 +22,20 @@ public class VsphereIsoProviderTests
 {
     private static VsphereIsoProvider Provider(
         VsphereOptions vsphereOptions,
-        IsoUploadOptions isoUploadOptions = null,
         IVsphereService vsphereService = null) =>
-        new(vsphereService, isoUploadOptions ?? new IsoUploadOptions(), vsphereOptions);
+        new(vsphereService, vsphereOptions);
 
     private static VsphereOptions WithHosts(params VsphereHost[] hosts) => new() { Hosts = hosts };
 
     private static VsphereHost GoodHost() => new() { Enabled = true, Address = "vcenter.example.test" };
+
+    // One usable host plus the share this provider writes to - the default write mode.
+    private static VsphereOptions NfsOptions(string isoRoot) =>
+        new() { Hosts = [GoodHost()], IsoRoot = isoRoot };
+
+    // One usable host, writing through vCenter's HTTP file API instead of a share.
+    private static VsphereOptions ApiOptions() =>
+        new() { Hosts = [GoodHost()], UploadViaApi = true };
 
     [Fact]
     public void Provider_IdentifiesItsHypervisorTypeAndNothingElse()
@@ -86,13 +92,12 @@ public class VsphereIsoProviderTests
     [Theory]
     [InlineData(true, true)]
     [InlineData(false, false)]
-    public void RequiresStagedFile_TracksTheWriteMode(bool uploadToDatastore, bool expected)
+    public void RequiresStagedFile_TracksTheWriteMode(bool uploadViaApi, bool expected)
     {
-        var provider = Provider(
-            WithHosts(GoodHost()),
-            new IsoUploadOptions { UploadToDatastore = uploadToDatastore });
+        var options = WithHosts(GoodHost());
+        options.UploadViaApi = uploadViaApi;
 
-        Assert.Equal(expected, provider.RequiresStagedFile);
+        Assert.Equal(expected, Provider(options).RequiresStagedFile);
     }
 
     [Fact]
@@ -120,7 +125,7 @@ public class VsphereIsoProviderTests
         var vsphere = Substitute.For<IVsphereService>();
         vsphere.GetEnabledConnectionCount().Returns(0);
 
-        var provider = Provider(WithHosts(GoodHost()), null, vsphere);
+        var provider = Provider(WithHosts(GoodHost()), vsphere);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => provider.ListAsync(null, CancellationToken.None));
@@ -233,7 +238,7 @@ public class VsphereIsoProviderTests
 
     // ---- The two write modes ----
 
-    private static string TempBasePath() =>
+    private static string TempIsoRoot() =>
         Path.Combine(Path.GetTempPath(), "player-iso-tests", Guid.NewGuid().ToString());
 
     private static IsoUploadRequest Request(
@@ -249,17 +254,15 @@ public class VsphereIsoProviderTests
     }
 
     [Fact]
-    public async Task Upload_InNfsMode_WritesOneCopyPerScopeFolderUnderBasePath()
+    public async Task Upload_InNfsMode_WritesOneCopyPerScopeFolderUnderIsoRoot()
     {
-        var basePath = TempBasePath();
+        var isoRoot = TempIsoRoot();
         var otherScope = Guid.NewGuid();
         var staged = StagedFile();
 
         try
         {
-            var provider = Provider(
-                WithHosts(GoodHost()),
-                new IsoUploadOptions { BasePath = basePath });
+            var provider = Provider(NfsOptions(isoRoot));
 
             var result = await provider.UploadAsync(
                 Request(staged, "tools.iso", ScopeId.ToString(), otherScope.ToString()),
@@ -267,7 +270,7 @@ public class VsphereIsoProviderTests
 
             foreach (var scope in new[] { ScopeId, otherScope })
             {
-                var written = Path.Combine(basePath, ViewId.ToString(), scope.ToString(), "tools.iso");
+                var written = Path.Combine(isoRoot, ViewId.ToString(), scope.ToString(), "tools.iso");
                 Assert.True(File.Exists(written));
                 Assert.Equal("iso-bytes", File.ReadAllText(written));
             }
@@ -279,7 +282,7 @@ public class VsphereIsoProviderTests
         }
         finally
         {
-            Directory.Delete(basePath, true);
+            Directory.Delete(isoRoot, true);
             File.Delete(staged);
         }
     }
@@ -294,10 +297,7 @@ public class VsphereIsoProviderTests
         vsphere.UploadIso(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
             .Returns(new IsoOperationOutcome { FailedHostCount = 1, TotalHostCount = 3 });
 
-        var provider = Provider(
-            WithHosts(GoodHost()),
-            new IsoUploadOptions { UploadToDatastore = true },
-            vsphere);
+        var provider = Provider(ApiOptions(), vsphere);
 
         var result = await provider.UploadAsync(
             Request("/tmp/staged.iso", "tools.iso", ScopeId.ToString(), otherScope.ToString()),
@@ -317,10 +317,7 @@ public class VsphereIsoProviderTests
     {
         var vsphere = Substitute.For<IVsphereService>();
 
-        var provider = Provider(
-            WithHosts(GoodHost()),
-            new IsoUploadOptions { UploadToDatastore = true },
-            vsphere);
+        var provider = Provider(ApiOptions(), vsphere);
 
         await Assert.ThrowsAsync<InvalidOperationException>(
             () => provider.UploadAsync(Request(null), CancellationToken.None));
@@ -335,15 +332,15 @@ public class VsphereIsoProviderTests
     [Fact]
     public async Task Delete_InNfsMode_RemovesTheFileUnderTheNameItWasGivenVerbatim()
     {
-        var basePath = TempBasePath();
-        var folder = Path.Combine(basePath, ViewId.ToString(), ScopeId.ToString());
+        var isoRoot = TempIsoRoot();
+        var folder = Path.Combine(isoRoot, ViewId.ToString(), ScopeId.ToString());
         Directory.CreateDirectory(folder);
         var stored = Path.Combine(folder, "Win 10 (x64).iso");
         File.WriteAllText(stored, "iso-bytes");
 
         try
         {
-            var provider = Provider(WithHosts(GoodHost()), new IsoUploadOptions { BasePath = basePath });
+            var provider = Provider(NfsOptions(isoRoot));
 
             await provider.DeleteAsync(
                 ViewId, ScopeId.ToString(), "Win 10 (x64).iso", CancellationToken.None);
@@ -352,18 +349,42 @@ public class VsphereIsoProviderTests
         }
         finally
         {
-            Directory.Delete(basePath, true);
+            Directory.Delete(isoRoot, true);
         }
     }
 
     [Fact]
     public async Task Delete_InNfsMode_TreatsAMissingFileAsSuccess()
     {
-        var basePath = TempBasePath();
-
-        var provider = Provider(WithHosts(GoodHost()), new IsoUploadOptions { BasePath = basePath });
+        var provider = Provider(NfsOptions(TempIsoRoot()));
 
         await provider.DeleteAsync(ViewId, ScopeId.ToString(), "gone.iso", CancellationToken.None);
+    }
+
+    // The un-migrated deployment: the vSphere upload settings moved out of IsoUpload, and a legacy key
+    // is ignored rather than mapped forward, so the first upload has to say which key is missing. Left
+    // blank it would otherwise Path.Combine into a relative directory next to the process and appear to
+    // succeed.
+    [Fact]
+    public async Task Upload_InNfsMode_WithNoIsoRootConfigured_SaysWhichSettingIsMissing()
+    {
+        var provider = Provider(WithHosts(GoodHost()));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => provider.UploadAsync(Request(StagedFile()), CancellationToken.None));
+
+        Assert.Contains("Vsphere:IsoRoot", ex.Message);
+    }
+
+    [Fact]
+    public async Task Delete_InNfsMode_WithNoIsoRootConfigured_SaysWhichSettingIsMissing()
+    {
+        var provider = Provider(WithHosts(GoodHost()));
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => provider.DeleteAsync(ViewId, ScopeId.ToString(), "gone.iso", CancellationToken.None));
+
+        Assert.Contains("Vsphere:IsoRoot", ex.Message);
     }
 
     [Fact]
@@ -373,10 +394,7 @@ public class VsphereIsoProviderTests
         vsphere.DeleteIso(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
             .Returns(new IsoOperationOutcome { FailedHostCount = 1, TotalHostCount = 2 });
 
-        var provider = Provider(
-            WithHosts(GoodHost()),
-            new IsoUploadOptions { UploadToDatastore = true },
-            vsphere);
+        var provider = Provider(ApiOptions(), vsphere);
 
         var result = await provider.DeleteAsync(
             ViewId, ScopeId.ToString(), "Win 10 (x64).iso", CancellationToken.None);

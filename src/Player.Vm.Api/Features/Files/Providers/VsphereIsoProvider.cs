@@ -11,30 +11,28 @@ using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Features.Files.Models;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Services;
-using Player.Vm.Api.Infrastructure.Options;
 
 namespace Player.Vm.Api.Features.Files.Providers
 {
-    // vSphere ISO storage. Two write modes, unchanged from before this was a provider:
-    //  - UploadToDatastore: stream to every connected vCenter's datastore over its HTTP file API.
-    //    Used by VMware Cloud on AWS SDDCs, which have no NFS datastore.
-    //  - otherwise (the default): write into {BasePath}/{viewId}/{scopeId} on a share the hosts mount.
+    // vSphere ISO storage. Two write modes, chosen with VsphereOptions.UploadViaApi:
+    //  - true: stream to every connected vCenter's datastore over its HTTP file API. Used by VMware
+    //    Cloud on AWS SDDCs, which have no NFS datastore.
+    //  - false (the default): write into {IsoRoot}/{viewId}/{scopeId} on a share the hosts mount.
     //
     // Scoping is the datastore folder hierarchy, so any filename that is legal on the filesystem is
     // legal here and ValidateFilename has nothing to check.
     public class VsphereIsoProvider : IIsoProvider
     {
         private readonly IVsphereService _vsphereService;
-        private readonly IsoUploadOptions _isoUploadOptions;
         private readonly VsphereOptions _vsphereOptions;
 
+        // No IsoUploadOptions: the shared pipeline's staging and limits are IsoService's concern, and
+        // where these bytes land is entirely under Vsphere:.
         public VsphereIsoProvider(
             IVsphereService vsphereService,
-            IsoUploadOptions isoUploadOptions,
             VsphereOptions vsphereOptions)
         {
             _vsphereService = vsphereService;
-            _isoUploadOptions = isoUploadOptions;
             _vsphereOptions = vsphereOptions;
         }
 
@@ -51,10 +49,13 @@ namespace Player.Vm.Api.Features.Files.Providers
         public bool Enabled =>
             _vsphereOptions.Hosts?.Any(h => h.Enabled && !string.IsNullOrWhiteSpace(h.Address)) == true;
 
-        // The datastore path needs a seekable local file to stream to each host; the NFS path can take
-        // the request body directly, which is what keeps single-scope NFS uploads free of any
+        // Unset - which includes blank, see VsphereOptions.UploadViaApi - is the IsoRoot mode.
+        private bool UploadViaApi => _vsphereOptions.UploadViaApi == true;
+
+        // The datastore path needs a seekable local file to stream to each host; the IsoRoot path can
+        // take the request body directly, which is what keeps single-scope share uploads free of any
         // temp-space requirement.
-        public bool RequiresStagedFile => _isoUploadOptions.UploadToDatastore;
+        public bool RequiresStagedFile => UploadViaApi;
 
         // Identity. Folding names here would silently rename files for vSphere-only installs, which have
         // no reason to accept a narrower character set than the filesystem does.
@@ -67,14 +68,14 @@ namespace Player.Vm.Api.Features.Files.Providers
 
         public async Task<IsoOperationOutcome> UploadAsync(IsoUploadRequest request, CancellationToken ct)
         {
-            if (_isoUploadOptions.UploadToDatastore)
+            if (UploadViaApi)
             {
                 return await UploadToDatastore(request, ct);
             }
 
-            await UploadToNfs(request, ct);
+            await UploadToIsoRoot(request, ct);
 
-            // Zero targets, not one: an NFS write goes to a share rather than to individual hosts, so
+            // Zero targets, not one: an IsoRoot write goes to a share rather than to individual hosts, so
             // there is no per-host tally to report. This is also what the response has always carried
             // for this mode, and the counts are part of the wire contract.
             return new IsoOperationOutcome();
@@ -98,13 +99,13 @@ namespace Player.Vm.Api.Features.Files.Providers
             };
         }
 
-        // NFS path: write into the target folder(s) under BasePath. The source can only be read once,
+        // Share path: write into the target folder(s) under IsoRoot. The source can only be read once,
         // so the first scope consumes it and any remaining scopes are file-copied from the result.
-        private async Task UploadToNfs(IsoUploadRequest request, CancellationToken ct)
+        private async Task UploadToIsoRoot(IsoUploadRequest request, CancellationToken ct)
         {
             string DestFileFor(string scopeId)
             {
-                var destPath = Path.Combine(_isoUploadOptions.BasePath, request.ViewId.ToString(), scopeId);
+                var destPath = Path.Combine(IsoRoot(), request.ViewId.ToString(), scopeId);
                 Directory.CreateDirectory(destPath);
                 return Path.Combine(destPath, request.FileName);
             }
@@ -136,14 +137,14 @@ namespace Player.Vm.Api.Features.Files.Providers
 
         public async Task<IsoOperationOutcome> DeleteAsync(Guid viewId, string scopeId, string filename, CancellationToken ct)
         {
-            if (_isoUploadOptions.UploadToDatastore)
+            if (UploadViaApi)
             {
                 return await _vsphereService.DeleteIso(viewId.ToString(), scopeId, filename);
             }
 
-            // NFS path: best-effort delete; a missing file is treated as success (idempotent).
+            // Share path: best-effort delete; a missing file is treated as success (idempotent).
             var destFile = Path.Combine(
-                _isoUploadOptions.BasePath,
+                IsoRoot(),
                 viewId.ToString(),
                 scopeId,
                 filename
@@ -157,7 +158,23 @@ namespace Player.Vm.Api.Features.Files.Providers
             return new IsoOperationOutcome();
         }
 
-        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListAsync(Guid? viewId, CancellationToken ct)
+        // The share directory, or a clear failure naming the key that is missing. Checked at the point
+        // of use rather than at startup: IsoOptionsCheck logs the misconfiguration but
+        // deliberately does not block the API from booting, so this is what has to be legible when an
+        // un-migrated deployment attempts its first upload. Without it a blank IsoRoot would silently
+        // Path.Combine into a relative directory next to the process.
+        private string IsoRoot()
+        {
+            if (string.IsNullOrWhiteSpace(_vsphereOptions.IsoRoot))
+            {
+                throw new InvalidOperationException(
+                    "Vsphere:IsoRoot is required when Vsphere:UploadViaApi is false. Set it to a directory on a share the vSphere hosts also mount, or enable Vsphere:UploadViaApi to push ISOs to the datastore through vCenter's HTTP file API instead.");
+            }
+
+            return _vsphereOptions.IsoRoot;
+        }
+
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListAsync(Guid? viewId, CancellationToken ct)
         {
             // An empty listing from a provider means "this provider holds no ISOs", which the merge
             // reads as the file being MISSING here. A vCenter that is merely unreachable must not say
@@ -167,12 +184,12 @@ namespace Player.Vm.Api.Features.Files.Providers
             if (_vsphereService.GetEnabledConnectionCount() == 0)
                 throw new InvalidOperationException("No connected vSphere hosts available to list ISOs.");
 
-            return Decorate(await _vsphereService.ListIsos(viewId));
+            return await _vsphereService.ListIsos(viewId);
         }
 
-        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListForVmAsync(Guid vmId, Guid? viewId, CancellationToken ct)
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListForVmAsync(Guid vmId, Guid? viewId, CancellationToken ct)
         {
-            return Decorate(await _vsphereService.ListIsosForVm(vmId, viewId));
+            return await _vsphereService.ListIsosForVm(vmId, viewId);
         }
 
         // A datastore path names any file the datastore will serve - another View's ISO, another team's,
@@ -232,21 +249,6 @@ namespace Player.Vm.Api.Features.Files.Providers
                 : VsphereService.BuildIsoFolderRelative(baseFolder, viewId.ToString(), scopeId.ToString());
 
             return new IsoMountTarget(viewId, scopeId, filename, $"[{host.DsName}] {folder}/{filename}");
-        }
-
-        // Stamp the mount token onto a listing. VsphereService reports the folder path and filename
-        // separately because that is what the datastore browser returns; the token MountIso wants is the
-        // two concatenated, and computing it here means no client has to know that vSphere's paths
-        // already carry a trailing slash.
-        private Dictionary<Guid, IReadOnlyList<IsoFile>> Decorate(
-            IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>> isosByScope)
-        {
-            foreach (var iso in isosByScope.Values.SelectMany(x => x))
-            {
-                iso.MountValue = iso.Path + iso.Filename;
-            }
-
-            return isosByScope.ToDictionary(x => x.Key, x => x.Value);
         }
     }
 }

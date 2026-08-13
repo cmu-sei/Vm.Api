@@ -44,8 +44,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<VirtualMachineToolsStatus> GetVmToolsStatus(Guid id);
         Task<string> UploadFileToVm(Guid id, string username, string password, string filepath, Stream fileStream);
         Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath);
-        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsos(Guid? viewId = null);
-        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsosForVm(Guid vmId, Guid? viewId = null);
+        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListIsos(Guid? viewId = null);
+        Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListIsosForVm(Guid vmId, Guid? viewId = null);
         Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
         Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename);
         int GetEnabledConnectionCount();
@@ -1103,7 +1103,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         // use ListIsosForVm instead: that result is actionable and must come from the VM's own host.
         // Passing null roots the search at the base folder so every View is enumerated at once
         // ("all views" mode); passing a viewId roots it at that View's folder.
-        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsos(Guid? viewId = null)
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListIsos(Guid? viewId = null)
         {
             var connection = _connectionService.GetAllConnections()
                 .FirstOrDefault(c => c.Enabled && c.Connected && c.Client != null);
@@ -1111,25 +1111,25 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             if (connection == null)
             {
                 _logger.LogError("No connected vSphere hosts available to list ISOs.");
-                return new Dictionary<Guid, IReadOnlyList<IsoFile>>();
+                return new Dictionary<Guid, IReadOnlyList<IsoListingEntry>>();
             }
 
             return await ListIsosFromConnection(connection, viewId);
         }
 
-        // Lists ISOs visible to a specific VM, from the host that VM actually runs on. IsoFile.Path is
-        // a host-specific "[dsName] baseFolder/..." string that is handed straight back to MountIso, so
-        // on a multi-vCenter install with differing DsName/BaseFolder a path listed from some other
+        // Lists ISOs visible to a specific VM, from the host that VM actually runs on. The mount value
+        // is a host-specific "[dsName] baseFolder/..." string that is handed straight back to MountIso,
+        // so on a multi-vCenter install with differing DsName/BaseFolder a path listed from some other
         // host would not resolve for this VM. Resolving the connection from the VM keeps the mountable
         // list and the mount itself on the same host.
-        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsosForVm(Guid vmId, Guid? viewId = null)
+        public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListIsosForVm(Guid vmId, Guid? viewId = null)
         {
             var aggregate = await GetVm(vmId);
 
             if (aggregate?.Connection?.Client == null)
             {
                 _logger.LogError("Could not resolve a vSphere connection for VM {VmId} to list ISOs.", vmId);
-                return new Dictionary<Guid, IReadOnlyList<IsoFile>>();
+                return new Dictionary<Guid, IReadOnlyList<IsoListingEntry>>();
             }
 
             return await ListIsosFromConnection(aggregate.Connection, viewId);
@@ -1138,10 +1138,10 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         // Lists ISOs from one host's datastore in a SINGLE recursive datastore-browser task, keyed by
         // scope id (the leaf folder name). Shared by ListIsos and ListIsosForVm so the two entry points
         // only differ in how the connection is chosen, never in how the datastore is searched or parsed.
-        private async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>> ListIsosFromConnection(
+        private async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListIsosFromConnection(
             VsphereConnection connection, Guid? viewId)
         {
-            var byScope = new Dictionary<Guid, IReadOnlyList<IsoFile>>();
+            var byScope = new Dictionary<Guid, IReadOnlyList<IsoListingEntry>>();
 
             var dsName = connection.Host.DsName;
             // Root at the base folder for all Views, or the View folder for one View. Either way the
@@ -1190,11 +1190,15 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                 if (!byScope.TryGetValue(scopeId, out var existing))
                 {
-                    existing = new List<IsoFile>();
+                    existing = new List<IsoListingEntry>();
                     byScope[scopeId] = existing;
                 }
 
-                ((List<IsoFile>)existing).AddRange(result.file.Select(x => new IsoFile(result.folderPath, x.path)));
+                // folderPath already carries VMware's trailing slash, so the mount token is simply the
+                // two concatenated - computed here, where both parts are in hand, rather than leaving a
+                // client to know that.
+                ((List<IsoListingEntry>)existing).AddRange(
+                    result.file.Select(x => new IsoListingEntry(x.path, result.folderPath + x.path)));
             }
 
             return byScope;

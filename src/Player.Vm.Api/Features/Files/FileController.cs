@@ -50,14 +50,14 @@ namespace Player.Vm.Api.Features.Files
         }
 
         [HttpGet("views/{uuid}/isos")]
-        [ProducesResponseType(typeof(IsoResult), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(ManagedIsoResult), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "getViewIsos")]
         public async Task<IActionResult> List(Guid uuid,
             [FromServices] ListViewIsos listViewIsos, CancellationToken ct)
             => Json(await listViewIsos.HandleAsync(uuid, ct));
 
         [HttpGet("isos")]
-        [ProducesResponseType(typeof(IsoResult[]), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(ManagedIsoResult[]), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "getAllIsos")]
         public async Task<IActionResult> ListAll(
             [FromServices] ListAllIsos listAllIsos, CancellationToken ct)

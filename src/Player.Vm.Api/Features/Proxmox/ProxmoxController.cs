@@ -126,7 +126,7 @@ public class ProxmoxController : Controller
     /// Retrieve the ISOs available to mount on a Proxmox virtual machine, grouped by View and team.
     /// </summary>
     [HttpGet("vms/proxmox/{id}/isos")]
-    [ProducesResponseType(typeof(IsoResult[]), (int)HttpStatusCode.OK)]
+    [ProducesResponseType(typeof(MountableIsoResult[]), (int)HttpStatusCode.OK)]
     [SwaggerOperation(OperationId = "getProxmoxVirtualMachineIsos")]
     public async Task<IActionResult> GetIsos(
         [FromRoute] Guid id,

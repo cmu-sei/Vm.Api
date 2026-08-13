@@ -27,7 +27,7 @@ public class IsoServiceMergeTests
     private static readonly Guid ScopeA = Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa");
     private static readonly Guid ScopeB = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
 
-    // Which provider a listing came from is carried by ProviderListing, not stamped on each IsoFile -
+    // Which provider a listing came from is carried by ProviderListing, not stamped on each entry -
     // a file row has no provider identity on it at all.
     private static IsoService.ProviderListing Listing(
         VmType provider,
@@ -35,11 +35,8 @@ public class IsoServiceMergeTests
     {
         return new IsoService.ProviderListing(provider, scopes.ToDictionary(
             s => s.ScopeId,
-            s => (IReadOnlyList<IsoFile>)s.Filenames
-                .Select(f => new IsoFile($"[ds] {s.ScopeId}/", f)
-                {
-                    MountValue = $"[ds] {s.ScopeId}/{f}"
-                })
+            s => (IReadOnlyList<IsoListingEntry>)s.Filenames
+                .Select(f => new IsoListingEntry(f, $"[ds] {s.ScopeId}/{f}"))
                 .ToList()));
     }
 
@@ -72,19 +69,6 @@ public class IsoServiceMergeTests
         Assert.Empty(byName["shared.iso"].MissingProviders);
         Assert.Equal(new[] { VmType.Proxmox }, byName["vsphere-only.iso"].MissingProviders);
         Assert.Equal(new[] { VmType.Vsphere }, byName["proxmox-only.iso"].MissingProviders);
-    }
-
-    // A merged row must never carry a mount token: the file may sit on more than one hypervisor, and the
-    // Files tab does not mount. Mount pickers get their rows from BuildVmIsoResultsAsync instead.
-    [Fact]
-    public void MergedRows_CarryNoMountInformation()
-    {
-        var merged = IsoService.MergeListings(
-            new[] { Listing(VmType.Vsphere, (ScopeA, new[] { "a.iso" })) });
-
-        var file = merged[ScopeA].Single();
-        Assert.Null(file.Path);
-        Assert.Null(file.MountValue);
     }
 
     // A provider whose listing failed is excluded by the caller, so it must not turn up in
@@ -143,7 +127,8 @@ public class IsoServiceMergeTests
 
     private static readonly Guid ViewId = Guid.Parse("11111111-1111-1111-1111-111111111111");
 
-    private static IIsoProvider FakeProvider(VmType type, IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>> listing)
+    private static IIsoProvider FakeProvider(
+        VmType type, IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>> listing)
     {
         var provider = Substitute.For<IIsoProvider>();
         provider.Enabled.Returns(true);
@@ -152,7 +137,7 @@ public class IsoServiceMergeTests
         if (listing == null)
         {
             provider.ListAsync(Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
-                .Returns<Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoFile>>>>(
+                .Returns<Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>>>(
                     _ => throw new Exception($"{type} is unreachable"));
         }
         else
@@ -163,7 +148,7 @@ public class IsoServiceMergeTests
         return provider;
     }
 
-    private static Task<IsoResult[]> BuildViewIsos(params IIsoProvider[] providers)
+    private static Task<ManagedIsoResult[]> BuildViewIsos(params IIsoProvider[] providers)
     {
         var service = new IsoService(
             Substitute.For<IPlayerService>(),
@@ -207,9 +192,9 @@ public class IsoServiceMergeTests
     public async Task OneProviderFailingToList_StillReturnsTheOthersFiles()
     {
         var results = await BuildViewIsos(
-            FakeProvider(VmType.Vsphere, new Dictionary<Guid, IReadOnlyList<IsoFile>>
+            FakeProvider(VmType.Vsphere, new Dictionary<Guid, IReadOnlyList<IsoListingEntry>>
             {
-                [ViewId] = [new IsoFile(null, "a.iso")]
+                [ViewId] = [new IsoListingEntry("a.iso", "[ds] a.iso")]
             }),
             FakeProvider(VmType.Proxmox, null));
 
