@@ -12,6 +12,7 @@ using Player.Vm.Api.Domain.Proxmox.Options;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Domain.Vsphere.Models;
+using Player.Vm.Api.Features.Vms;
 
 namespace Player.Vm.Api.Features.Proxmox.Commands
 {
@@ -33,8 +34,8 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
             private readonly IProxmoxService _proxmoxService;
             private readonly ProxmoxOptions _options;
 
-            public Handler(VmContext db, IPlayerService playerService, IProxmoxService proxmoxService, ProxmoxOptions options)
-                : base(db, playerService)
+            public Handler(VmContext db, IPlayerService playerService, IVmService vmService, IProxmoxService proxmoxService, ProxmoxOptions options)
+                : base(db, playerService, vmService)
             {
                 _proxmoxService = proxmoxService;
                 _options = options;

@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
@@ -26,6 +27,22 @@ public class ProxmoxController : Controller
     public ProxmoxController(IMediator mediator)
     {
         _mediator = mediator;
+    }
+
+    /// <summary>
+    /// Retrieve a Proxmox virtual machine, including its network adapter configuration.
+    /// </summary>
+    [HttpGet("vms/proxmox/{id}")]
+    [ProducesResponseType(typeof(ProxmoxVirtualMachine), (int)HttpStatusCode.OK)]
+    [SwaggerOperation(OperationId = "getProxmoxVirtualMachine")]
+    public async Task<IActionResult> GetVirtualMachine(
+        [FromRoute] Guid id,
+        CancellationToken cancellationToken)
+    {
+        var result = await _mediator.Send(
+            new Get.Query { Id = id },
+            cancellationToken);
+        return Json(result);
     }
 
     /// <summary>
@@ -85,6 +102,22 @@ public class ProxmoxController : Controller
     public async Task<IActionResult> Shutdown([FromRoute] Guid id)
     {
         var result = await _mediator.Send(new Shutdown.Command { Id = id });
+        return Json(result);
+    }
+
+    /// <summary>
+    /// Change the network of a Proxmox virtual machine's network adapter.
+    /// </summary>
+    [HttpPost("vms/proxmox/{id}/actions/change-network")]
+    [ProducesResponseType(typeof(ProxmoxVirtualMachine), (int)HttpStatusCode.OK)]
+    [SwaggerOperation(OperationId = "changeProxmoxVirtualMachineNetwork")]
+    public async Task<IActionResult> ChangeNetwork(
+        [FromRoute] Guid id,
+        [FromBody] ChangeNetwork.Command command,
+        CancellationToken cancellationToken)
+    {
+        command.Id = id;
+        var result = await _mediator.Send(command, cancellationToken);
         return Json(result);
     }
 

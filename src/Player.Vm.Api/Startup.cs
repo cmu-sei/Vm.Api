@@ -322,6 +322,7 @@ public class Startup
         services.AddSingleton<ProxmoxTaskService>();
         services.AddSingleton<IHostedService>(x => x.GetService<ProxmoxTaskService>());
         services.AddSingleton<IProxmoxTaskService>(x => x.GetService<ProxmoxTaskService>());
+        services.AddScoped<Features.Proxmox.IProxmoxVmNetworkService, Features.Proxmox.ProxmoxVmNetworkService>();
 
         services.AddFeatureHandlers();
         services.AddAutoMapper(typeof(Startup));
