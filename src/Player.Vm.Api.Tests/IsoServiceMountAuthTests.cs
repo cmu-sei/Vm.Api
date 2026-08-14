@@ -23,10 +23,12 @@ namespace Player.Vm.Api.Tests;
 
 // Who may mount which ISO on which VM, and the picker that has to agree with that answer.
 //
-// Mounting publishes an ISO's contents to everyone who can reach the VM's console - the VM's teams -
-// so the scope encoded in the submitted value is checked against the VM first and the caller second.
-// The provider decoders (ProxmoxIsoProviderTests / VsphereIsoProviderTests) cover turning a string
-// into a scope; these cover what is done with the scope once it is known.
+// The scope encoded in the submitted value is checked for being reachable from the VM - its View
+// contains the VM, its team is in that View - and then against the caller's rights over it. The
+// scope's team need not be one of the VM's: publishing one team's ISO to another's console is a
+// choice left to a caller authorized over both. The provider decoders (ProxmoxIsoProviderTests /
+// VsphereIsoProviderTests) cover turning a string into a scope; these cover what is done with the
+// scope once it is known.
 public class IsoServiceMountAuthTests
 {
     private static readonly Guid VmId = Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd");
@@ -112,13 +114,25 @@ public class IsoServiceMountAuthTests
         await AssertRefused(TeamA);
     }
 
-    // The over-permissive gap the listing-based whitelist had: a caller in both teams could mount team
-    // B's ISO into a team-A-only VM, exposing it to all of team A.
+    // The reason the VM's teams are not the test: an admin holding rights over both teams may mount
+    // their own team's ISO on a student team's VM. It reaches that VM's console because they chose to
+    // publish it there, which is theirs to choose.
     [Fact]
-    public async Task TeamScopedIso_OnATeamTheCallerIsInButTheVmIsNot_IsRefused()
+    public async Task TeamScopedIso_OnATeamTheCallerMayEditButTheVmIsNotOn_IsAllowed()
     {
         Decodes(ViewId, TeamB);
         CallerCanEdit(TeamA, TeamB);
+
+        Assert.Equal(Token, await Mount(TeamA));
+    }
+
+    // Rights over the VM's own team are not rights over the team whose ISO is being mounted, so the
+    // widened rule above still turns on a check of the scope's team specifically.
+    [Fact]
+    public async Task TeamScopedIso_OnATeamTheCallerMayNotEdit_IsRefused_EvenWithRightsOnTheVmsTeam()
+    {
+        Decodes(ViewId, TeamB);
+        CallerCanEdit(TeamA);
 
         await AssertRefused(TeamA);
     }
@@ -198,6 +212,13 @@ public class IsoServiceMountAuthTests
             .Returns(teamIds.Select(id => new Team { Id = id, Name = $"team-{id.ToString()[..4]}" }));
     }
 
+    // The privileged all-teams listing: every team in the View, whether or not the caller is a member.
+    private void ViewHasTeams(Guid viewId, params Guid[] teamIds)
+    {
+        _playerService.GetAllTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>())
+            .Returns(teamIds.Select(id => new Team { Id = id, Name = $"all-{id.ToString()[..4]}" }));
+    }
+
     private void ViewExists(Guid viewId)
     {
         _playerService.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>())
@@ -255,10 +276,10 @@ public class IsoServiceMountAuthTests
         Assert.Equal(TeamA.ToString(), team.Name);   // degraded to an id-only row rather than dropped
     }
 
-    // The mirror of the over-permissive mount case: a team of the caller's that the VM is not on is not
-    // the VM's to expose, so the picker must not offer it either.
+    // The reported bug: an admin on a team the VM is not on could not see their own team's ISOs. The
+    // mount now accepts that scope, so the picker has to offer it.
     [Fact]
-    public async Task Picker_OmitsACallerTeamTheVmIsNotOn()
+    public async Task Picker_OffersACallerTeamTheVmIsNotOn()
     {
         ViewExists(ViewId);
         CallerIsIn(ViewId, TeamA, TeamB);
@@ -266,7 +287,71 @@ public class IsoServiceMountAuthTests
 
         var teams = Assert.Single(await ResolveViewTeams(TeamA)).Teams;
 
+        Assert.Equal(new[] { TeamA, TeamB }, teams.Select(t => t.Id).OrderBy(id => id.ToString()).ToArray());
+    }
+
+    // Membership is not the test - CanUseTeamIsoAsync is - so a caller scoped into a team without being
+    // a member of it gets its ISOs. Only the privileged listing knows the team exists.
+    [Fact]
+    public async Task Picker_OffersATeamTheCallerIsOnlyScopedInto()
+    {
+        ViewExists(ViewId);
+        CallerIsIn(ViewId);   // no memberships at all
+        ViewHasTeams(ViewId, TeamA, TeamB);
+        CallerCanEdit(TeamB);
+
+        var team = Assert.Single(Assert.Single(await ResolveViewTeams(TeamA)).Teams);
+
+        Assert.Equal(TeamB, team.Id);
+        Assert.Equal("all-bbbb", team.Name);
+    }
+
+    // Widening the candidates to the whole View does not widen who may use them.
+    [Fact]
+    public async Task Picker_OmitsAViewTeamTheCallerMayNotEdit()
+    {
+        ViewExists(ViewId);
+        CallerIsIn(ViewId, TeamA);
+        ViewHasTeams(ViewId, TeamA, TeamB);
+        CallerCanEdit(TeamA);
+
+        var teams = Assert.Single(await ResolveViewTeams(TeamA)).Teams;
+
         Assert.Equal(TeamA, Assert.Single(teams).Id);
+    }
+
+    // A refusal from the privileged listing must not lose a team the caller is a member of, which is the
+    // case the reported bug was about.
+    [Fact]
+    public async Task Picker_StillOffersACallerTeam_WhenTheAllTeamsListingIsRefused()
+    {
+        ViewExists(ViewId);
+        CallerIsIn(ViewId, TeamA, TeamB);
+        CallerCanEdit(TeamA, TeamB);
+        _playerService.GetAllTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
+            .Returns<IEnumerable<Team>>(_ => throw new Exception("403 from player.api"));
+
+        var teams = Assert.Single(await ResolveViewTeams(TeamA)).Teams;
+
+        Assert.Equal(new[] { TeamA, TeamB }, teams.Select(t => t.Id).OrderBy(id => id.ToString()).ToArray());
+    }
+
+    // Candidate order is player.api's listing order, so the rows are sorted by name to keep a team in the
+    // same place in the picker from one View to the next.
+    [Fact]
+    public async Task Picker_SortsTeamsByName()
+    {
+        ViewExists(ViewId);
+        CallerIsIn(ViewId);
+        _playerService.GetAllTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
+            .Returns([
+                new Team { Id = TeamB, Name = "student" },
+                new Team { Id = TeamA, Name = "Admin" }]);
+        CallerCanEdit(TeamA, TeamB);
+
+        var teams = Assert.Single(await ResolveViewTeams(TeamB)).Teams;
+
+        Assert.Equal(new[] { "Admin", "student" }, teams.Select(t => t.Name).ToArray());
     }
 
     // A team offering nothing still leaves the View's own public ISOs mountable, so the View stays as
