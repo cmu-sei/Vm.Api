@@ -30,7 +30,8 @@ namespace Player.Vm.Api.Features.Files.Requests
 
         public async Task<IsoUploadResult> HandleAsync(Guid viewId, IFormFile file, string scope, long reportedSize, IReadOnlyList<Guid> teamIds, CancellationToken ct)
         {
-            var filename = _isoService.SanitizeFilename(file.Name);
+            var filename = _isoService.SanitizeFilename(
+                string.IsNullOrWhiteSpace(file.FileName) ? file.Name : file.FileName);
 
             // Cheap pre-flight check on the client-reported size, plus an authoritative check on the
             // actual uploaded byte count - the form value is client-controlled and must not be trusted.
