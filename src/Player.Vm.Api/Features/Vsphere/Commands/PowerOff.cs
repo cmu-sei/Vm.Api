@@ -19,7 +19,7 @@ namespace Player.Vm.Api.Features.Vsphere
     public class PowerOff
     {
         [DataContract(Name = "PowerOffVsphereVirtualMachine")]
-        public class Command : IRequest<string>, ICheckTasksRequest
+        public class Command : IRequest<string>, ICheckVsphereTasksRequest
         {
             [JsonIgnore]
             public Guid Id { get; set; }

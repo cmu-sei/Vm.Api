@@ -30,6 +30,12 @@ namespace Player.Vm.Api.Features.Proxmox
         {
             public string Ticket { get; init; }
             public string Url { get; init; }
+
+            /// <summary>
+            /// The live power state of the virtual machine. When this is anything other than On,
+            /// Ticket and Url are null because there is no console to connect to.
+            /// </summary>
+            public Domain.Models.PowerState PowerState { get; init; }
         }
 
         public class Handler : IRequestHandler<Query, ProxmoxConsole>

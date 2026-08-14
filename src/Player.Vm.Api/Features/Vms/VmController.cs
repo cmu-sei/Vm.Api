@@ -9,7 +9,6 @@ using System.Net;
 using System.Threading;
 using System.Threading.Tasks;
 using Swashbuckle.AspNetCore.Annotations;
-using Player.Vm.Api.Domain.Vsphere.Models;
 using MediatR;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Infrastructure.Authorization;

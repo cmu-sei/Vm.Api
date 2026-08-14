@@ -4,17 +4,19 @@
 
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 using Player.Api.Client;
+using Player.Vm.Api.Domain.Proxmox.Options;
 using Player.Vm.Api.Features.Shared.Interfaces;
 using Player.Vm.Api.Infrastructure.HttpHandlers;
 using Player.Vm.Api.Infrastructure.OperationFilters;
 using Player.Vm.Api.Infrastructure.Options;
-using Swashbuckle.AspNetCore.SwaggerGen;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
@@ -90,7 +92,32 @@ namespace Player.Vm.Api.Infrastructure.Extensions
             services.AddIdentityClient(identityClientOptions);
             services.AddPlayerClient(clientOptions);
             services.AddDatastoreClient(isoUploadOptions);
+            services.AddProxmoxClient();
             services.AddTransient<AuthenticatingHandler>();
+        }
+
+        // Named HttpClient for the Corsinvest PveClient. Given none, it news up an HttpClient and
+        // HttpClientHandler of its own and never disposes either; ProxmoxService is scoped, so that
+        // leaks a socket pool per request and never picks up a DNS change. Both settings below are
+        // applied by PveClientBase only to that internal handler, so injecting a client means
+        // replicating them here or losing them silently.
+        private static void AddProxmoxClient(this IServiceCollection services)
+        {
+            services.AddHttpClient("proxmox")
+                .ConfigurePrimaryHttpMessageHandler(sp =>
+                {
+                    // IOptionsMonitor rather than ProxmoxOptions: the latter is registered Scoped
+                    // (Startup.cs), and this factory runs outside any scope.
+                    var proxmoxOptions = sp.GetRequiredService<IOptionsMonitor<ProxmoxOptions>>().CurrentValue;
+
+                    return new HttpClientHandler
+                    {
+                        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                        ServerCertificateCustomValidationCallback = proxmoxOptions.ValidateCertificate
+                            ? null
+                            : (_, _, _, _) => true
+                    };
+                });
         }
 
         // Named HttpClient used to PUT ISOs directly to a vSphere datastore (UploadToDatastore mode).

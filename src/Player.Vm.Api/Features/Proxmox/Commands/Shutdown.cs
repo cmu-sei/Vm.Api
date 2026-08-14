@@ -17,7 +17,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
     public class Shutdown
     {
         [DataContract(Name = "ShutdownProxmoxVirtualMachine")]
-        public class Command : IRequest<string>, ICheckTasksRequest
+        public class Command : IRequest<string>, ICheckProxmoxTasksRequest
         {
             [JsonIgnore]
             public Guid Id { get; set; }
