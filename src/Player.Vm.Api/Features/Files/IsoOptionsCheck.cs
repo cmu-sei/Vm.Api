@@ -27,15 +27,15 @@ namespace Player.Vm.Api.Features.Files;
 internal static class IsoOptionsCheck
 {
     private const string NewIsoRoot = "Vsphere:IsoRoot";
-    private const string NewUploadViaApi = "Vsphere:UploadViaApi";
+    private const string NewIsoUploadViaApi = "Vsphere:IsoUploadViaApi";
 
     public static void Log(IConfiguration configuration, ILogger logger)
     {
         CheckMovedKey(configuration, logger, "IsoUpload:BasePath", NewIsoRoot, "IsoUpload__BasePath", "Vsphere__IsoRoot");
-        CheckMovedKey(configuration, logger, "IsoUpload:UploadToDatastore", NewUploadViaApi, "IsoUpload__UploadToDatastore", "Vsphere__UploadViaApi");
+        CheckMovedKey(configuration, logger, "IsoUpload:UploadToDatastore", NewIsoUploadViaApi, "IsoUpload__UploadToDatastore", "Vsphere__IsoUploadViaApi");
 
         // No check for Proxmox:UploadToStorage: Proxmox ISO support is unreleased, so no deployment can
-        // have set it and its rename to Proxmox:UploadViaApi is invisible from outside this branch.
+        // have set it and its rename to Proxmox:IsoUploadViaApi is invisible from outside this branch.
         CheckIneffectiveVsphereSettings(configuration, logger);
     }
 
@@ -83,7 +83,7 @@ internal static class IsoOptionsCheck
     // because it usually means the value landed under the wrong provider's section.
     private static void CheckIneffectiveVsphereSettings(IConfiguration configuration, ILogger logger)
     {
-        if (!HasValue(configuration, NewIsoRoot) && !HasValue(configuration, NewUploadViaApi))
+        if (!HasValue(configuration, NewIsoRoot) && !HasValue(configuration, NewIsoUploadViaApi))
             return;
 
         var vsphere = new VsphereOptions();
@@ -93,8 +93,8 @@ internal static class IsoOptionsCheck
             return;
 
         logger.LogWarning(
-            "'{IsoRoot}' / '{UploadViaApi}' are set but no enabled vSphere host has an address, so they have no effect. Proxmox ISO storage is configured with 'Proxmox:IsoRoot' and 'Proxmox:UploadViaApi'.",
-            NewIsoRoot, NewUploadViaApi);
+            "'{IsoRoot}' / '{IsoUploadViaApi}' are set but no enabled vSphere host has an address, so they have no effect. Proxmox ISO storage is configured with 'Proxmox:IsoRoot' and 'Proxmox:IsoUploadViaApi'.",
+            NewIsoRoot, NewIsoUploadViaApi);
     }
 
     // Trimmed and case-insensitive because a moved key's two names are the same setting spelled twice:

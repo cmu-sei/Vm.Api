@@ -35,7 +35,7 @@ public class VsphereIsoProviderTests
 
     // One usable host, writing through vCenter's HTTP file API instead of a share.
     private static VsphereOptions ApiOptions() =>
-        new() { Hosts = [GoodHost()], UploadViaApi = true };
+        new() { Hosts = [GoodHost()], IsoUploadViaApi = true };
 
     [Fact]
     public void Provider_IdentifiesItsHypervisorTypeAndNothingElse()
@@ -92,10 +92,10 @@ public class VsphereIsoProviderTests
     [Theory]
     [InlineData(true, true)]
     [InlineData(false, false)]
-    public void RequiresStagedFile_TracksTheWriteMode(bool uploadViaApi, bool expected)
+    public void RequiresStagedFile_TracksTheWriteMode(bool isoUploadViaApi, bool expected)
     {
         var options = WithHosts(GoodHost());
-        options.UploadViaApi = uploadViaApi;
+        options.IsoUploadViaApi = isoUploadViaApi;
 
         Assert.Equal(expected, Provider(options).RequiresStagedFile);
     }

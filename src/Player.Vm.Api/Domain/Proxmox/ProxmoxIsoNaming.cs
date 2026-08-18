@@ -29,7 +29,7 @@ namespace Player.Vm.Api.Domain.Proxmox
 
         // Characters PVE's storage upload API leaves alone. Everything else it rewrites to '_', so a
         // name pushed through that API comes back changed unless it is already within this set. Both
-        // write modes normalize, not just the API one, so switching UploadViaApi does not orphan
+        // write modes normalize, not just the API one, so switching IsoUploadViaApi does not orphan
         // the files already written under the other mode's naming.
         [GeneratedRegex(@"[^-a-zA-Z0-9_.]")]
         private static partial Regex Disallowed();

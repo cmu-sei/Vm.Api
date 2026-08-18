@@ -34,15 +34,15 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
         public string IsoStorage { get; set; }
 
         // True to push ISOs through PVE's own storage upload API; null or false (default) to write
-        // them into IsoRoot. The vSphere equivalent is Vsphere:UploadViaApi, so a mixed deployment can
-        // pair, say, vSphere-over-NFS with Proxmox-over-API.
+        // them into IsoRoot. The vSphere equivalent is Vsphere:IsoUploadViaApi, so a mixed deployment
+        // can pair, say, vSphere-over-NFS with Proxmox-over-API.
         //
-        // Nullable for the same reason as Vsphere:UploadViaApi: a blank value has to read as unset
+        // Nullable for the same reason as Vsphere:IsoUploadViaApi: a blank value has to read as unset
         // rather than throwing in the configuration binder.
-        public bool? UploadViaApi { get; set; }
+        public bool? IsoUploadViaApi { get; set; }
 
         // Local path that is a mount of IsoStorage's template/iso directory. Required when
-        // UploadViaApi is false. No rescan is needed after writing here - PVE re-reads the directory
+        // IsoUploadViaApi is false. No rescan is needed after writing here - PVE re-reads the directory
         // the next time its content index is queried.
         public string IsoRoot { get; set; }
 

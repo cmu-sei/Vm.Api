@@ -45,7 +45,7 @@ public interface IProxmoxIsoStorageService
     Task<IReadOnlyList<ProxmoxIsoVolume>> ListIsosForVm(Guid vmId, CancellationToken cancellationToken);
 
     /// <summary>
-    /// Pushes a local file to the ISO storage through PVE's own upload API (UploadViaApi mode).
+    /// Pushes a local file to the ISO storage through PVE's own upload API (IsoUploadViaApi mode).
     /// Overwrites an existing file of the same name.
     /// </summary>
     Task UploadIso(string encodedFileName, string localFilePath, CancellationToken cancellationToken);

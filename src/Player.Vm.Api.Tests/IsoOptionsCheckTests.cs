@@ -64,14 +64,14 @@ public class IsoOptionsCheckTests
     {
         // The state every deployment should end up in - and the state the dev config is already in, so a
         // clean boot has to stay clean or the log stops meaning anything.
-        var logger = Run(With(EnabledHost(), [("Vsphere:IsoRoot", "player/isos"), ("Vsphere:UploadViaApi", "true")]));
+        var logger = Run(With(EnabledHost(), [("Vsphere:IsoRoot", "player/isos"), ("Vsphere:IsoUploadViaApi", "true")]));
 
         Assert.Empty(logger.Entries);
     }
 
     [Theory]
     [InlineData("IsoUpload:BasePath", "Vsphere:IsoRoot", "Vsphere__IsoRoot")]
-    [InlineData("IsoUpload:UploadToDatastore", "Vsphere:UploadViaApi", "Vsphere__UploadViaApi")]
+    [InlineData("IsoUpload:UploadToDatastore", "Vsphere:IsoUploadViaApi", "Vsphere__IsoUploadViaApi")]
     public void ALegacyKeyWithNoReplacement_IsAnErrorNamingTheNewEnvVar(
         string oldKey,
         string newKey,
@@ -87,7 +87,7 @@ public class IsoOptionsCheckTests
 
     [Theory]
     [InlineData("IsoUpload:BasePath", "Vsphere:IsoRoot", "player/isos", "IsoUpload__BasePath")]
-    [InlineData("IsoUpload:UploadToDatastore", "Vsphere:UploadViaApi", "true", "IsoUpload__UploadToDatastore")]
+    [InlineData("IsoUpload:UploadToDatastore", "Vsphere:IsoUploadViaApi", "true", "IsoUpload__UploadToDatastore")]
     public void ALegacyKeyAgreeingWithItsReplacement_IsOnlyAWarningToTidyUp(
         string oldKey,
         string newKey,
@@ -105,7 +105,7 @@ public class IsoOptionsCheckTests
 
     [Theory]
     [InlineData("IsoUpload:BasePath", "Vsphere:IsoRoot", "player/isos", "Vsphere__IsoRoot")]
-    [InlineData("IsoUpload:UploadToDatastore", "Vsphere:UploadViaApi", "false", "Vsphere__UploadViaApi")]
+    [InlineData("IsoUpload:UploadToDatastore", "Vsphere:IsoUploadViaApi", "false", "Vsphere__IsoUploadViaApi")]
     public void ALegacyKeyDisagreeingWithItsReplacement_IsAnErrorNamingBothValues(
         string oldKey,
         string newKey,
@@ -126,7 +126,7 @@ public class IsoOptionsCheckTests
     }
 
     [Theory]
-    [InlineData("IsoUpload:UploadToDatastore", "Vsphere:UploadViaApi", "true", "True")]  // bool spelled two ways
+    [InlineData("IsoUpload:UploadToDatastore", "Vsphere:IsoUploadViaApi", "true", "True")]  // bool spelled two ways
     [InlineData("IsoUpload:BasePath", "Vsphere:IsoRoot", "player/isos", " player/isos ")]
     public void AgreementIgnoresCaseAndSurroundingWhitespace(
         string oldKey,
@@ -146,7 +146,7 @@ public class IsoOptionsCheckTests
     public void ABlankReplacement_CountsAsUnset()
     {
         // An environment-variable deployment cannot remove a key, only blank it, so a blank has to read
-        // as "not configured" here - the same contract that makes the UploadViaApi options nullable.
+        // as "not configured" here - the same contract that makes the IsoUploadViaApi options nullable.
         var logger = Run(With(EnabledHost(), [("IsoUpload:BasePath", "/app/isos/player"), ("Vsphere:IsoRoot", "")]));
 
         var entry = Assert.Single(logger.Entries, e => e.Message.Contains("IsoUpload:BasePath"));
@@ -159,7 +159,7 @@ public class IsoOptionsCheckTests
     public void VsphereIsoSettingsWithNoUsableHost_AreReportedAsIneffective(string enabled, string address)
     {
         // Usually means the value landed under the wrong provider's section - Proxmox ISO storage has its
-        // own IsoRoot and UploadViaApi, so the message names them.
+        // own IsoRoot and IsoUploadViaApi, so the message names them.
         var logger = Run(
             ("Vsphere:IsoRoot", "player/isos"),
             ("Vsphere:Hosts:0:Enabled", enabled),
@@ -175,7 +175,7 @@ public class IsoOptionsCheckTests
     public void NoVsphereIsoSettingsAtAll_IsNotReportedAsIneffective()
     {
         // A Proxmox-only install never set these, so it has nothing to be warned about.
-        var logger = Run(("Proxmox:IsoStorage", "nfs"), ("Proxmox:UploadViaApi", "true"));
+        var logger = Run(("Proxmox:IsoStorage", "nfs"), ("Proxmox:IsoUploadViaApi", "true"));
 
         Assert.Empty(logger.Entries);
     }

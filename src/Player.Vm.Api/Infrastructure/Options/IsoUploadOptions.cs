@@ -6,7 +6,7 @@ namespace Player.Vm.Api.Infrastructure.Options
     /// <summary>
     /// The shared ISO upload pipeline: the limits and staging every provider's write goes through.
     /// Where the bytes end up is per-provider and lives under that provider's own section -
-    /// Vsphere:UploadViaApi / Vsphere:IsoRoot and Proxmox:UploadViaApi / Proxmox:IsoRoot.
+    /// Vsphere:IsoUploadViaApi / Vsphere:IsoRoot and Proxmox:IsoUploadViaApi / Proxmox:IsoRoot.
     /// </summary>
     public class IsoUploadOptions
     {

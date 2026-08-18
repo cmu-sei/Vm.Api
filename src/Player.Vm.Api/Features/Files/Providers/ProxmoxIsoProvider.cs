@@ -18,12 +18,12 @@ using Player.Vm.Api.Infrastructure.Exceptions;
 
 namespace Player.Vm.Api.Features.Files.Providers
 {
-    // Proxmox ISO storage. Two write modes, chosen with ProxmoxOptions.UploadViaApi:
+    // Proxmox ISO storage. Two write modes, chosen with ProxmoxOptions.IsoUploadViaApi:
     //  - false (the default): write the file into IsoRoot, a local mount of the storage's template/iso
     //    directory. PVE re-reads that directory whenever its content index is queried, so nothing has
     //    to be told the file arrived.
     //  - true: push the bytes through PVE's own storage upload API. Needed where vm.api cannot mount the
-    //    storage. Separate from Vsphere:UploadViaApi so a mixed deployment can pair, say,
+    //    storage. Separate from Vsphere:IsoUploadViaApi so a mixed deployment can pair, say,
     //    vSphere-over-NFS with Proxmox-over-API.
     //
     // Listing goes through PVE either way, since PVE is the only thing that knows the volume ids a mount
@@ -67,17 +67,17 @@ namespace Player.Vm.Api.Features.Files.Providers
         public bool Enabled =>
             _proxmoxOptions.Enabled && !string.IsNullOrWhiteSpace(_proxmoxOptions.IsoStorage);
 
-        // Unset - which includes blank, see ProxmoxOptions.UploadViaApi - is the IsoRoot mode.
-        private bool UploadViaApi => _proxmoxOptions.UploadViaApi == true;
+        // Unset - which includes blank, see ProxmoxOptions.IsoUploadViaApi - is the IsoRoot mode.
+        private bool IsoUploadViaApi => _proxmoxOptions.IsoUploadViaApi == true;
 
         // The upload API sends a multipart body it has to be able to measure, so it needs a real file;
         // an IsoRoot write can take the request body as it streams.
-        public bool RequiresStagedFile => UploadViaApi;
+        public bool RequiresStagedFile => IsoUploadViaApi;
 
         // PVE's upload API rewrites anything outside [-a-zA-Z0-9_.] to '_'. Applying that ourselves, in
         // both write modes, keeps the name we store equal to the name delete and mount rebuild from
         // (viewId, scopeId, filename) - and keeps the two write modes agreeing about naming, so flipping
-        // UploadViaApi does not orphan the files already there.
+        // IsoUploadViaApi does not orphan the files already there.
         public string NormalizeFilename(string filename) => ProxmoxIsoNaming.Normalize(filename);
 
         public void ValidateFilename(Guid viewId, string scopeId, string filename)
@@ -109,7 +109,7 @@ namespace Player.Vm.Api.Features.Files.Providers
             {
                 var encodedName = Encode(request.ViewId, scopeId, request.FileName);
 
-                if (UploadViaApi)
+                if (IsoUploadViaApi)
                 {
                     // RequiresStagedFile is true in this mode, so IsoService always hands us a file.
                     if (request.StagedFilePath == null)
@@ -156,7 +156,7 @@ namespace Player.Vm.Api.Features.Files.Providers
         {
             var encodedName = Encode(viewId, scopeId, filename);
 
-            if (UploadViaApi)
+            if (IsoUploadViaApi)
             {
                 await _isoStorageService.DeleteIso(encodedName, ct);
             }
@@ -290,16 +290,16 @@ namespace Player.Vm.Api.Features.Files.Providers
             // PVE's upload API rewrites anything outside [-a-zA-Z0-9_.], which would silently mangle the
             // separator and make every uploaded ISO undecodable. Only enforced in the mode that goes
             // through that API; an IsoRoot write stores whatever it is given.
-            if (UploadViaApi && !ProxmoxIsoNaming.SurvivesUpload(separator))
+            if (IsoUploadViaApi && !ProxmoxIsoNaming.SurvivesUpload(separator))
             {
                 throw new InvalidOperationException(
-                    $"Proxmox:IsoScopeSeparator '{separator}' cannot be used with Proxmox:UploadViaApi, because Proxmox's upload API rewrites any character outside [-a-zA-Z0-9_.]. Use '__'.");
+                    $"Proxmox:IsoScopeSeparator '{separator}' cannot be used with Proxmox:IsoUploadViaApi, because Proxmox's upload API rewrites any character outside [-a-zA-Z0-9_.]. Use '__'.");
             }
 
-            if (!UploadViaApi && string.IsNullOrWhiteSpace(_proxmoxOptions.IsoRoot))
+            if (!IsoUploadViaApi && string.IsNullOrWhiteSpace(_proxmoxOptions.IsoRoot))
             {
                 throw new InvalidOperationException(
-                    "Proxmox:IsoRoot is required when Proxmox:UploadViaApi is false. Set it to a local mount of the ISO storage's template/iso directory, or enable Proxmox:UploadViaApi to push ISOs through Proxmox's API instead.");
+                    "Proxmox:IsoRoot is required when Proxmox:IsoUploadViaApi is false. Set it to a local mount of the ISO storage's template/iso directory, or enable Proxmox:IsoUploadViaApi to push ISOs through Proxmox's API instead.");
             }
         }
     }

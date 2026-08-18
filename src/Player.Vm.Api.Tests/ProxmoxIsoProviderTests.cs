@@ -72,10 +72,10 @@ public class ProxmoxIsoProviderTests
     [Theory]
     [InlineData(true, true)]
     [InlineData(false, false)]
-    public void RequiresStagedFile_TracksTheWriteMode(bool uploadViaApi, bool expected)
+    public void RequiresStagedFile_TracksTheWriteMode(bool isoUploadViaApi, bool expected)
     {
         var options = EnabledOptions();
-        options.UploadViaApi = uploadViaApi;
+        options.IsoUploadViaApi = isoUploadViaApi;
 
         Assert.Equal(expected, Provider(options).RequiresStagedFile);
     }
@@ -150,7 +150,7 @@ public class ProxmoxIsoProviderTests
     public void Construction_ThrowsWhenTheSeparatorWouldNotSurvivePvesUploadApi()
     {
         var options = EnabledOptions();
-        options.UploadViaApi = true;
+        options.IsoUploadViaApi = true;
         options.IsoScopeSeparator = "#";
 
         var ex = Assert.Throws<InvalidOperationException>(() => Provider(options));
@@ -253,7 +253,7 @@ public class ProxmoxIsoProviderTests
 
     // ---- The two write modes ----
     //
-    // Both have to agree about the stored name, because flipping UploadViaApi on an existing
+    // Both have to agree about the stored name, because flipping IsoUploadViaApi on an existing
     // deployment must not orphan the files already on the storage.
 
     private const string EncodedName =
@@ -301,7 +301,7 @@ public class ProxmoxIsoProviderTests
     public async Task Upload_InStorageApiMode_PushesTheScopedNameThroughTheStorageService()
     {
         var options = EnabledOptions();
-        options.UploadViaApi = true;
+        options.IsoUploadViaApi = true;
         var storage = Substitute.For<IProxmoxIsoStorageService>();
 
         await Provider(options, storage).UploadAsync(Request("/tmp/staged.iso"), CancellationToken.None);
@@ -315,7 +315,7 @@ public class ProxmoxIsoProviderTests
     public async Task Upload_InStorageApiMode_RefusesToUploadWithoutAStagedFile()
     {
         var options = EnabledOptions();
-        options.UploadViaApi = true;
+        options.IsoUploadViaApi = true;
         var storage = Substitute.For<IProxmoxIsoStorageService>();
 
         await Assert.ThrowsAsync<InvalidOperationException>(
@@ -369,7 +369,7 @@ public class ProxmoxIsoProviderTests
     public async Task Delete_InStorageApiMode_DeletesTheScopedNameThroughTheStorageService()
     {
         var options = EnabledOptions();
-        options.UploadViaApi = true;
+        options.IsoUploadViaApi = true;
         var storage = Substitute.For<IProxmoxIsoStorageService>();
 
         await Provider(options, storage).DeleteAsync(
@@ -386,7 +386,7 @@ public class ProxmoxIsoProviderTests
     public async Task Delete_NormalizesALegacyNameInternally()
     {
         var options = EnabledOptions();
-        options.UploadViaApi = true;
+        options.IsoUploadViaApi = true;
         var storage = Substitute.For<IProxmoxIsoStorageService>();
 
         await Provider(options, storage).DeleteAsync(

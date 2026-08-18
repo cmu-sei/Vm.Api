@@ -14,10 +14,13 @@ using Player.Vm.Api.Domain.Vsphere.Services;
 
 namespace Player.Vm.Api.Features.Files.Providers
 {
-    // vSphere ISO storage. Two write modes, chosen with VsphereOptions.UploadViaApi:
-    //  - true: stream to every connected vCenter's datastore over its HTTP file API. Used by VMware
-    //    Cloud on AWS SDDCs, which have no NFS datastore.
-    //  - false (the default): write into {IsoRoot}/{viewId}/{scopeId} on a share the hosts mount.
+    // vSphere ISO storage. Two write modes, chosen with VsphereOptions.IsoUploadViaApi:
+    //  - true: stream to every connected vCenter's datastore over its HTTP file API, landing at
+    //    "[{DsName}] {BaseFolder}/{viewId}/{scopeId}/{filename}" on each host's own datastore. Used by
+    //    VMware Cloud on AWS SDDCs, which have no NFS datastore.
+    //  - false (the default): write into {IsoRoot}/{viewId}/{scopeId} on a share the hosts mount, which
+    //    has to be the share that surfaces as "[{DsName}] {BaseFolder}" - listing browses the datastore
+    //    in both modes, so the two layouts are the same layout reached two ways.
     //
     // Scoping is the datastore folder hierarchy, so any filename that is legal on the filesystem is
     // legal here and ValidateFilename has nothing to check.
@@ -49,13 +52,13 @@ namespace Player.Vm.Api.Features.Files.Providers
         public bool Enabled =>
             _vsphereOptions.Hosts?.Any(h => h.Enabled && !string.IsNullOrWhiteSpace(h.Address)) == true;
 
-        // Unset - which includes blank, see VsphereOptions.UploadViaApi - is the IsoRoot mode.
-        private bool UploadViaApi => _vsphereOptions.UploadViaApi == true;
+        // Unset - which includes blank, see VsphereOptions.IsoUploadViaApi - is the IsoRoot mode.
+        private bool IsoUploadViaApi => _vsphereOptions.IsoUploadViaApi == true;
 
         // The datastore path needs a seekable local file to stream to each host; the IsoRoot path can
         // take the request body directly, which is what keeps single-scope share uploads free of any
         // temp-space requirement.
-        public bool RequiresStagedFile => UploadViaApi;
+        public bool RequiresStagedFile => IsoUploadViaApi;
 
         // Identity. Folding names here would silently rename files for vSphere-only installs, which have
         // no reason to accept a narrower character set than the filesystem does.
@@ -68,7 +71,7 @@ namespace Player.Vm.Api.Features.Files.Providers
 
         public async Task<IsoOperationOutcome> UploadAsync(IsoUploadRequest request, CancellationToken ct)
         {
-            if (UploadViaApi)
+            if (IsoUploadViaApi)
             {
                 return await UploadToDatastore(request, ct);
             }
@@ -137,7 +140,7 @@ namespace Player.Vm.Api.Features.Files.Providers
 
         public async Task<IsoOperationOutcome> DeleteAsync(Guid viewId, string scopeId, string filename, CancellationToken ct)
         {
-            if (UploadViaApi)
+            if (IsoUploadViaApi)
             {
                 return await _vsphereService.DeleteIso(viewId.ToString(), scopeId, filename);
             }
@@ -168,7 +171,7 @@ namespace Player.Vm.Api.Features.Files.Providers
             if (string.IsNullOrWhiteSpace(_vsphereOptions.IsoRoot))
             {
                 throw new InvalidOperationException(
-                    "Vsphere:IsoRoot is required when Vsphere:UploadViaApi is false. Set it to a directory on a share the vSphere hosts also mount, or enable Vsphere:UploadViaApi to push ISOs to the datastore through vCenter's HTTP file API instead.");
+                    "Vsphere:IsoRoot is required when Vsphere:IsoUploadViaApi is false. Set it to a directory on a share the vSphere hosts also mount, or enable Vsphere:IsoUploadViaApi to push ISOs to the datastore through vCenter's HTTP file API instead.");
             }
 
             return _vsphereOptions.IsoRoot;
