@@ -10,6 +10,7 @@ using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Proxmox.Options;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Features.Files.Providers;
 using Player.Vm.Api.Features.Networks;
 using DomainVm = Player.Vm.Api.Domain.Models.Vm;
 
@@ -45,17 +46,23 @@ namespace Player.Vm.Api.Features.Proxmox
         private readonly INetworkService _networkService;
         private readonly IProxmoxService _proxmoxService;
         private readonly ProxmoxOptions _proxmoxOptions;
+        private readonly bool _isoProviderEnabled;
 
         public ProxmoxVmNetworkService(
             IViewService viewService,
             INetworkService networkService,
             IProxmoxService proxmoxService,
-            ProxmoxOptions proxmoxOptions)
+            ProxmoxOptions proxmoxOptions,
+            IEnumerable<IIsoProvider> isoProviders)
         {
             _viewService = viewService;
             _networkService = networkService;
             _proxmoxService = proxmoxService;
             _proxmoxOptions = proxmoxOptions;
+
+            // Asked of the provider rather than recomputed from ProxmoxOptions, so there is exactly one
+            // definition of "Proxmox ISO support is on" and this cannot drift from it.
+            _isoProviderEnabled = isoProviders.Any(p => p.ProviderType == VmType.Proxmox && p.Enabled);
         }
 
         public async Task<ProxmoxNetworkPermissions> GetPermissions(DomainVm vm, CancellationToken ct)
@@ -79,7 +86,8 @@ namespace Player.Vm.Api.Features.Proxmox
             CancellationToken ct)
         {
             var allowedNetworks = permissions.Permissions.AllowedNetworks ?? new();
-            var currentNetworks = await _proxmoxService.GetCurrentNetworks(vm.ProxmoxVmInfo, ct);
+            var config = await _proxmoxService.GetVmConfigSummary(vm.ProxmoxVmInfo, ct);
+            var currentNetworks = config.CurrentNetworks;
 
             // A Vm can already sit on a network the caller is not allowed to select. Those are still
             // shown, by name where one is registered, but as read-only options.
@@ -104,7 +112,13 @@ namespace Player.Vm.Api.Features.Proxmox
                     currentNetworks,
                     allowedNetworks,
                     networkNames),
-                CanAccessNicConfiguration = allowedNetworks.Count > 0
+                CanAccessNicConfiguration = allowedNetworks.Count > 0,
+                // Drive presence included, not just the Vm type: Proxmox cannot hot-add an IDE drive, so
+                // a QEMU Vm built without one can never accept a mount and offering the control would only
+                // produce a 400 once the picker had already been filled in.
+                CanMountIso = _isoProviderEnabled
+                    && vm.ProxmoxVmInfo.Type == ProxmoxVmType.QEMU
+                    && config.HasCdromDrive
             };
         }
     }

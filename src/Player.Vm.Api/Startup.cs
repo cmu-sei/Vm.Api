@@ -16,6 +16,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Logging;
 using Player.Vm.Api.Data;
@@ -293,6 +294,11 @@ public class Startup
         services.AddScoped<IViewService, ViewService>();
         services.AddScoped<Features.Files.IIsoService, Features.Files.IsoService>();
 
+        // One ISO provider per hypervisor. Registered as a set because a single deployment can have
+        // more than one enabled at once; IsoService fans out across whichever report Enabled.
+        services.AddScoped<Features.Files.Providers.IIsoProvider, Features.Files.Providers.VsphereIsoProvider>();
+        services.AddScoped<Features.Files.Providers.IIsoProvider, Features.Files.Providers.ProxmoxIsoProvider>();
+
         services.AddSingleton<CallbackBackgroundService>();
         services.AddSingleton<IHostedService>(x => x.GetService<CallbackBackgroundService>());
         services.AddSingleton<ICallbackBackgroundService>(x => x.GetService<CallbackBackgroundService>());
@@ -316,6 +322,7 @@ public class Startup
 
         // Proxmox Services
         services.AddScoped<IProxmoxService, ProxmoxService>();
+        services.AddScoped<IProxmoxIsoStorageService, ProxmoxIsoStorageService>();
         services.AddSingleton<ProxmoxStateService>();
         services.AddSingleton<IHostedService>(x => x.GetService<ProxmoxStateService>());
         services.AddSingleton<IProxmoxStateService>(x => x.GetService<ProxmoxStateService>());
@@ -364,8 +371,13 @@ public class Startup
     }
 
     // This method gets called by the runtime. Use this method to configure the HTTP request pipeline.
-    public void Configure(IApplicationBuilder app, IWebHostEnvironment env)
+    public void Configure(IApplicationBuilder app, IWebHostEnvironment env, ILoggerFactory loggerFactory)
     {
+        // Reports ISO configuration that has moved or cannot take effect. Deliberately only logs - see
+        // IsoOptionsCheck for why a bad ISO destination must not stop the API from booting.
+        Features.Files.IsoOptionsCheck.Log(
+            Configuration, loggerFactory.CreateLogger(typeof(Features.Files.IsoOptionsCheck)));
+
         if (env.IsDevelopment())
         {
             IdentityModelEventSource.ShowPII = true;

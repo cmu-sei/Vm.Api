@@ -93,6 +93,7 @@ namespace Player.Vm.Api.Infrastructure.Extensions
             services.AddPlayerClient(clientOptions);
             services.AddDatastoreClient(isoUploadOptions);
             services.AddProxmoxClient();
+            services.AddProxmoxIsoUploadClient(isoUploadOptions);
             services.AddTransient<AuthenticatingHandler>();
         }
 
@@ -104,20 +105,39 @@ namespace Player.Vm.Api.Infrastructure.Extensions
         private static void AddProxmoxClient(this IServiceCollection services)
         {
             services.AddHttpClient("proxmox")
-                .ConfigurePrimaryHttpMessageHandler(sp =>
-                {
-                    // IOptionsMonitor rather than ProxmoxOptions: the latter is registered Scoped
-                    // (Startup.cs), and this factory runs outside any scope.
-                    var proxmoxOptions = sp.GetRequiredService<IOptionsMonitor<ProxmoxOptions>>().CurrentValue;
+                .ConfigurePrimaryHttpMessageHandler(ProxmoxPrimaryHandler);
+        }
 
-                    return new HttpClientHandler
-                    {
-                        AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
-                        ServerCertificateCustomValidationCallback = proxmoxOptions.ValidateCertificate
-                            ? null
-                            : (_, _, _, _) => true
-                    };
-                });
+        // Separate client for pushing ISOs to a PVE storage, because the "proxmox" client above sets no
+        // Timeout and so inherits HttpClient's 100 second default - which would have to cover a whole
+        // multi-gigabyte body. Raising the timeout on the shared client instead would delay failure
+        // detection in the state and task pollers, which is the opposite of what they want.
+        private static void AddProxmoxIsoUploadClient(
+            this IServiceCollection services,
+            IsoUploadOptions isoUploadOptions)
+        {
+            services.AddHttpClient("proxmoxIsoUpload", client =>
+                {
+                    client.Timeout = TimeSpan.FromMinutes(isoUploadOptions.UploadTimeoutMinutes <= 0 ? 60 : isoUploadOptions.UploadTimeoutMinutes);
+                })
+                .ConfigurePrimaryHttpMessageHandler(ProxmoxPrimaryHandler);
+        }
+
+        // Shared by both Proxmox clients. PveClientBase applies these two settings only to the handler
+        // it news up itself, so any client injected into it has to replicate them or lose them silently.
+        private static HttpMessageHandler ProxmoxPrimaryHandler(IServiceProvider sp)
+        {
+            // IOptionsMonitor rather than ProxmoxOptions: the latter is registered Scoped
+            // (Startup.cs), and this factory runs outside any scope.
+            var proxmoxOptions = sp.GetRequiredService<IOptionsMonitor<ProxmoxOptions>>().CurrentValue;
+
+            return new HttpClientHandler
+            {
+                AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+                ServerCertificateCustomValidationCallback = proxmoxOptions.ValidateCertificate
+                    ? null
+                    : (_, _, _, _) => true
+            };
         }
 
         // Named HttpClient used to PUT ISOs directly to a vSphere datastore (UploadToDatastore mode).

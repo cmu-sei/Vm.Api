@@ -31,7 +31,7 @@ namespace Player.Vm.Api.Features.Files.Requests
             _playerService = playerService;
         }
 
-        public async Task<IsoResult> HandleAsync(Guid viewId, CancellationToken ct)
+        public async Task<ManagedIsoResult> HandleAsync(Guid viewId, CancellationToken ct)
         {
             var teams = (await _playerService.GetTeamsByViewIdAsync(viewId, ct))?.ToList() ?? [];
             var teamIds = teams.Select(x => x.Id).ToArray();

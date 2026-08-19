@@ -11,6 +11,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Player.Vm.Api.Domain.Proxmox.Models;
 using Player.Vm.Api.Domain.Vsphere.Models;
+using Player.Vm.Api.Features.Files;
 using Player.Vm.Api.Features.Proxmox.Commands;
 using Player.Vm.Api.Features.Proxmox.Queries;
 using Swashbuckle.AspNetCore.Annotations;
@@ -114,6 +115,36 @@ public class ProxmoxController : Controller
     public async Task<IActionResult> ChangeNetwork(
         [FromRoute] Guid id,
         [FromBody] ChangeNetwork.Command command,
+        CancellationToken cancellationToken)
+    {
+        command.Id = id;
+        var result = await _mediator.Send(command, cancellationToken);
+        return Json(result);
+    }
+
+    /// <summary>
+    /// Retrieve the ISOs available to mount on a Proxmox virtual machine, grouped by View and team.
+    /// </summary>
+    [HttpGet("vms/proxmox/{id}/isos")]
+    [ProducesResponseType(typeof(MountableIsoResult[]), (int)HttpStatusCode.OK)]
+    [SwaggerOperation(OperationId = "getProxmoxVirtualMachineIsos")]
+    public async Task<IActionResult> GetIsos(
+        [FromRoute] Guid id,
+        CancellationToken cancellationToken)
+    {
+        var result = await _mediator.Send(new GetIsos.Query { Id = id }, cancellationToken);
+        return Json(result);
+    }
+
+    /// <summary>
+    /// Mount an ISO in a Proxmox virtual machine's CD/DVD drive.
+    /// </summary>
+    [HttpPost("vms/proxmox/{id}/actions/mount-iso")]
+    [ProducesResponseType(typeof(ProxmoxVirtualMachine), (int)HttpStatusCode.OK)]
+    [SwaggerOperation(OperationId = "mountProxmoxVirtualMachineIso")]
+    public async Task<IActionResult> MountIso(
+        [FromRoute] Guid id,
+        [FromBody] MountIso.Command command,
         CancellationToken cancellationToken)
     {
         command.Id = id;

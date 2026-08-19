@@ -27,5 +27,31 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
         public int GuestProcessPollMs { get; set; } = 500;
 
         public int GuestProcessDefaultTimeoutSeconds { get; set; } = 300;
+
+        // PVE storage id (as it appears in "storage:iso/name.iso") that holds View/team ISOs. Required
+        // in BOTH write modes: even when the bytes arrive over NFS, the mount volid names the storage.
+        // Empty is the ISO opt-out - Proxmox ISO support stays off.
+        public string IsoStorage { get; set; }
+
+        // True to push ISOs through PVE's own storage upload API; null or false (default) to write
+        // them into IsoRoot. The vSphere equivalent is Vsphere:IsoUploadViaApi, so a mixed deployment
+        // can pair, say, vSphere-over-NFS with Proxmox-over-API.
+        //
+        // Nullable for the same reason as Vsphere:IsoUploadViaApi: a blank value has to read as unset
+        // rather than throwing in the configuration binder.
+        public bool? IsoUploadViaApi { get; set; }
+
+        // Local path that is a mount of IsoStorage's template/iso directory. Required when
+        // IsoUploadViaApi is false. No rescan is needed after writing here - PVE re-reads the directory
+        // the next time its content index is queried.
+        public string IsoRoot { get; set; }
+
+        // Separator folded into the filename to carry View/team scope, since Proxmox ISO storage is
+        // flat and '/' is not a legal filename character (see ProxmoxIsoNaming). Configurable, not a
+        // constant, so a change in how PVE normalizes uploaded filenames is a config fix.
+        //
+        // Must consist of [-a-zA-Z0-9_.]: PVE's storage upload API rewrites everything else to '_',
+        // so a separator outside that set survives an IsoRoot write but not an API one.
+        public string IsoScopeSeparator { get; set; } = "__";
     }
 }

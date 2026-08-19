@@ -36,4 +36,9 @@
     <PackageReference Include="Crucible.Common.EntityEvents" Version="0.2.0" />
     <PackageReference Include="Crucible.Common.ServiceDefaults" Version="0.0.2" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Lets the test project reach the internal helpers that have no public entry point worth
+         testing through (IsoService.MergeListings, ProxmoxService's drive-definition parsing). -->
+    <InternalsVisibleTo Include="Player.Vm.Api.Tests" />
+  </ItemGroup>
 </Project>

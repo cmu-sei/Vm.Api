@@ -9,8 +9,8 @@ using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Features.Vms;
+using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Services;
-using System.Linq;
 using Player.Vm.Api.Features.Files;
 
 namespace Player.Vm.Api.Features.Vsphere
@@ -18,62 +18,40 @@ namespace Player.Vm.Api.Features.Vsphere
     public class GetIsos
     {
         [DataContract(Name = "GetVsphereVirtualMachineIsos")]
-        public class Query : IRequest<IsoResult[]>
+        public class Query : IRequest<MountableIsoResult[]>
         {
             [JsonIgnore]
             public Guid Id { get; set; }
         }
 
-        public class Handler : IRequestHandler<Query, IsoResult[]>
+        public class Handler : IRequestHandler<Query, MountableIsoResult[]>
         {
             private readonly IVmService _vmService;
-            private readonly IPlayerService _playerService;
-            private readonly IViewService _viewService;
             private readonly IIsoService _isoService;
 
             public Handler(
                 IVmService vmService,
-                IPlayerService playerService,
-                IViewService viewService,
                 IIsoService isoService)
             {
                 _vmService = vmService;
-                _playerService = playerService;
-                _viewService = viewService;
                 _isoService = isoService;
             }
 
-            public async Task<IsoResult[]> Handle(Query request, CancellationToken cancellationToken)
+            public async Task<MountableIsoResult[]> Handle(Query request, CancellationToken cancellationToken)
             {
                 var vm = await _vmService.GetAsync(request.Id, cancellationToken);
 
                 if (vm == null)
                     throw new EntityNotFoundException<VsphereVirtualMachine>();
 
-                var viewIds = await _viewService.GetViewIdsForTeams(vm.TeamIds, cancellationToken);
-
-                var viewTeamsTasks = viewIds.Select(async viewId =>
-                {
-                    var teams = (await _playerService.GetTeamsByViewIdAsync(viewId, cancellationToken)).ToList();
-
-                    // No teams => caller has no access to this View; skip it.
-                    if (teams.Count == 0)
-                        return (ViewTeams)null;
-
-                    var view = await _playerService.GetViewByIdAsync(viewId, cancellationToken);
-                    return new ViewTeams(view, teams);
-                });
-
-                var viewTeams = (await Task.WhenAll(viewTeamsTasks))
-                    .Where(vt => vt != null)
-                    .ToList();
+                var viewTeams = await _isoService.ResolveViewTeamsForVmAsync(vm.TeamIds, cancellationToken);
 
                 if (viewTeams.Count == 0)
-                    return Array.Empty<IsoResult>();
+                    return Array.Empty<MountableIsoResult>();
 
                 // VM-scoped listing: the returned paths are handed back to MountIso, so they must come
                 // from the host this VM runs on rather than any connected host.
-                return await _isoService.BuildVmIsoResultsAsync(vm.Id, viewTeams, cancellationToken);
+                return await _isoService.BuildVmIsoResultsAsync(vm.Id, VmType.Vsphere, viewTeams, cancellationToken);
             }
         }
     }

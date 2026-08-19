@@ -216,7 +216,7 @@ namespace Player.Vm.Api.Features.Vsphere
         /// Get isos available to be mounted to a vsphere virtual machine
         /// </summary>
         [HttpGet("vms/vsphere/{id}/isos")]
-        [ProducesResponseType(typeof(IsoResult[]), (int)HttpStatusCode.OK)]
+        [ProducesResponseType(typeof(MountableIsoResult[]), (int)HttpStatusCode.OK)]
         [SwaggerOperation(OperationId = "getVsphereVirtualMachineIsos")]
         public async Task<IActionResult> GetIsos([FromRoute] Guid id)
         {

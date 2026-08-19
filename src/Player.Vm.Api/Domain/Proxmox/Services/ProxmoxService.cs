@@ -32,7 +32,15 @@ namespace Player.Vm.Api.Domain.Proxmox.Services;
 public interface IProxmoxService
 {
     Task<ProxmoxConsole> GetConsole(ProxmoxVmInfo info);
-    Task<Dictionary<string, string>> GetCurrentNetworks(
+    /// <summary>
+    /// Reads the Vm's live config once and returns everything the API response needs from it - its
+    /// current networks and whether it has a CD/DVD drive.
+    /// </summary>
+    /// <remarks>
+    /// One call rather than one per property: both come out of the same Config.GetAsync, and a second
+    /// read per Vm would be paid on every Vm in every list response.
+    /// </remarks>
+    Task<ProxmoxVmConfigSummary> GetVmConfigSummary(
         ProxmoxVmInfo info,
         CancellationToken cancellationToken);
     NicOptions GetNicOptions(
@@ -64,20 +72,35 @@ public interface IProxmoxService
     Task<string> ReadGuestFile(ProxmoxVmInfo info, string guestFilePath);
     Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content);
 
+    /// <summary>
+    /// The Proxmox node the given Vm currently runs on, or null if it is not a Proxmox Vm. Also
+    /// refreshes the stored node, which goes stale when a Vm is migrated.
+    /// </summary>
+    Task<string> GetCurrentNodeForVm(Guid vmId, CancellationToken cancellationToken);
+
+    /// <summary>
+    /// Swaps the medium in a running or stopped QEMU Vm's existing CD-ROM drive.
+    /// </summary>
+    Task MountIso(ProxmoxVmInfo info, string isoVolumeId, CancellationToken cancellationToken);
+
     Task<List<ProxmoxSnapshot>> GetSnapshots(ProxmoxVmInfo info);
     Task<string> CreateSnapshot(ProxmoxVmInfo info, string snapshotName, string description, bool includeRam);
     Task<string> RevertSnapshot(ProxmoxVmInfo info, string snapshotName);
     Task<string> DeleteSnapshot(ProxmoxVmInfo info, string snapshotName);
 }
 
-public class ProxmoxService : IProxmoxService
+public partial class ProxmoxService : IProxmoxService
 {
+    [System.Text.RegularExpressions.GeneratedRegex(@"^([a-zA-Z]+)(\d+)$")]
+    private static partial System.Text.RegularExpressions.Regex DriveIdRegex();
+
     private readonly ProxmoxOptions _options;
     private readonly ILogger<ProxmoxService> _logger;
     private readonly PveClient _pveClient;
     private readonly IProxmoxStateService _proxmoxStateService;
     private readonly RewriteHostOptions _rewriteHostOptions;
     private readonly VmContext _dbContext;
+    private readonly IHttpClientFactory _httpClientFactory;
 
     public ProxmoxService(
             ProxmoxOptions options,
@@ -93,9 +116,29 @@ public class ProxmoxService : IProxmoxService
         _proxmoxStateService = proxmoxStateService;
         _rewriteHostOptions = rewriteHostOptions;
         _dbContext = dbContext;
+        _httpClientFactory = httpClientFactory;
 
         _pveClient = new PveClient(options.Host, _options.Port, httpClientFactory.CreateClient("proxmox"));
         _pveClient.ApiToken = options.Token;
+
+    }
+
+    public async Task<string> GetCurrentNodeForVm(Guid vmId, CancellationToken cancellationToken)
+    {
+        var vm = await _dbContext.Vms
+            .AsNoTracking()
+            .SingleOrDefaultAsync(x => x.Id == vmId, cancellationToken);
+
+        if (vm?.ProxmoxVmInfo == null)
+            return null;
+
+        // ResolveNode also refreshes info.Node, which goes stale on migration.
+        var resource = await ResolveNode(vm.ProxmoxVmInfo);
+
+        if (resource == null)
+            throw new InvalidOperationException($"Could not find vmid {vm.ProxmoxVmInfo.Id} in Proxmox");
+
+        return vm.ProxmoxVmInfo.Node;
     }
 
     public async Task<ProxmoxConsole> GetConsole(ProxmoxVmInfo info)
@@ -189,7 +232,7 @@ public class ProxmoxService : IProxmoxService
         };
     }
 
-    public async Task<Dictionary<string, string>> GetCurrentNetworks(
+    public async Task<ProxmoxVmConfigSummary> GetVmConfigSummary(
         ProxmoxVmInfo info,
         CancellationToken cancellationToken)
     {
@@ -197,12 +240,32 @@ public class ProxmoxService : IProxmoxService
         if (vm == null)
             throw new InvalidOperationException($"Could not find vmid {info.Id} in Proxmox");
 
-        var networks = await GetNetworkConfiguration(info);
-        return networks
-            .Where(network =>
-                !string.IsNullOrWhiteSpace(network.Id) &&
-                !string.IsNullOrWhiteSpace(network.Bridge))
-            .ToDictionary(network => network.Id, network => network.Bridge);
+        IEnumerable<VmNetwork> networks;
+        var hasCdromDrive = false;
+
+        if (info.Type == ProxmoxVmType.QEMU)
+        {
+            var config = await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.GetAsync(true);
+            networks = config.Networks ?? [];
+
+            // The same helper MountIso selects from, so what this reports and what a mount can find
+            // cannot disagree.
+            hasCdromDrive = GetCdromDrives(config).Count > 0;
+        }
+        else
+        {
+            // An LXC container has no optical drive, so hasCdromDrive stays false.
+            var containerConfig = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.GetAsync(true);
+            networks = containerConfig.Networks ?? [];
+        }
+
+        return new ProxmoxVmConfigSummary(
+            networks
+                .Where(network =>
+                    !string.IsNullOrWhiteSpace(network.Id) &&
+                    !string.IsNullOrWhiteSpace(network.Bridge))
+                .ToDictionary(network => network.Id, network => network.Bridge),
+            hasCdromDrive);
     }
 
     public async Task ChangeNetwork(
@@ -242,7 +305,7 @@ public class ProxmoxService : IProxmoxService
             result = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.UpdateVm(netN: assignments);
         }
 
-        await WaitAndThrow(
+        await _pveClient.WaitAndThrow(
             result,
             $"ChangeNetwork vmid={info.Id} adapter={adapter}",
             cancellationToken);
@@ -349,7 +412,7 @@ public class ProxmoxService : IProxmoxService
     public async Task<string> PowerOnVm(ProxmoxVmInfo info)
     {
         var result = await SubmitPowerOperation(info, PowerOperation.PowerOn);
-        await WaitAndThrow(result, $"PowerOn vmid={info.Id}");
+        await _pveClient.WaitAndThrow(result, $"PowerOn vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} started";
     }
@@ -357,7 +420,7 @@ public class ProxmoxService : IProxmoxService
     public async Task<string> PowerOffVm(ProxmoxVmInfo info)
     {
         var result = await SubmitPowerOperation(info, PowerOperation.PowerOff);
-        await WaitAndThrow(result, $"PowerOff vmid={info.Id}");
+        await _pveClient.WaitAndThrow(result, $"PowerOff vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} stopped";
     }
@@ -365,7 +428,7 @@ public class ProxmoxService : IProxmoxService
     public async Task<string> RebootVm(ProxmoxVmInfo info)
     {
         var result = await SubmitPowerOperation(info, PowerOperation.Reboot);
-        await WaitAndThrow(result, $"Reboot vmid={info.Id}");
+        await _pveClient.WaitAndThrow(result, $"Reboot vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} rebooted";
     }
@@ -373,7 +436,7 @@ public class ProxmoxService : IProxmoxService
     public async Task<string> ShutdownVm(ProxmoxVmInfo info)
     {
         var result = await SubmitPowerOperation(info, PowerOperation.Shutdown);
-        await WaitAndThrow(result, $"Shutdown vmid={info.Id}");
+        await _pveClient.WaitAndThrow(result, $"Shutdown vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} shutdown";
     }
@@ -592,7 +655,7 @@ public class ProxmoxService : IProxmoxService
             result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot.Snapshot(snapshotName, description, includeRam);
         }
 
-        await WaitAndThrow(result, $"CreateSnapshot vmid={info.Id} name={snapshotName}");
+        await _pveClient.WaitAndThrow(result, $"CreateSnapshot vmid={info.Id} name={snapshotName}");
         return $"snapshot {snapshotName} created on vmid {info.Id}";
     }
 
@@ -602,7 +665,7 @@ public class ProxmoxService : IProxmoxService
             ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot[snapshotName].Rollback.Rollback()
             : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshotName].Rollback.Rollback();
 
-        await WaitAndThrow(result, $"RevertSnapshot vmid={info.Id} name={snapshotName}");
+        await _pveClient.WaitAndThrow(result, $"RevertSnapshot vmid={info.Id} name={snapshotName}");
         _proxmoxStateService.CheckState();
         return $"snapshot {snapshotName} restored on vmid {info.Id}";
     }
@@ -613,24 +676,127 @@ public class ProxmoxService : IProxmoxService
             ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot[snapshotName].Delsnapshot()
             : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshotName].Delsnapshot();
 
-        await WaitAndThrow(result, $"DeleteSnapshot vmid={info.Id} name={snapshotName}");
+        await _pveClient.WaitAndThrow(result, $"DeleteSnapshot vmid={info.Id} name={snapshotName}");
         return $"snapshot {snapshotName} deleted on vmid {info.Id}";
     }
 
-    private async Task WaitAndThrow(
-        Result result,
-        string operation,
-        CancellationToken cancellationToken = default)
+    public async Task MountIso(ProxmoxVmInfo info, string isoVolumeId, CancellationToken cancellationToken)
     {
-        if (!result.IsSuccessStatusCode)
-            throw new Exception($"{operation} failed: {result.GetError()}");
+        // BadRequest rather than EnsureQemu's InvalidOperationException: an LXC container has no CD-ROM
+        // to swap, which is a property of the request, not a server fault.
+        if (info.Type != ProxmoxVmType.QEMU)
+            throw new BadRequestException("Mounting an ISO is only supported on QEMU virtual machines.");
 
-        var finished = await Extensions.ProxmoxExtensions.WaitForTaskToFinish(
-            _pveClient,
-            result,
-            cancellationToken: cancellationToken);
-        if (!finished)
-            throw new TimeoutException($"{operation} timed out waiting for the Proxmox task to finish.");
+        var resource = await ResolveNode(info);
+
+        if (resource == null)
+            throw new InvalidOperationException($"Could not find vmid {info.Id} in Proxmox");
+
+        var config = await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.GetAsync(true);
+
+        var drives = GetCdromDrives(config);
+
+        if (drives.Count == 0)
+        {
+            // Not auto-added on purpose. QEMU cannot hot-add an IDE drive, so adding ide2 to a running
+            // Vm lands in the pending config and appears to silently do nothing until a power cycle -
+            // worse than a clear error.
+            throw new BadRequestException(
+                $"vmid {info.Id} has no CD/DVD drive. Add one to the VM in Proxmox before mounting an ISO.");
+        }
+
+        var target = ChooseCdromDrive(drives);
+
+        var (bus, index) = ParseDriveId(target.Id);
+        var assignments = new Dictionary<int, string> { [index] = ReplaceCdromVolume(target.RawDefinition, isoVolumeId) };
+        var vmConfig = _pveClient.Nodes[info.Node].Qemu[info.Id].Config;
+
+        // Dispatched on the drive's actual bus. PVE's "cdrom" update parameter is documented as an alias
+        // for -ide2, so using it would write ide2 on a Vm whose optical drive is sata0 - creating a
+        // second drive instead of loading the one that is there.
+        var result = bus switch
+        {
+            "ide" => await vmConfig.UpdateVmAsync(ideN: assignments),
+            "sata" => await vmConfig.UpdateVmAsync(sataN: assignments),
+            "scsi" => await vmConfig.UpdateVmAsync(scsiN: assignments),
+            _ => throw new BadRequestException(
+                $"The CD/DVD drive '{target.Id}' on vmid {info.Id} is on a bus that cannot be reconfigured.")
+        };
+
+        await _pveClient.WaitAndThrow(result, $"MountIso vmid={info.Id} drive={target.Id}", cancellationToken);
+        _proxmoxStateService.CheckState();
+    }
+
+    /// <summary>
+    /// The VM's CD/DVD drives, in config order.
+    /// </summary>
+    /// <remarks>
+    /// DisksAll, not Disks: CD-ROM drives are excluded from Disks. A definition with no key is
+    /// unaddressable in a config update, so it is dropped here rather than checked at each use.
+    /// </remarks>
+    private static List<VmDisk> GetCdromDrives(VmConfig config) =>
+        (config.DisksAll ?? [])
+            .Where(x => x.Kind == VmDiskKind.Cdrom && !string.IsNullOrWhiteSpace(x.Id))
+            .ToList();
+
+    /// <summary>
+    /// Picks the one drive whose medium a mount replaces.
+    /// </summary>
+    /// <remarks>
+    /// ide2 is preferred because it is the Proxmox convention for the optical drive and what PVE's own
+    /// UI targets; any other bus is only reached on a Vm that was built differently, and is resolved by
+    /// key so the choice is stable rather than dependent on config ordering.
+    /// <para>
+    /// What is currently loaded is deliberately ignored. Preferring an empty drive would mean the next
+    /// mount on the same Vm picked a different drive - leaving the first ISO still inserted - whereas
+    /// replacing the medium in one stable drive is idempotent and matches what re-mounting means in
+    /// Proxmox itself.
+    /// </para>
+    /// </remarks>
+    internal static VmDisk ChooseCdromDrive(IReadOnlyList<VmDisk> drives) =>
+        drives.FirstOrDefault(x => string.Equals(x.Id, "ide2", StringComparison.OrdinalIgnoreCase))
+            ?? drives.OrderBy(x => x.Id, StringComparer.OrdinalIgnoreCase).First();
+
+    /// <summary>
+    /// Rebuilds a CD-ROM drive definition around a new volume, preserving the flags already on it.
+    /// </summary>
+    /// <remarks>
+    /// Built from the existing RawDefinition rather than as "{volid},media=cdrom" so that flags like
+    /// "ro" survive - the same approach <see cref="ReplaceBridge"/> takes for network adapters. The one
+    /// token deliberately dropped is "size=", which PVE appends itself and which describes the medium
+    /// being replaced; carrying it over to a different ISO would be wrong. PVE re-derives it.
+    /// </remarks>
+    internal static string ReplaceCdromVolume(string rawDefinition, string isoVolumeId)
+    {
+        if (string.IsNullOrWhiteSpace(rawDefinition))
+            return $"{isoVolumeId},media=cdrom";
+
+        var parts = rawDefinition.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries).ToList();
+
+        // The volume is the only positional token; everything else is key=value.
+        parts[0] = isoVolumeId;
+
+        parts.RemoveAll(x => x.StartsWith("size=", StringComparison.OrdinalIgnoreCase));
+
+        if (!parts.Any(x => string.Equals(x, "media=cdrom", StringComparison.OrdinalIgnoreCase)))
+            parts.Add("media=cdrom");
+
+        return string.Join(',', parts);
+    }
+
+    /// <summary>
+    /// Splits a drive key such as "ide2" or "sata0" into its bus and index, which is the shape the
+    /// config update's per-bus dictionaries take.
+    /// </summary>
+    internal static (string Bus, int Index) ParseDriveId(string driveId)
+    {
+        var match = DriveIdRegex().Match(driveId ?? string.Empty);
+
+        if (!match.Success)
+            throw new BadRequestException($"Unrecognized drive id '{driveId}'.");
+
+        return (match.Groups[1].Value.ToLowerInvariant(),
+                int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture));
     }
 
     private static void EnsureQemu(ProxmoxVmInfo info, string operation)

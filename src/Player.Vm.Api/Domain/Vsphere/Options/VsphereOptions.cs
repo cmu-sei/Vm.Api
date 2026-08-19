@@ -21,6 +21,28 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
         public string GuestProcessTempPath { get; set; }
         public int GuestProcessDefaultTimeoutSeconds { get; set; } = 300;
 
+        // True to push ISOs to every connected vCenter's datastore through its HTTP file API; null or
+        // false (default) to write them into IsoRoot. Required by VMware Cloud on AWS SDDCs, which
+        // have no NFS datastore. The Proxmox equivalent is Proxmox:IsoUploadViaApi.
+        //
+        // Each host is written through its OWN DsName and BaseFolder, so an ISO lands at
+        // "[{DsName}] {BaseFolder}/{viewId}/{scopeId}/{filename}" (see
+        // VsphereService.BuildIsoFolderRelative, the single source of truth for that layout). The
+        // destination folder is created if it does not exist.
+        //
+        // Nullable so that a blank value reads as unset: an environment-variable deployment cannot
+        // remove a key, only blank it, and the configuration binder throws converting "" to bool -
+        // which, bound from a background service, stops the host.
+        public bool? IsoUploadViaApi { get; set; }
+
+        // Local path, on a share the hosts also mount, holding the {viewId}/{scopeId} ISO folders.
+        // Required when IsoUploadViaApi is false.
+        //
+        // Must be a mount whose contents surface at exactly "[{DsName}] {BaseFolder}": listing and the
+        // VM mount picker browse the datastore in BOTH write modes, so a share that is a datastore but
+        // sits at some other path within it writes ISOs no one can then see.
+        public string IsoRoot { get; set; }
+
         public VsphereHost[] Hosts { get; set; }
     }
 

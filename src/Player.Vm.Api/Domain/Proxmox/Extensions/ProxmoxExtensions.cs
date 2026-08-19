@@ -34,6 +34,30 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
         }
 
         /// <summary>
+        /// Waits for the task a submitted operation started, turning anything short of a clean finish
+        /// into an exception.
+        /// </summary>
+        /// <remarks>
+        /// Here rather than on a service because both <see cref="Services.IProxmoxService"/> (Vm
+        /// lifecycle) and <see cref="Services.IProxmoxIsoStorageService"/> (ISO storage) submit
+        /// operations that return a task, and neither owns the polling.
+        /// </remarks>
+        public static async Task WaitAndThrow(
+            this PveClient client,
+            Result result,
+            string operation,
+            CancellationToken cancellationToken = default)
+        {
+            if (!result.IsSuccessStatusCode)
+                throw new Exception($"{operation} failed: {result.GetError()}");
+
+            var finished = await WaitForTaskToFinish(client, result, cancellationToken: cancellationToken);
+
+            if (!finished)
+                throw new TimeoutException($"{operation} timed out waiting for the Proxmox task to finish.");
+        }
+
+        /// <summary>
         /// Waits for a Proxmox task to finish and checks its final exit status.
         /// </summary>
         public static async Task<bool> WaitForTaskToFinish(
