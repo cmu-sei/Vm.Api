@@ -1,12 +1,17 @@
 name: Test
 
+# Deliberately not scoped to a branch list. main.yml is limited to `main` because publishing is
+# gated; running the test suite is not, and a regression should surface on the feature branch that
+# introduced it rather than waiting for a pull request to be opened.
 on:
-  pull_request:
-    branches:
-      - main
   push:
-    branches:
-      - main
+  pull_request:
+
+# A same-repo pull request fires both triggers above, and each new push supersedes the run before it,
+# so cancel anything still in flight for the same ref.
+concurrency:
+  group: test-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   # Unit tests plus the in-process API tests, which host Startup with the hypervisor and
@@ -21,28 +26,43 @@ jobs:
       - name: Setup dotnet
         uses: actions/setup-dotnet@v5
         with:
-          dotnet-version: "10.0.x"
+          # The SDK version lives in global.json; never pin a second copy of it here.
+          global-json-file: global.json
 
-      # Only the test project is restored/built: it pulls in Player.Vm.Api through its
-      # ProjectReference, and the API image build is already covered by main.yml. The
-      # Client project targets netstandard2.0 and is released separately (client.yml).
+      # Keyed on the files that decide what gets restored: Directory.Packages.props holds every
+      # version, and a project file changing is what adds or drops a reference.
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', '**/*.csproj') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      # The whole solution, not just the test project. Directory.Build.props sets
+      # TreatWarningsAsErrors, and this is the only workflow that compiles Player.Vm.Api.Client on a
+      # push: main.yml builds the image, and client.yml is workflow_dispatch, so a warning in the
+      # Client project would otherwise first surface at release time.
       - name: Restore
-        run: dotnet restore src/Player.Vm.Api.Tests/Player.Vm.Api.Tests.csproj
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --no-restore --configuration Release
 
       - name: Test
         run: >
           dotnet test src/Player.Vm.Api.Tests/Player.Vm.Api.Tests.csproj
-          --no-restore
+          --no-build
           --configuration Release
           --logger "trx;LogFileName=test-results.trx"
           --results-directory TestResults
 
-      # Uploaded on failure too - the .trx is the only record of which assertion failed
-      # once the runner is gone.
+      # Uploaded on failure too - the .trx is the only record of which assertion failed once the
+      # runner is gone. `error` rather than `warn` on the missing case: no .trx at all means the test
+      # host died before writing one, which should not pass quietly.
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: test-results
           path: TestResults/*.trx
-          if-no-files-found: warn
+          if-no-files-found: error

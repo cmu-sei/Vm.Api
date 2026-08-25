@@ -1,6 +1,9 @@
 bin/
 obj/
 player/
+
+# Test run output. `dotnet test --results-directory TestResults` writes here, as CI does.
+TestResults/
 *.user
 *.csproj.lscache
 player_vm.db
