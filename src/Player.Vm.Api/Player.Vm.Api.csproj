@@ -5,36 +5,37 @@
     <noWarn>1591</noWarn>
     <UserSecretsId>cmu-sei-crucible-vm-api</UserSecretsId>
   </PropertyGroup>
+  <!-- Versions live in Directory.Packages.props. -->
   <ItemGroup>
-    <PackageReference Include="AutoMapper" Version="13.0.1"/> <!-- DO NOT UPDATE. Version 15+ requires a license. Plan to migrate to something else. -->
-    <PackageReference Include="Player.Api.Client" Version="3.5.1"/>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.1">
+    <PackageReference Include="AutoMapper" />
+    <PackageReference Include="Player.Api.Client" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.0" />
-    <PackageReference Include="Swashbuckle.AspNetCore.Annotations" Version="10.1.0" />
-    <PackageReference Include="DiscUtils.Iso9660" Version="0.16.13"/>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.1" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.1" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.1" />
-    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
-    <PackageReference Include="MediatR" Version="12.4.1"/> <!-- DO NOT UPDATE. Version 13+ requires a license. Plan to migrate to something else. -->
-    <PackageReference Include="Polly" Version="8.6.5" />
-    <PackageReference Include="Nito.AsyncEx" Version="5.1.2"/>
-    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.1" />
-    <PackageReference Include="AspNetCore.HealthChecks.NpgSql" Version="9.0.0" />
-    <PackageReference Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
-    <PackageReference Include="AspNetCore.HealthChecks.Sqlite" Version="9.0.0" />
-    <PackageReference Include="VimClient" Version="7.0.0"/>
-    <PackageReference Include="Corsinvest.ProxmoxVE.Api" Version="9.2.1" />
-    <PackageReference Include="Corsinvest.ProxmoxVE.Api.Extension" Version="9.2.1" />
-    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.1" />
-    <PackageReference Include="AspNetCore.HealthChecks.UI" Version="9.0.0" />
-    <PackageReference Include="AspNetCore.HealthChecks.UI.InMemory.Storage" Version="9.0.0" />
-    <PackageReference Include="AspNetCore.HealthChecks.UI.Client" Version="9.0.0" />
-    <PackageReference Include="Crucible.Common.EntityEvents" Version="0.2.0" />
-    <PackageReference Include="Crucible.Common.ServiceDefaults" Version="0.0.2" />
+    <PackageReference Include="Swashbuckle.AspNetCore" />
+    <PackageReference Include="Swashbuckle.AspNetCore.Annotations" />
+    <PackageReference Include="DiscUtils.Iso9660" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" />
+    <PackageReference Include="MediatR" />
+    <PackageReference Include="Polly" />
+    <PackageReference Include="Nito.AsyncEx" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" />
+    <PackageReference Include="AspNetCore.HealthChecks.NpgSql" />
+    <PackageReference Include="AspNetCore.HealthChecks.SqlServer" />
+    <PackageReference Include="AspNetCore.HealthChecks.Sqlite" />
+    <PackageReference Include="VimClient" />
+    <PackageReference Include="Corsinvest.ProxmoxVE.Api" />
+    <PackageReference Include="Corsinvest.ProxmoxVE.Api.Extension" />
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" />
+    <PackageReference Include="AspNetCore.HealthChecks.UI" />
+    <PackageReference Include="AspNetCore.HealthChecks.UI.InMemory.Storage" />
+    <PackageReference Include="AspNetCore.HealthChecks.UI.Client" />
+    <PackageReference Include="Crucible.Common.EntityEvents" />
+    <PackageReference Include="Crucible.Common.ServiceDefaults" />
   </ItemGroup>
   <ItemGroup>
     <!-- Lets the test project reach the internal helpers that have no public entry point worth

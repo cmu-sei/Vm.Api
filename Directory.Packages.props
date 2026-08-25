@@ -1,0 +1,83 @@
+<!--
+  Central Package Management. Every PackageReference in the repository takes its version from this
+  file, so a package that two projects share cannot drift between them.
+
+  The reference that makes this worth having is Microsoft.AspNetCore.Mvc.Testing in
+  Player.Vm.Api.Tests: it hosts Player.Vm.Api in process, so it has to build the host that the
+  application's own framework reference expects. Before this file, that version and the
+  application's ASP.NET Core version were two numbers kept in step by hand.
+-->
+<Project>
+
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+    <!--
+      Fail the restore if a project overrides a central version with VersionOverride. Pinning one
+      project to a different version of a shared package is exactly the drift this file prevents.
+    -->
+    <CentralPackageVersionOverrideEnabled>false</CentralPackageVersionOverrideEnabled>
+  </PropertyGroup>
+
+  <!-- Application and data access. -->
+  <ItemGroup>
+    <PackageVersion Include="AutoMapper" Version="13.0.1" /> <!-- DO NOT UPDATE. Version 15+ requires a license. Plan to migrate to something else. -->
+    <PackageVersion Include="MediatR" Version="12.4.1" /> <!-- DO NOT UPDATE. Version 13+ requires a license. Plan to migrate to something else. -->
+    <PackageVersion Include="Crucible.Common.EntityEvents" Version="0.2.0" />
+    <PackageVersion Include="Crucible.Common.ServiceDefaults" Version="0.0.2" />
+    <PackageVersion Include="DiscUtils.Iso9660" Version="0.16.13" />
+    <PackageVersion Include="Nito.AsyncEx" Version="5.1.2" />
+    <PackageVersion Include="Player.Api.Client" Version="3.5.1" />
+    <PackageVersion Include="Polly" Version="8.6.5" />
+  </ItemGroup>
+
+  <!-- The hypervisors. -->
+  <ItemGroup>
+    <PackageVersion Include="Corsinvest.ProxmoxVE.Api" Version="9.2.1" />
+    <PackageVersion Include="Corsinvest.ProxmoxVE.Api.Extension" Version="9.2.1" />
+    <PackageVersion Include="VimClient" Version="7.0.0" />
+  </ItemGroup>
+
+  <!-- EF Core and its providers. All four providers ship in the image: Postgres is production, and
+       Database:Provider selects among them. -->
+  <ItemGroup>
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.1" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.1" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.1" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.1" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+  </ItemGroup>
+
+  <!-- ASP.NET Core, diagnostics and API surface. -->
+  <ItemGroup>
+    <PackageVersion Include="AspNetCore.HealthChecks.NpgSql" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.Sqlite" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.SqlServer" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.UI" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.UI.Client" Version="9.0.0" />
+    <PackageVersion Include="AspNetCore.HealthChecks.UI.InMemory.Storage" Version="9.0.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.1" />
+    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.1" />
+    <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.1.0" />
+    <PackageVersion Include="Swashbuckle.AspNetCore.Annotations" Version="10.1.0" />
+  </ItemGroup>
+
+  <!-- The generated client, which targets netstandard2.0 and is released separately. -->
+  <ItemGroup>
+    <PackageVersion Include="System.ComponentModel.Annotations" Version="5.0.0" />
+    <PackageVersion Include="System.Text.Json" Version="10.0.0" />
+  </ItemGroup>
+
+  <!-- Test-only. -->
+  <ItemGroup>
+    <!-- Hosts the application in process for the endpoint tests. Tied to the ASP.NET Core version, so
+         it tracks Microsoft.AspNetCore.Authentication.JwtBearer above rather than the test-tool
+         versions around it. -->
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.1" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
+    <PackageVersion Include="NSubstitute" Version="6.0.0" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.13.0" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.5" />
+    <PackageVersion Include="xunit.v3" Version="3.2.2" />
+  </ItemGroup>
+
+</Project>
