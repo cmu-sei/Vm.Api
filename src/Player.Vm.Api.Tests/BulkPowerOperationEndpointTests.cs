@@ -5,11 +5,10 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
-using System.Net.Http;
 using System.Net.Http.Json;
-using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
 using NSubstitute;
 using NSubstitute.ClearExtensions;
 using Player.Vm.Api.Domain.Models;
@@ -20,7 +19,7 @@ using Xunit;
 namespace Player.Vm.Api.Tests;
 
 /// <summary>
-/// The bulk power endpoints in-process, through the real Startup.
+/// The bulk power endpoints in-process, through the real Startup and against real PostgreSQL.
 ///
 /// What these cover that the VsphereService unit tests cannot: that a per-Vm reason produced deep in a
 /// hypervisor service arrives in the response body under the right key, that each gate in the handler
@@ -28,39 +27,40 @@ namespace Player.Vm.Api.Tests;
 /// multi-select submitted. That contract exists because the UI powers on whatever the user has
 /// selected, and a selection routinely includes a machine that is already on.
 /// </summary>
-public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
+public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
+    : ApiTestBase(fixture, factory), IClassFixture<VmApiFactory>
 {
-    private static readonly JsonSerializerOptions JsonOptions = new() { PropertyNameCaseInsensitive = true };
-
-    private readonly VmApiFactory _factory;
-    private readonly HttpClient _client;
-
-    public BulkPowerOperationEndpointTests(VmApiFactory factory)
+    public override async ValueTask InitializeAsync()
     {
-        _factory = factory;
-        _client = factory.CreateAuthenticatedClient();
+        await base.InitializeAsync();
 
-        // The fixture, and so its substitutes, are shared across the class.
-        _factory.Vsphere.ClearSubstitute();
-        _factory.Proxmox.ClearSubstitute();
-        _factory.PlayerApi.ClearSubstitute();
-        _factory.VsphereTasks.ClearSubstitute();
-        _factory.AllowEverything();
+        // The factory, and so its substitutes, are shared across the class. The database is not.
+        Factory.Vsphere.ClearSubstitute();
+        Factory.Proxmox.ClearSubstitute();
+        Factory.PlayerApi.ClearSubstitute();
+        Factory.VsphereTasks.ClearSubstitute();
+        Factory.AllowEverything();
     }
 
     private async Task<BulkPowerOperation.Response> Post(string action, params Guid[] ids)
     {
-        var response = await _client.PostAsJsonAsync(
-            $"/api/vms/actions/{action}", new { Ids = ids }, TestContext.Current.CancellationToken);
+        var response = await Client.PostAsJsonAsync($"/api/vms/actions/{action}", new { Ids = ids }, Ct);
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
 
-        return await response.Content.ReadFromJsonAsync<BulkPowerOperation.Response>(
-            JsonOptions, TestContext.Current.CancellationToken);
+        return await response.Content.ReadFromJsonAsync<BulkPowerOperation.Response>(JsonOptions, Ct);
     }
 
     private void VsphereReturns(PowerOperation operation, Dictionary<Guid, string> results) =>
-        _factory.Vsphere.BulkPowerOperation(Arg.Any<Guid[]>(), operation).Returns(results);
+        Factory.Vsphere.BulkPowerOperation(Arg.Any<Guid[]>(), operation).Returns(results);
+
+    /// <summary>Re-reads a Vm through a cold change tracker, to assert on what was actually stored.</summary>
+    private async Task<Domain.Models.Vm> Stored(Guid id)
+    {
+        await using var context = NewContext();
+
+        return await context.Vms.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, Ct);
+    }
 
     /// <summary>
     /// The reason this layer exists. One Vm vCenter refuses has to come back as one entry in Errors
@@ -74,7 +74,7 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
 
         var accepted = VmApiFactory.VsphereVm();
         var rejected = VmApiFactory.VsphereVm();
-        await _factory.SeedAsync(accepted, rejected);
+        await Seed(accepted, rejected);
 
         VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string>
         {
@@ -97,7 +97,7 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
     {
         var first = VmApiFactory.VsphereVm();
         var second = VmApiFactory.VsphereVm();
-        await _factory.SeedAsync(first, second);
+        await Seed(first, second);
 
         VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string>
         {
@@ -117,7 +117,7 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
     {
         var known = VmApiFactory.VsphereVm();
         var unknown = Guid.NewGuid();
-        await _factory.SeedAsync(known);
+        await Seed(known);
 
         VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [known.Id] = string.Empty });
 
@@ -126,7 +126,7 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
         Assert.Equal("Virtual Machine Not Found", result.Errors.For(unknown));
         Assert.Equal([known.Id], result.Accepted);
 
-        await _factory.Vsphere.Received(1).BulkPowerOperation(
+        await Factory.Vsphere.Received(1).BulkPowerOperation(
             Arg.Is<Guid[]>(x => x.SequenceEqual(new[] { known.Id })), PowerOperation.PowerOn);
     }
 
@@ -138,9 +138,9 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
         var deniedTeam = Guid.NewGuid();
         var denied = VmApiFactory.VsphereVm(teamId: deniedTeam);
         var allowed = VmApiFactory.VsphereVm();
-        await _factory.SeedAsync(denied, allowed);
+        await Seed(denied, allowed);
 
-        _factory.PlayerApi
+        Factory.PlayerApi
             .CanViewTeams(Arg.Is<IEnumerable<Guid>>(teams => teams.Contains(deniedTeam)), Arg.Any<CancellationToken>())
             .Returns(false);
 
@@ -158,7 +158,7 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
     {
         var withSnapshot = VmApiFactory.VsphereVm(hasSnapshot: true);
         var withoutSnapshot = VmApiFactory.VsphereVm(hasSnapshot: false);
-        await _factory.SeedAsync(withSnapshot, withoutSnapshot);
+        await Seed(withSnapshot, withoutSnapshot);
 
         VsphereReturns(PowerOperation.Revert, new Dictionary<Guid, string> { [withSnapshot.Id] = string.Empty });
 
@@ -174,14 +174,14 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
     public async Task PowerOn_ReportsAVsphereVmInAnUnknownPowerState()
     {
         var unknownState = VmApiFactory.VsphereVm(powerState: PowerState.Unknown);
-        await _factory.SeedAsync(unknownState);
+        await Seed(unknownState);
 
         var result = await Post("power-on", unknownState.Id);
 
         Assert.Equal("Unsupported Operation", result.Errors.For(unknownState.Id));
         Assert.Empty(result.Accepted);
 
-        await _factory.Vsphere.DidNotReceive().BulkPowerOperation(Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+        await Factory.Vsphere.DidNotReceive().BulkPowerOperation(Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
     }
 
     // Shutdown and reboot are guest-side operations with their own vSphere entry points. Routing them
@@ -192,17 +192,17 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
     public async Task GuestOperations_DoNotGoThroughTheHardPowerPath(string action)
     {
         var vm = VmApiFactory.VsphereVm(powerState: PowerState.On);
-        await _factory.SeedAsync(vm);
+        await Seed(vm);
 
         var results = new Dictionary<Guid, string> { [vm.Id] = "No guest tools" };
-        _factory.Vsphere.BulkShutdown(Arg.Any<Guid[]>()).Returns(results);
-        _factory.Vsphere.BulkReboot(Arg.Any<Guid[]>()).Returns(results);
+        Factory.Vsphere.BulkShutdown(Arg.Any<Guid[]>()).Returns(results);
+        Factory.Vsphere.BulkReboot(Arg.Any<Guid[]>()).Returns(results);
 
         var result = await Post(action, vm.Id);
 
         // Same per-Vm contract on these two paths, which is why it is worth asserting over the wire.
         Assert.Equal("No guest tools", result.Errors.For(vm.Id));
-        await _factory.Vsphere.DidNotReceive().BulkPowerOperation(Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+        await Factory.Vsphere.DidNotReceive().BulkPowerOperation(Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
     }
 
     /// <summary>
@@ -216,7 +216,7 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
         var accepted = VmApiFactory.VsphereVm();
         var rejected = VmApiFactory.VsphereVm();
         var gated = VmApiFactory.VsphereVm(powerState: PowerState.Unknown);
-        await _factory.SeedAsync(accepted, rejected, gated);
+        await Seed(accepted, rejected, gated);
 
         VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string>
         {
@@ -226,9 +226,9 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
 
         await Post("power-on", accepted.Id, rejected.Id, gated.Id);
 
-        Assert.True((await _factory.ReadAsync(accepted.Id)).HasPendingTasks);
-        Assert.True((await _factory.ReadAsync(rejected.Id)).HasPendingTasks);
-        Assert.False((await _factory.ReadAsync(gated.Id)).HasPendingTasks);
+        Assert.True((await Stored(accepted.Id)).HasPendingTasks);
+        Assert.True((await Stored(rejected.Id)).HasPendingTasks);
+        Assert.False((await Stored(gated.Id)).HasPendingTasks);
     }
 
     // CheckVsphereTasksBehavior wakes the poller as soon as a command is submitted rather than leaving
@@ -238,13 +238,13 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
     public async Task PowerOn_WakesTheVsphereTaskPoller()
     {
         var vm = VmApiFactory.VsphereVm();
-        await _factory.SeedAsync(vm);
+        await Seed(vm);
 
         VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
 
         await Post("power-on", vm.Id);
 
-        _factory.VsphereTasks.Received().CheckTasks();
+        Factory.VsphereTasks.Received().CheckTasks();
     }
 
     // The endpoints are behind the default authorization policy, which the substituted player.api has
@@ -252,11 +252,10 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
     [Fact]
     public async Task PowerOn_RejectsAnUnauthenticatedRequest()
     {
-        var response = await _factory.CreateClient()
-            .PostAsJsonAsync(
-                "/api/vms/actions/power-on",
-                new { Ids = new[] { Guid.NewGuid() } },
-                TestContext.Current.CancellationToken);
+        var response = await AnonymousClient.PostAsJsonAsync(
+            "/api/vms/actions/power-on",
+            new { Ids = new[] { Guid.NewGuid() } },
+            Ct);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }

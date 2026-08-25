@@ -19,6 +19,10 @@
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <!-- PostgreSQL is the only database the tests run against, and this starts and disposes it. There
+         is deliberately no in-memory or SQLite fallback: a fallback that quietly replaces the
+         production provider reports a green run that never touched what production uses. -->
+    <PackageReference Include="Testcontainers.PostgreSql" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Player.Vm.Api\Player.Vm.Api.csproj" />
