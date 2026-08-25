@@ -12,6 +12,9 @@
     <!-- IVsphereService has ~32 members and only one of them matters to these tests, so a substitute
          beats hand-writing a stub that would need editing every time the interface grows. -->
     <PackageReference Include="NSubstitute" Version="5.3.0" />
+    <!-- Hosts the real Startup in-process so tests can exercise routing, model binding,
+         authorization, MediatR behaviors and the EF pipeline without a hypervisor or a network. -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.1" />
     <PackageReference Include="xunit.v3" Version="3.2.2" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />

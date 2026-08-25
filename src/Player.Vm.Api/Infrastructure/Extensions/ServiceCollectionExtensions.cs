@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.OpenApi;
 using Player.Api.Client;
 using Player.Vm.Api.Domain.Proxmox.Options;
+using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Features.Shared.Interfaces;
 using Player.Vm.Api.Infrastructure.HttpHandlers;
 using Player.Vm.Api.Infrastructure.OperationFilters;
@@ -21,11 +22,20 @@ using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
 using System.Runtime.Serialization;
+using System.Threading;
 
 namespace Player.Vm.Api.Infrastructure.Extensions
 {
     public static class ServiceCollectionExtensions
     {
+        /// <summary>
+        /// Named client for guest file transfers. Shared with VsphereService rather than repeated as a
+        /// literal at both ends: a typo would resolve to an unconfigured default client - 100 second
+        /// timeout, full certificate validation - with no error, which only breaks the deployments that
+        /// need SkipGuestFileCertificateValidation.
+        /// </summary>
+        public const string GuestFileClientName = "vSphereGuestFile";
+
         #region Swagger
 
         public static void AddSwagger(this IServiceCollection services, AuthorizationOptions authOptions)
@@ -92,6 +102,7 @@ namespace Player.Vm.Api.Infrastructure.Extensions
             services.AddIdentityClient(identityClientOptions);
             services.AddPlayerClient(clientOptions);
             services.AddDatastoreClient(isoUploadOptions);
+            services.AddGuestFileClient();
             services.AddProxmoxClient();
             services.AddProxmoxIsoUploadClient(isoUploadOptions);
             services.AddTransient<AuthenticatingHandler>();
@@ -149,6 +160,40 @@ namespace Player.Vm.Api.Infrastructure.Extensions
             {
                 client.Timeout = TimeSpan.FromMinutes(isoUploadOptions.UploadTimeoutMinutes <= 0 ? 60 : isoUploadOptions.UploadTimeoutMinutes);
             });
+        }
+
+        // Named HttpClient for guest file transfers, which go directly to the ESXi host that runs the
+        // Vm rather than through vCenter. VsphereService used to new up a client and handler per
+        // transfer: because it is scoped, that leaked a connection pool per request and never picked up
+        // a DNS change for a host that moved.
+        //
+        // Timeout and certificate validation come from VsphereOptions, which is what the per-call
+        // handler set. The handler is pooled, so toggling SkipGuestFileCertificateValidation now takes
+        // effect at the next handler rotation rather than on the next transfer - the same trade the
+        // Proxmox clients above already make.
+        private static void AddGuestFileClient(this IServiceCollection services)
+        {
+            services.AddHttpClient(GuestFileClientName, (sp, client) =>
+                {
+                    var vsphereOptions = sp.GetRequiredService<IOptionsMonitor<VsphereOptions>>().CurrentValue;
+
+                    client.Timeout = vsphereOptions.GuestFileTransferTimeoutMinutes > 0
+                        ? TimeSpan.FromMinutes(vsphereOptions.GuestFileTransferTimeoutMinutes)
+                        : Timeout.InfiniteTimeSpan;
+                })
+                .ConfigurePrimaryHttpMessageHandler(sp =>
+                {
+                    // IOptionsMonitor rather than VsphereOptions: the latter is registered Scoped
+                    // (Startup.cs), and this factory runs outside any scope.
+                    var vsphereOptions = sp.GetRequiredService<IOptionsMonitor<VsphereOptions>>().CurrentValue;
+
+                    return new HttpClientHandler
+                    {
+                        ServerCertificateCustomValidationCallback = vsphereOptions.SkipGuestFileCertificateValidation
+                            ? (_, _, _, _) => true
+                            : null
+                    };
+                });
         }
 
         private static void AddIdentityClient(

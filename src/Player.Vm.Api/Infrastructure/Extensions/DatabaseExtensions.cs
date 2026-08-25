@@ -32,8 +32,10 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                         if (databaseOptions.DevModeRecreate)
                             vmCtx.Database.EnsureDeleted();
 
-                        // Do not run migrations on Sqlite, only devModeRecreate allowed
-                        if (!vmCtx.Database.IsSqlite())
+                        // Do not run migrations on Sqlite, only devModeRecreate allowed. IsRelational
+                        // because Migrate throws outright on a non-relational provider - InMemory could
+                        // not get past startup, despite being an accepted Database:Provider.
+                        if (vmCtx.Database.IsRelational() && !vmCtx.Database.IsSqlite())
                         {
                             vmCtx.Database.Migrate();
                         }
@@ -52,7 +54,7 @@ namespace Player.Vm.Api.Infrastructure.Extensions
                             vmCtxLogging.Database.EnsureDeleted();
 
                         // Do not run migrations on Sqlite, only devModeRecreate allowed
-                        if (!vmCtxLogging.Database.IsSqlite())
+                        if (vmCtxLogging.Database.IsRelational() && !vmCtxLogging.Database.IsSqlite())
                         {
                             vmCtxLogging.Database.Migrate();
                         }
