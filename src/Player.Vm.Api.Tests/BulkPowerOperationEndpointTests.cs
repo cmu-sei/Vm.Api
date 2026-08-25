@@ -50,11 +50,13 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
 
     private async Task<BulkPowerOperation.Response> Post(string action, params Guid[] ids)
     {
-        var response = await _client.PostAsJsonAsync($"/api/vms/actions/{action}", new { Ids = ids });
+        var response = await _client.PostAsJsonAsync(
+            $"/api/vms/actions/{action}", new { Ids = ids }, TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
 
-        return await response.Content.ReadFromJsonAsync<BulkPowerOperation.Response>(JsonOptions);
+        return await response.Content.ReadFromJsonAsync<BulkPowerOperation.Response>(
+            JsonOptions, TestContext.Current.CancellationToken);
     }
 
     private void VsphereReturns(PowerOperation operation, Dictionary<Guid, string> results) =>
@@ -251,7 +253,10 @@ public class BulkPowerOperationEndpointTests : IClassFixture<VmApiFactory>
     public async Task PowerOn_RejectsAnUnauthenticatedRequest()
     {
         var response = await _factory.CreateClient()
-            .PostAsJsonAsync("/api/vms/actions/power-on", new { Ids = new[] { Guid.NewGuid() } });
+            .PostAsJsonAsync(
+                "/api/vms/actions/power-on",
+                new { Ids = new[] { Guid.NewGuid() } },
+                TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
