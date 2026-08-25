@@ -16,6 +16,12 @@ public class TestAuthOptions : AuthenticationSchemeOptions
 {
     /// <summary>Scopes granted to every authenticated test request.</summary>
     public IEnumerable<string> Scopes { get; set; } = [];
+
+    /// <summary>
+    /// The scope granted only to a request carrying <see cref="TestAuthHandler.PrivilegedHeader"/>.
+    /// Withheld by default, because the ordinary caller must not satisfy the privileged policy.
+    /// </summary>
+    public string PrivilegedScope { get; set; }
 }
 
 /// <summary>
@@ -26,6 +32,10 @@ public class TestAuthOptions : AuthenticationSchemeOptions
 /// The scopes come from <see cref="VmApiFactory"/> rather than being hardcoded here, because Startup
 /// builds its default authorization policy out of Authorization:AuthorizationScope - a principal
 /// missing any one of those scope claims never reaches a controller.
+///
+/// The privileged scope is a separate opt-in rather than another entry in <see cref="TestAuthOptions.Scopes"/>:
+/// the machine-to-machine callers behind Authorization:PrivilegedScope are the only ones that hold it,
+/// and granting it to every test principal would make the 403 on <c>CallbacksController</c> untestable.
 /// </summary>
 public class TestAuthHandler(
     IOptionsMonitor<TestAuthOptions> options,
@@ -37,6 +47,12 @@ public class TestAuthHandler(
     /// <summary>Set to the user's guid. Absent means "no credentials presented".</summary>
     public const string UserIdHeader = "X-Test-User";
 
+    /// <summary>
+    /// Present on a request that should also carry <see cref="TestAuthOptions.PrivilegedScope"/>. Its
+    /// value is not read; the header is the whole signal.
+    /// </summary>
+    public const string PrivilegedHeader = "X-Test-Privileged";
+
     protected override Task<AuthenticateResult> HandleAuthenticateAsync()
     {
         if (!Request.Headers.TryGetValue(UserIdHeader, out var userId))
@@ -46,6 +62,11 @@ public class TestAuthHandler(
 
         var claims = new List<Claim> { new("sub", userId.ToString()) };
         claims.AddRange(Options.Scopes.Select(x => new Claim("scope", x)));
+
+        if (Request.Headers.ContainsKey(PrivilegedHeader))
+        {
+            claims.Add(new Claim("scope", Options.PrivilegedScope));
+        }
 
         var identity = new ClaimsIdentity(claims, SchemeName);
 

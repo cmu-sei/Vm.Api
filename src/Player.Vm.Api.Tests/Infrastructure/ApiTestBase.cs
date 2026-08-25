@@ -6,6 +6,8 @@ using System.Collections.Generic;
 using System.Net.Http;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 namespace Player.Vm.Api.Tests.Infrastructure;
 
@@ -34,11 +36,25 @@ public abstract class ApiTestBase(DatabaseFixture fixture, VmApiFactory factory)
     : DatabaseTestBase(fixture)
 {
     /// <summary>
-    /// Case-insensitive because the API serializes camelCase and the response types these tests
-    /// deserialize into are the application's own PascalCase records.
+    /// The options the application serializes its responses with, taken from the running host rather
+    /// than restated here.
     /// </summary>
-    protected static readonly JsonSerializerOptions JsonOptions =
-        new() { PropertyNameCaseInsensitive = true };
+    /// <remarks>
+    /// <para>
+    /// Restating them means maintaining a second copy: <c>Startup</c> adds a
+    /// <c>JsonStringEnumConverter</c>, so an enum goes out as <c>"Vsphere"</c> rather than a number, and a
+    /// test deserializing with plain case-insensitive options fails on it for a reason that has nothing
+    /// to do with what it was asserting.
+    /// </para>
+    /// <para>
+    /// Note what this deliberately does not do: because these are the application's own options, a test
+    /// using them follows the application if the wire format changes. Nothing here would notice the
+    /// converter being removed, which would break every generated client. That belongs in an assertion
+    /// against the raw JSON - see
+    /// <c>NetworksEndpointTests.GetById_SerializesAnEnumAsItsName</c>.
+    /// </para>
+    /// </remarks>
+    protected JsonSerializerOptions JsonOptions { get; private set; }
 
     private readonly Guid _sessionId = Guid.NewGuid();
     private readonly List<HttpClient> _clients = [];
@@ -57,6 +73,12 @@ public abstract class ApiTestBase(DatabaseFixture fixture, VmApiFactory factory)
     /// </summary>
     protected HttpClient AnonymousClient { get; private set; }
 
+    /// <summary>
+    /// A client whose requests additionally carry the scope behind the privileged authorization policy.
+    /// Only <c>CallbacksController</c> is gated on it.
+    /// </summary>
+    protected HttpClient PrivilegedClient { get; private set; }
+
     public override async ValueTask InitializeAsync()
     {
         await base.InitializeAsync();
@@ -67,6 +89,12 @@ public abstract class ApiTestBase(DatabaseFixture fixture, VmApiFactory factory)
 
         Client = Track(Factory.CreateAuthenticatedClient());
         AnonymousClient = Track(Factory.CreateClient());
+        PrivilegedClient = Track(Factory.CreatePrivilegedClient());
+
+        // After the clients, because resolving from Factory.Services is what builds the host.
+        JsonOptions = Factory.Services
+            .GetRequiredService<IOptions<Microsoft.AspNetCore.Mvc.JsonOptions>>()
+            .Value.JsonSerializerOptions;
     }
 
     public override async ValueTask DisposeAsync()

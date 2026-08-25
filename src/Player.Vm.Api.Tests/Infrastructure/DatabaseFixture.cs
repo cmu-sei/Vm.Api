@@ -72,7 +72,7 @@ public sealed class DatabaseFixture : IAsyncLifetime
     /// <remarks>
     /// Deliberately empty: the container is started by the first caller that actually asks for a
     /// database, not here. An assembly fixture that throws in <c>InitializeAsync</c> fails *every* test
-    /// in the assembly, and all but 19 of these tests never touch a database - so starting eagerly
+    /// in the assembly, and most of these tests never touch a database - so starting eagerly
     /// would mean a contributor without Docker could not run the unit tests either. Starting lazily
     /// keeps the hard requirement exactly where it belongs: on the tests that need a database.
     /// </remarks>

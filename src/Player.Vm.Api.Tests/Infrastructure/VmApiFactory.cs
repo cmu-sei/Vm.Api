@@ -16,11 +16,14 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using NSubstitute;
+using Player.Api.Client;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Domain.Vsphere.Services;
+using Player.Vm.Api.Features.Files.Models;
+using Player.Vm.Api.Features.Files.Providers;
 using Player.Vm.Api.Infrastructure.Authorization;
 using Xunit;
 // The Vm class and the Player.Vm namespace share a name, which is why the API's own code writes
@@ -42,6 +45,16 @@ namespace Player.Vm.Api.Tests.Infrastructure;
 ///   IPlayerService - player.api, reached over HTTP for every authorization decision. Note this is
 ///     the *only* authorization substitute: VmService.CanAccessVm and the handler's own permission
 ///     gates still run for real.
+///   IViewService / IPlayerApiClient - player.api again, by a different route. IViewService is not
+///     optional for any test that writes a Vm: the entity-event handlers that push SignalR
+///     notifications resolve a team's View through it inside the same request, and the real
+///     implementation builds its own client against ClientSettings:urls:playerApi. IPlayerApiClient is
+///     what GetVmPermissions reads a caller's team claims from.
+///   ICallbackBackgroundService - the webhook send queue, which processes on a thread pool thread
+///     outside any request and so would reach the wrong database.
+///   IIsoProvider - ISO storage on a hypervisor. Note IsoService is NOT substituted: the permission
+///     gates, scope resolution, filename sanitizing and cross-provider merge are the parts worth
+///     running, and only the storage itself is replaced.
 ///   ITaskService / IProxmoxTaskService - the task pollers, which the CheckTasks pipeline behaviors
 ///     poke after every power command. Substituted so a test can assert the poke happened without
 ///     starting a poller.
@@ -79,13 +92,67 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
     /// </summary>
     private static readonly string[] Scopes = ["player", "player-vm"];
 
+    /// <summary>
+    /// The scope behind the privileged policy, written into configuration for the same reason
+    /// <see cref="Scopes"/> is. Only <see cref="CreatePrivilegedClient"/> presents it.
+    /// </summary>
+    private const string PrivilegedScope = "player-vm-privileged";
+
+    /// <summary>The ISO size ceiling this host runs with, in bytes. See where it is written below.</summary>
+    public const long MaxIsoFileSize = 4096;
+
+    /// <summary>
+    /// The Proxmox cluster this host is configured against. Exposed because it is not only an address:
+    /// it is the provider instance id every Proxmox <c>ViewNetwork</c> row is keyed on, so a test seeding
+    /// one has to agree with it. Deliberately not the empty string <c>appsettings.json</c> ships, which
+    /// is also <c>ViewNetwork.ProviderInstanceId</c>'s default and would let a row belonging to no
+    /// cluster in particular match.
+    /// </summary>
+    public const string ProxmoxHost = "pve.test";
+
     private TestDatabaseSession _hostSession;
 
     public IVsphereService Vsphere { get; } = Substitute.For<IVsphereService>();
     public IProxmoxService Proxmox { get; } = Substitute.For<IProxmoxService>();
     public IPlayerService PlayerApi { get; } = Substitute.For<IPlayerService>();
+
+    /// <summary>
+    /// The generated player.api client, as <c>GetVmPermissions</c> consumes it. Distinct from
+    /// <see cref="PlayerApi"/>, which is this application's own wrapper over it.
+    /// </summary>
+    public IPlayerApiClient PlayerApiClient { get; } = Substitute.For<IPlayerApiClient>();
+
+    /// <summary>
+    /// Resolves a team to the View it belongs to. Reached by the SignalR entity-event handlers on every
+    /// Vm write, so a test that creates, updates or deletes a Vm goes through it whether it means to or
+    /// not; unstubbed it answers null, which those handlers treat as "no View group to notify".
+    /// </summary>
+    public IViewService Views { get; } = Substitute.For<IViewService>();
+
+    /// <summary>
+    /// The webhook send queue. Substituted rather than left real because the real one is a
+    /// <c>BackgroundService</c> that builds its <c>ActionBlock</c> in its constructor: handing it an event
+    /// starts processing on a thread pool thread, outside any request, so it resolves the host's own
+    /// <c>VmContext</c> and races the test that is asserting on the row it just wrote.
+    /// </summary>
+    public ICallbackBackgroundService Callbacks { get; } = Substitute.For<ICallbackBackgroundService>();
+
     public ITaskService VsphereTasks { get; } = Substitute.For<ITaskService>();
     public IProxmoxTaskService ProxmoxTasks { get; } = Substitute.For<IProxmoxTaskService>();
+
+    /// <summary>
+    /// The one ISO provider this host has. The real pair is removed rather than substituted one for one,
+    /// because <c>IsoService</c> takes providers as a set: what a test needs to say is "one hypervisor
+    /// stores ISOs, and here is what it holds", not which two happen to be registered. <c>IsoService</c>
+    /// itself is left real, so the scope resolution, the permission gates, the filename sanitizing and
+    /// the cross-provider merge all run.
+    /// </summary>
+    /// <remarks>
+    /// Disabled until a test calls <see cref="EnableIsoProvider"/>, which is what an install with no ISO
+    /// storage configured looks like - and is what every endpoint test that has nothing to do with ISOs
+    /// should see.
+    /// </remarks>
+    public IIsoProvider IsoProvider { get; } = Substitute.For<IIsoProvider>();
 
     public Guid UserId { get; } = Guid.NewGuid();
 
@@ -116,6 +183,14 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
         // anything to do with the API surface under test.
         builder.UseSetting("HealthChecksUI:Enabled", "false");
         builder.UseSetting("Authorization:AuthorizationScope", string.Join(' ', Scopes));
+        builder.UseSetting("Authorization:PrivilegedScope", PrivilegedScope);
+        // Small enough that a test can exceed it without moving gigabytes. This one value is both the
+        // limit UploadIso enforces and the multipart body limit Startup hands Kestrel, so it is the only
+        // way to reach either check over a real request.
+        builder.UseSetting("IsoUpload:MaxFileSize", MaxIsoFileSize.ToString());
+        // Nothing dials it - IProxmoxService is substituted, so no PveClient is ever built - but the
+        // Proxmox request path reads it as the provider instance id its view-network rows are keyed on.
+        builder.UseSetting("Proxmox:Host", ProxmoxHost);
 
         builder.ConfigureTestServices(services =>
         {
@@ -124,8 +199,14 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
             services.Replace(ServiceDescriptor.Singleton(Vsphere));
             services.Replace(ServiceDescriptor.Singleton(Proxmox));
             services.Replace(ServiceDescriptor.Singleton(PlayerApi));
+            services.Replace(ServiceDescriptor.Singleton(PlayerApiClient));
+            services.Replace(ServiceDescriptor.Singleton(Views));
+            services.Replace(ServiceDescriptor.Singleton(Callbacks));
             services.Replace(ServiceDescriptor.Singleton(VsphereTasks));
             services.Replace(ServiceDescriptor.Singleton(ProxmoxTasks));
+
+            services.RemoveAll<IIsoProvider>();
+            services.AddSingleton(IsoProvider);
 
             AddPerTestDatabase(services);
 
@@ -133,7 +214,11 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
             // without having to unpick its registration.
             services.AddAuthentication(TestAuthHandler.SchemeName)
                 .AddScheme<TestAuthOptions, TestAuthHandler>(
-                    TestAuthHandler.SchemeName, o => o.Scopes = Scopes);
+                    TestAuthHandler.SchemeName, o =>
+                    {
+                        o.Scopes = Scopes;
+                        o.PrivilegedScope = PrivilegedScope;
+                    });
         });
     }
 
@@ -188,14 +273,35 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
     }
 
     /// <summary>
-    /// Grants the substituted player.api every permission the power-operation gates ask for. Tests
-    /// that care about a denial re-stub just the call they are denying.
+    /// A client whose requests also carry the privileged scope, as the machine-to-machine callers of
+    /// <c>CallbacksController</c> do. Everything a <see cref="CreateAuthenticatedClient"/> request can
+    /// reach, this one can reach too - the privileged scope is added to the ordinary ones, not swapped
+    /// for them, which is what a real privileged token looks like.
     /// </summary>
+    public HttpClient CreatePrivilegedClient()
+    {
+        var client = CreateAuthenticatedClient();
+        client.DefaultRequestHeaders.Add(TestAuthHandler.PrivilegedHeader, "true");
+        return client;
+    }
+
+    /// <summary>
+    /// Grants the substituted player.api every team-scoped and system-wide permission the endpoints
+    /// gate on. Tests that care about a denial re-stub just the call they are denying.
+    /// </summary>
+    /// <remarks>
+    /// Deliberately not exhaustive over <c>IPlayerService</c>: the visibility calls
+    /// (<c>GetVisibilityContextAsync</c> and friends) are left unstubbed, because a default that made
+    /// every team visible would hide the difference between a permission and a team's membership of a
+    /// View. Tests wire those per case.
+    /// </remarks>
     public void AllowEverything()
     {
         PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(true);
         PlayerApi.CanEditTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+        PlayerApi.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(true);
         PlayerApi.Can(
                 Arg.Any<IEnumerable<Guid>>(),
@@ -205,6 +311,32 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
                 Arg.Any<AppTeamPermission[]>(),
                 Arg.Any<CancellationToken>())
             .Returns(true);
+    }
+
+    /// <summary>
+    /// Turns <see cref="IsoProvider"/> into a plausible hypervisor: enabled, able to take the request body
+    /// straight through, holding nothing, and passing filenames and writes through successfully.
+    /// </summary>
+    /// <remarks>
+    /// All of it has to be set, not just <c>Enabled</c>: a substitute answers null for
+    /// <c>NormalizeFilename</c> and for every <c>Task</c>-returning member, and <c>IsoService</c> reaches
+    /// those before it reaches anything a test is asserting. Tests re-stub the one call they are about.
+    /// </remarks>
+    public void EnableIsoProvider(VmType providerType = VmType.Vsphere)
+    {
+        IsoProvider.ProviderType.Returns(providerType);
+        IsoProvider.Enabled.Returns(true);
+        IsoProvider.RequiresStagedFile.Returns(false);
+        IsoProvider.NormalizeFilename(Arg.Any<string>()).Returns(x => x.Arg<string>());
+
+        IsoProvider.UploadAsync(Arg.Any<IsoUploadRequest>(), Arg.Any<CancellationToken>())
+            .Returns(new IsoOperationOutcome { FailedHostCount = 0, TotalHostCount = 1 });
+        IsoProvider.DeleteAsync(
+                Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(new IsoOperationOutcome { FailedHostCount = 0, TotalHostCount = 1 });
+
+        IsoProvider.ListAsync(Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<Guid, IReadOnlyList<IsoListingEntry>>());
     }
 
     /// <summary>

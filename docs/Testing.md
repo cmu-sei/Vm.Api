@@ -4,20 +4,66 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 305 tests across 15 test classes. All of them run today; nothing is skipped.
+The suite contains 640 tests across 24 test classes. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
-Docker: no network, no vCenter and no Proxmox cluster. The 286 unit tests need not even that.
+Docker: no network, no vCenter and no Proxmox cluster. The 314 unit tests need not even that.
 
-Thirteen of the fifteen classes are isolated unit tests. They construct the thing under test
-directly and substitute its collaborators. `VsphereServiceCommandTests` is the largest and the most
-important of them: it drives `VsphereService` through a substituted `IVimClient`, which is the only
-seam between that service and a live vCenter.
+Fourteen of the twenty-four classes are isolated unit tests. They construct the thing under test
+directly and substitute its collaborators. `VsphereIsoProviderTests` and `VsphereServiceCommandTests`
+are the largest and most important of them: they drive `VsphereService` and its ISO provider through a
+substituted `IVimClient`, which is the only seam between those and a live vCenter.
 
-`BulkPowerOperationEndpointTests` hosts the application in process and sends real HTTP requests
-through it. Everything between the request and the hypervisor client is production wiring - routing,
-model binding, the authorization policy, the MediatR pipeline behaviors, the handlers, AutoMapper and
-EF Core against real PostgreSQL - and only the edges are replaced.
+Seven classes host the application in process and send real HTTP requests through it. Everything between
+the request and the hypervisor client is production wiring - routing, model binding, the authorization
+policy, the MediatR pipeline behaviors, the handlers, AutoMapper and EF Core against real PostgreSQL -
+and only the edges are replaced.
+
+- `VmsEndpointTests` and `BulkPowerOperationEndpointTests` cover `VmController`, the largest surface in
+  the application. The bulk power operations are split out because their subject is one contract rather
+  than a set of actions: a multi-select power command reports per-VM outcomes, and what those tests pin
+  is that the per-VM error survives the handler, the serializer and the wire rather than collapsing into
+  one failure for the whole selection.
+- `NetworksEndpointTests` covers `NetworksController`, and is the one place the wire format itself is
+  asserted against raw JSON rather than through the application's own serializer options.
+- `FilesEndpointTests` covers the ISO endpoints. The ISO service is already covered thoroughly by unit
+  tests, so this class deliberately does not restate the permission matrix or the listing merge: what
+  only a real request reaches is `FileController.Upload`, which reads a multipart form by hand instead
+  of binding a model, so its three rejections, the size ceiling and the team-id parsing have no other
+  caller.
+- `CallbacksEndpointTests` covers the webhook endpoint, the one route whose caller is another service
+  rather than a user, and the only one behind the privileged authorization policy.
+- `HealthEndpointTests` covers the liveliness and readiness routes. What matters there is not a model or
+  a permission but which checks each route runs, since the split between them lives entirely in the
+  "live" and "ready" tags on the registrations in `Startup` and nothing else asserts it.
+- `ProxmoxEndpointTests` covers `ProxmoxController`. Its seventeen routes all acquire their VM through
+  one method, `BaseHandler.GetVm`, which applies the Proxmox-provider guard, the access rules and then
+  whatever permission that particular route needs - so the cross-cutting questions are asked as theories
+  over the whole route table, and the table itself has a reflection test keeping it in step with the
+  controller. Beyond that the class sticks to what only a real request reaches: the values a handler
+  hands the cluster, the ISO mount authorization refusing to pass a client's volume id through, the
+  view-network rows reaching the NIC options, and which routes wake the task poller. `ProxmoxService`
+  itself is substituted, and the ISO and network rules already have unit classes, so neither is restated
+  here.
+
+Three classes cover authorization, which is where a green run is easiest to mistake for a safe one:
+every other test in the suite runs as a caller who is allowed to do everything, so these are the only
+place a refusal is ever observed.
+
+- `PlayerServiceAuthorizationTests` drives `PlayerService` against a substituted `IPlayerApiClient`.
+  This is where every authorization decision in the application ends up and nothing above it re-checks
+  the verdict, so it is the highest-value class in the suite. It covers how a claim from player.api
+  becomes a yes or a no - including the distinction between a permission held directly and one that is
+  merely effective, which is what stops a permission scoped onto one team from authorizing another.
+- `VmServiceAuthorizationTests` covers which VMs a caller may see and touch. The gates are the simple
+  half; the half worth the tests is the filtering, because `GetByViewIdAsync` and `GetByTeamIdAsync`
+  answer a caller who should not see a personal VM with an extra list entry rather than an error.
+- `NetworkServiceTests` covers the read and write gates over a view's networks and, more importantly,
+  `GetEffectiveNetworkPermissions` - the only thing that stops one team attaching a NIC to another
+  team's network, and so the only thing that makes a range with several teams in it separable at all.
+
+The two service classes talk to real PostgreSQL, because some of the filtering they are asked about
+happens in SQL, but they construct the service directly rather than going over HTTP.
 
 `Infrastructure/DatabaseHarnessTests` tests the harness itself. Each of its assertions guards a
 property the rest of the suite silently relies on and which would otherwise degrade without failing
@@ -33,8 +79,8 @@ dotnet test
 
 **Docker must be running.** PostgreSQL is the only database these tests use, and there is deliberately
 no in-memory or SQLite fallback - a fallback that quietly swaps the provider reports a green run that
-never touched what production uses. Without Docker the 19 database tests fail, each naming the reason;
-the other 286 still pass, because the container is started by the first test that asks for a database
+never touched what production uses. Without Docker the 326 database tests fail, each naming the reason;
+the other 314 still pass, because the container is started by the first test that asks for a database
 rather than at assembly load.
 
 A single class or a single test can be run with a filter:
@@ -44,7 +90,7 @@ dotnet test --filter "FullyQualifiedName~VsphereServiceCommandTests"
 dotnet test --filter "FullyQualifiedName~VsphereServiceCommandTests.PowerOn_WhenAlreadyOn_ReportsItAndSendsNothing"
 ```
 
-A full run takes about seven seconds, container start and migrations included.
+A full run takes about eleven seconds, container start and migrations included.
 
 There is no coverage collection configured. Nothing gates on a coverage figure, and adding a
 collector without a threshold step would produce a number nobody reads.
@@ -97,19 +143,64 @@ own framework reference expects.
 `Infrastructure/VmApiFactory.cs` is a `WebApplicationFactory<Startup>`. Its own doc comment is the
 authoritative description of what is real and what is not; the shape of it is:
 
-- **Substituted**: `IVsphereService` and `IProxmoxService` (the hypervisors), `IPlayerService`
-  (player.api, reached over HTTP for authorization decisions), and `ITaskService` /
-  `IProxmoxTaskService` (the pollers the `CheckTasks` pipeline behaviors poke after a power command).
+- **Substituted**: `IVsphereService` and `IProxmoxService` (the hypervisors), `IPlayerService`,
+  `IViewService` and `IPlayerApiClient` (player.api, reached over HTTP for authorization decisions and
+  for the View a SignalR notification is addressed to), `ITaskService` / `IProxmoxTaskService` (the
+  pollers the `CheckTasks` pipeline behaviors poke after a power command), `ICallbackBackgroundService`
+  (the webhook send queue) and `IIsoProvider` (ISO storage on a hypervisor).
 - **Removed**: every `IHostedService`. The background pollers would otherwise start dialing a vCenter
   that is not there, on their own schedule, in the middle of unrelated tests.
 - **Real**: everything else, including `VmService.CanAccessVm` and the handlers' own permission gates.
   `IPlayerService` is the only authorization substitute.
+
+Two of those are worth knowing the reason for, because neither is about avoiding the network:
+
+- `ICallbackBackgroundService` is substituted because the real one is a `BackgroundService` that builds
+  its `ActionBlock` in its **constructor**. Removing the `IHostedService` registrations does not stop it:
+  handing it an event still starts processing, on a thread pool thread, outside any request - so it
+  resolves the host's own `VmContext` and races the test asserting on the row it just wrote.
+- `IIsoProvider` replaces only the storage. `IsoService` itself is left real, because the scope
+  resolution, the permission gates, the filename sanitizing and the cross-provider merge are the parts
+  worth running. The real pair of providers is removed rather than substituted one for one, since
+  `IsoService` takes providers as a set: what a test needs to say is "one hypervisor stores ISOs, and
+  here is what it holds", not which two happen to be registered. The substitute starts *disabled*, which
+  is what an install with no ISO storage configured looks like and is what a test with nothing to do with
+  ISOs should see; `EnableIsoProvider()` turns it into a plausible hypervisor.
+
+`AllowEverything()` grants the substituted player.api every permission the endpoints gate on, and a test
+that cares about a denial re-stubs the one call it is denying. It is deliberately not exhaustive over
+`IPlayerService`: the visibility calls are left unstubbed, because a default that made every team visible
+would hide the difference between holding a permission and a team's membership of a View.
+
+Two configuration values the factory writes are asserted on rather than merely set, and both are
+exposed as constants for that reason. `MaxIsoFileSize` is at once the ISO size ceiling `UploadIso`
+enforces and the multipart body limit `Startup` hands Kestrel, so it is small enough that a test can
+exceed it without moving gigabytes. `ProxmoxHost` is not only an address: it is the provider instance id
+every Proxmox `ViewNetwork` row is keyed on, so a test seeding one has to agree with it. It is
+deliberately not the empty string `appsettings.json` ships, which is also `ProviderInstanceId`'s default
+and would let a row belonging to no cluster in particular match. Nothing dials either, since
+`IProxmoxService` is substituted and no `PveClient` is ever built.
+
+`Infrastructure/TestMapper.cs` is the application's real AutoMapper configuration, for the tests that
+construct a service directly instead of going over HTTP. It is built the way `Startup` builds it -
+`AddAutoMapper(typeof(Startup))` over the whole assembly - rather than by registering the profiles a
+test happens to need, so a broken profile or a resolver whose dependency goes unregistered fails in
+those tests too. `ConsoleUrlOptions` has to be registered alongside it because `ConsoleUrlResolver`
+takes it as a constructor dependency, and its values are deliberately recognizable: a test asserting on
+a console URL should be reading it from `TestMapper`, not matching a hostname left in a config file.
 
 `Infrastructure/TestAuthHandler.cs` stands in for the JWT bearer handler so no identity server is
 needed. A request carrying `X-Test-User` authenticates as that user; a request without it presents no
 credentials, which is what keeps the 401 path testable. The scopes come from the factory rather than
 being hardcoded, because `Startup` builds its default authorization policy out of
 `Authorization:AuthorizationScope`.
+
+A request carrying `X-Test-Privileged` additionally gets the scope behind
+`Authorization:PrivilegedScope`, which `CallbacksController` is the only route gated on. That is a
+separate opt-in rather than another entry in the ordinary scope list on purpose: the machine-to-machine
+callers are the only ones that hold it, and granting it to every test principal would make the 403 on
+`CallbacksController` untestable. `ApiTestBase` exposes all three principals - `Client`,
+`AnonymousClient` and `PrivilegedClient`.
 
 ## The database
 
@@ -163,6 +254,8 @@ request ever lands there.
 - `VmApiFactory` is a **class** fixture, so its substitutes are shared across the class, but the
   database is not - it is per test. Clear the substitutes in `InitializeAsync`;
   `BulkPowerOperationEndpointTests` calls `ClearSubstitute()` on each and then `AllowEverything()`.
+  Clearing matters more than it looks: a substitute retains both its stubs and its received calls, so a
+  `Received()` assertion in a class that did not clear can be satisfied by an earlier test's request.
 - It is deliberately not an assembly fixture. Tests both arrange return values on and assert
   `Received()` against its NSubstitute doubles, and NSubstitute keeps assertion state per thread, so
   one shared set would lose and cross-attribute calls once classes ran in parallel. The cost is about a
@@ -187,6 +280,34 @@ request ever lands there.
    and an undisposed context keeps its pooled connection checked out until the process exits.
 6. Do not add Arrange, Act and Assert comments. A blank line already shows the shape of a test.
    Comments should explain what a test pins and why it matters, not what the next line does.
+7. For an authorization test, substitute `IPlayerService` and construct the service directly, with
+   `TestMapper.Value` for the mapper. Make the substitute model the rule rather than the answer where
+   the rule is what is in question - `NetworkServiceTests.Holding` returns true when any one of the
+   permissions the call site *asked for* is held, which is what lets one test show that view rights
+   allow a read and another show that they do not allow a write. A substitute that returns a flat
+   true or false per method cannot tell those apart.
+8. Break the production code and check the test fails, then restore it with `git checkout`. A test that
+   passes the first time it is run has not been shown to assert anything, and every class here has been
+   through it. Two things learned that way are now written into the tests themselves:
+   `GetByViewId_OnlyMine_PutsThePrimaryTeamsVmFirst` passed with the ordering it exists to protect
+   deleted, because the rows happened to arrive in the right order already - it is now a theory over both
+   seeding orders. And `HealthEndpointTests.Health_IsReachableWithoutCredentials` did not notice
+   `[AllowAnonymous]` being removed from `HealthController`, because with no global authorization filter
+   and no `RequireAuthorization` on `MapControllers`, that attribute is decorative; its `<remarks>` now
+   says what the test does and does not catch instead of implying it guards the attribute.
+
+   `TreatWarningsAsErrors` makes a bare `if (false)` un-buildable through CS0162. Three mutations that
+   do build: `if (false && cond)` in place of `if (cond)`, since the body stays reachable as far as the
+   compiler is concerned; a `var mutate = true;` local with `if (!mutate && cond)`, for a guard whose
+   body is a `throw` that CS0162 would otherwise catch; and simply changing an operator or a returned
+   value. Aim for a mutation that fails *exactly* the test it should: a mutation that reddens half the
+   class has usually broken the arrangement rather than the thing under assertion.
+
+   Where a class asks the same question of many routes, mutate in batches whose expected failures have
+   different test *names*, and check both the count and the names. `ProxmoxEndpointTests` was verified
+   that way in fifteen runs: disabling all four checks in `BaseHandler.GetVm` at once, for instance,
+   should fail exactly 39 cases across exactly five tests, and any other total means a mutation landed
+   somewhere it was not aimed.
 
 Bugs and deliberate oddities found while writing a test are characterized, not fixed. The test
 asserts the current behaviour and says why it is that way.
@@ -198,7 +319,19 @@ purpose. Several of those assertions would look wrong to someone reading them as
 does"; the comments are what carry that intent through the next refactor.
 
 Where a test would turn red once a real bug is fixed, say so in `<remarks>`, so that whoever makes
-the fix knows the failure is expected.
+the fix knows the failure is expected. Two tests are there for that reason alone, and are the reason
+this convention is worth following rather than skipping the awkward case:
+
+- `HealthEndpointTests.Ready_WhenUnhealthy_StillAnswers200`. These are controller actions, not the
+  health check middleware, and `UIResponseWriter.WriteHealthCheckUIResponse` writes the report without
+  setting a status code - so an unhealthy readiness check answers **200** with a body saying
+  `"Unhealthy"`, and a probe configured on the status code alone never fires. The `<remarks>` says the
+  fix is to assert 503 here.
+- `FilesEndpointTests.Upload_WithABodyOverTheLimit_IsRefusedByTheFormReaderNotTheHandler`. One
+  configured value is both the ISO size ceiling and the multipart body length limit, so a body over the
+  limit is refused by the form reader while MVC is still building value providers - and `UploadIso`'s own
+  `file.Length` check, the authoritative one, is unreachable. Both answers are 400s, so the assertion is
+  on the body, which is the only thing that tells them apart.
 
 # Continuous integration
 
@@ -229,16 +362,23 @@ currently tell you.
 
 - **`VmLoggingContext`.** The VM usage log runs with `VmUsageLogging:Enabled` false, so its own
   migrations, its `if (Database.IsNpgsql())` branch and every handler that writes to it are untested.
-  `VmContext` is now covered against real PostgreSQL; this second context is not.
-- **Authorization.** `IPlayerService` is substituted and `AllowEverything()` is the default, so
-  `VmService.CanAccessVm`, the `includePersonal` and `onlyMine` filtering in `GetByViewIdAsync` and
-  `GetByTeamIdAsync`, `GetEffectiveNetworkPermissions` and the scoped team permissions are only ever
-  driven down the permitting path.
-- **Most of the HTTP surface.** One endpoint class exists, against roughly 82 actions across eight
-  controllers. `VmUsageLoggingSession` (including CSV and report generation), `Networks`, the maps and
-  coordinates on `VmController`, `Callbacks` and its `WebhookEvents` table, the Proxmox and vSphere
-  command and query handlers, both SignalR hubs, the four AutoMapper profiles and the two `CheckTasks`
-  pipeline behaviors have no test.
+  `VmContext` is now covered against real PostgreSQL; this second context is not. Note the context *is*
+  registered even when the feature is disabled - `Startup` registers it unconditionally in the relational
+  branch - but it is pointed at the host's own database and never migrated, and `AddPerTestDatabase`
+  does not route it. Covering `VmUsageLoggingSessionController` therefore means migrating a second
+  template and routing a second context per test, not just flipping the flag.
+- **Authorization at the edges of it.** `PlayerService`, `VmService` and `NetworkService` are driven down
+  the refusing path as well as the permitting one, and every endpoint class covering an authenticated
+  route asserts its 401 and at least one refusal - a 403, or in `BulkPowerOperationEndpointTests` the
+  per-VM `"Unauthorized"` a bulk command reports instead. `ProxmoxController` now has the full map of
+  which permission each of its routes asks for, including the three that ask for none. What is still only
+  ever permitted is what gates itself rather than delegating to those three services:
+  `VmUsageLoggingSession`, `VsphereController` and the two SignalR hubs' group membership.
+- **Two of the eight controllers.** 52 of the roughly 82 actions have endpoint tests: `VmController`
+  (23), `ProxmoxController` (17), `NetworksController` (5), `FileController` (4), `CallbackController`
+  (1) and `HealthCheckController` (2). `VsphereController` (21) and `VmUsageLoggingSessionController`
+  (9, including CSV and report generation) have none, and neither do the two SignalR hubs. The AutoMapper
+  profiles run in every endpoint test, but only the projections those tests happen to read are asserted.
 - **The hypervisor edge, permanently.** No harness makes a vCenter or a Proxmox cluster available in
   CI. Unit tests against `IVimClient` and the Proxmox interfaces are the right tool at that layer and
   are not meant to be replaced by anything further up.
@@ -252,5 +392,9 @@ currently tell you.
 3. ~~A real PostgreSQL instance, started per run in a container, with an isolated database per test.~~
    Done. The `Startup` change originally planned alongside it turned out not to be needed: the
    in-memory store name only mattered while tests used the in-memory provider.
-4. Breadth, authorization first, then the endpoint surface by controller.
+4. Breadth, authorization first, then the endpoint surface by controller. Authorization is done:
+   `PlayerService`, `VmService` and `NetworkService` each have a class driving their refusing paths.
+   Six of the eight controllers are done - `Vm`, `Proxmox`, `Networks`, `File`, `Callback` and
+   `HealthCheck`. `Vsphere` is next; `VmUsageLoggingSession` needs the second `DbContext` routed per
+   test first, as described under "What is not covered yet".
 5. Coverage measurement, opt-in and ungated, purely as a map of where the untested risk still is.
