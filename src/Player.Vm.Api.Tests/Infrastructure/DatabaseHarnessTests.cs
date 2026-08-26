@@ -70,6 +70,36 @@ public class DatabaseHarnessTests(DatabaseFixture fixture, VmApiFactory factory)
     }
 
     /// <summary>
+    /// The usage log is a second database with its own migration history, per test, as production keeps
+    /// it - <c>VmUsageLogging:PostgreSql</c> is a connection string of its own and is as often as not a
+    /// different server. Asserted from both ends, because nothing else would fail if the two contexts
+    /// were pointed at one database: the usage log's tables are there, and they are not in this test's
+    /// <c>VmContext</c> database.
+    /// </summary>
+    [Fact]
+    public async Task TheUsageLogIsASeparateMigratedDatabase()
+    {
+        Assert.NotEqual(Session.DatabaseName, Session.LoggingDatabaseName);
+
+        await using var logging = NewLoggingContext();
+
+        Assert.True(logging.Database.IsNpgsql());
+        Assert.NotEmpty(await logging.Database.GetAppliedMigrationsAsync(Ct));
+        Assert.Empty(await logging.Database.GetPendingMigrationsAsync(Ct));
+        Assert.Empty(await logging.VmUsageLoggingSessions.ToListAsync(Ct));
+
+        var tables = await Db.Database
+            .SqlQuery<string>(
+                $"""
+                SELECT table_name FROM information_schema.tables
+                WHERE table_schema = 'public' AND table_name LIKE 'vm_usage%'
+                """)
+            .ToListAsync(Ct);
+
+        Assert.Empty(tables);
+    }
+
+    /// <summary>
     /// <c>AddPostgresUUIDGeneration</c> gives Guid keys a <c>uuid_generate_v4()</c> default, which needs
     /// the <c>uuid-ossp</c> extension and so needs the container's user to stay a superuser.
     /// </summary>

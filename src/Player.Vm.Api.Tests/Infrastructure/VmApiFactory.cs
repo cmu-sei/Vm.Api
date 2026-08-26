@@ -62,8 +62,8 @@ namespace Player.Vm.Api.Tests.Infrastructure;
 /// Removed: every IHostedService. The background pollers would otherwise start dialing a vCenter
 /// that is not there, on their own schedule, in the middle of unrelated tests.
 ///
-/// Replaced: the scoped VmContext registration, so each request reaches the database of the test that
-/// made it. See <see cref="TestDatabaseScope"/>.
+/// Replaced: the VmContext and VmLoggingContext registrations, so each request reaches the databases of
+/// the test that made it. See <see cref="TestDatabaseScope"/>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -75,13 +75,14 @@ namespace Player.Vm.Api.Tests.Infrastructure;
 /// than one shared host.
 /// </para>
 /// <para>
-/// The host gets a throwaway database of its own, separate from any test's.
+/// The host gets throwaway databases of its own, separate from any test's.
 /// <c>Program.Main</c> matches neither convention <c>HostFactoryResolver</c> looks for, so
 /// <c>WebApplicationFactory</c> falls back to invoking it on a background thread - and <c>Main</c>
 /// calls <c>InitializeDatabase</c>, which resolves a <c>VmContext</c> outside any request and calls
 /// <c>Migrate</c> on it. Nothing gates that off, so the host has to have somewhere real to migrate.
 /// A clone of the already-migrated template makes it a no-op, and pointing it at the template itself
-/// would hold a connection there and break every later clone.
+/// would hold a connection there and break every later clone. The same goes for the usage log, which
+/// <c>InitializeDatabase</c> migrates too when <see cref="VmUsageLoggingEnabled"/>.
 /// </para>
 /// </remarks>
 public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Startup>, IAsyncLifetime
@@ -111,6 +112,20 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
     public const string ProxmoxHost = "pve.test";
 
     private TestDatabaseSession _hostSession;
+
+    /// <summary>
+    /// Whether this host runs with <c>VmUsageLogging:Enabled</c>. False, which is what
+    /// <c>appsettings.json</c> ships and what every deployment that does not want a usage log runs with -
+    /// so it is what the rest of the endpoint tests should be proving things against.
+    /// </summary>
+    /// <remarks>
+    /// It is a host setting rather than something a test can flip, and so needs a second host to cover
+    /// both sides: <c>Startup</c> reads it once to choose between <c>VmUsageLoggingService</c> and
+    /// <c>DisabledVmUsageLoggingService</c>, and <c>VmUsageLoggingSessionController</c> captures
+    /// <c>IOptionsMonitor.CurrentValue</c> in its constructor. See
+    /// <see cref="VmUsageLoggingEnabledFactory"/>.
+    /// </remarks>
+    protected virtual bool VmUsageLoggingEnabled => false;
 
     public IVsphereService Vsphere { get; } = Substitute.For<IVsphereService>();
     public IProxmoxService Proxmox { get; } = Substitute.For<IProxmoxService>();
@@ -162,6 +177,12 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
     /// </summary>
     internal string HostDatabaseName => _hostSession.DatabaseName;
 
+    /// <summary>
+    /// The usage log database the host itself migrated at startup, exposed for the same reason
+    /// <see cref="HostDatabaseName"/> is.
+    /// </summary>
+    internal string HostLoggingDatabaseName => _hostSession.LoggingDatabaseName;
+
     /// <remarks>
     /// xUnit initializes a class fixture before constructing the test class, and
     /// <c>WebApplicationFactory</c> does not build the host until it is first used, so the database
@@ -175,10 +196,11 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
 
         builder.UseSetting("Database:Provider", "PostgreSQL");
         builder.UseSetting("ConnectionStrings:PostgreSQL", _hostSession.ConnectionString);
-        // Startup's relational branch calls .Trim() on this unconditionally, so it cannot be left
-        // unset. Enabled is false, so nothing ever migrates or writes to it.
-        builder.UseSetting("VmUsageLogging:PostgreSql", _hostSession.ConnectionString);
-        builder.UseSetting("VmUsageLogging:Enabled", "false");
+        // Startup's relational branch calls .Trim() on this unconditionally, so it cannot be left unset.
+        // The host's own logging database, for the same reason it has its own VmContext database: with
+        // logging enabled, InitializeDatabase migrates this one too.
+        builder.UseSetting("VmUsageLogging:PostgreSql", _hostSession.LoggingConnectionString);
+        builder.UseSetting("VmUsageLogging:Enabled", VmUsageLoggingEnabled ? "true" : "false");
         // Its UI needs a stylesheet from the content root and adds a poller of its own; neither has
         // anything to do with the API surface under test.
         builder.UseSetting("HealthChecksUI:Enabled", "false");
@@ -223,7 +245,8 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
     }
 
     /// <summary>
-    /// Points <see cref="VmContext"/> at the database of the test making the request.
+    /// Points <see cref="VmContext"/> and <see cref="VmLoggingContext"/> at the databases of the test
+    /// making the request.
     /// </summary>
     /// <remarks>
     /// <para>
@@ -237,11 +260,7 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
     /// when the container was built.
     /// </para>
     /// <para>
-    /// Resolving with no <c>HttpContext</c> yields the host's own database rather than throwing,
-    /// because <c>InitializeDatabase</c> does exactly that during startup. It is the one place a
-    /// context is legitimately resolved outside a request; a test wanting one should take it from
-    /// <c>DatabaseTestBase.Db</c> or <c>NewContext()</c>, and <c>DatabaseHarnessTests</c> asserts that
-    /// requests never land here.
+    /// Which database a resolution reaches is <see cref="SessionFor"/>'s decision.
     /// </para>
     /// </remarks>
     private void AddPerTestDatabase(IServiceCollection services)
@@ -249,16 +268,33 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
         services.RemoveAll<VmContext>();
         services.RemoveAll<IDbContextFactory<VmContext>>();
 
-        services.AddScoped(provider =>
-        {
-            var httpContext = provider.GetRequiredService<IHttpContextAccessor>().HttpContext;
+        services.AddScoped(provider => SessionFor(provider).CreateContext(provider));
 
-            var session = httpContext is null
-                ? _hostSession
-                : TestDatabaseScope.Resolve(httpContext);
+        // The usage log the same way, and for the same reason: AddDbContextPool bakes one connection
+        // string into one pooled set of options when the container is built. The pool registrations
+        // behind it are left in place - nothing resolves them once the context itself is replaced.
+        services.RemoveAll<VmLoggingContext>();
 
-            return session.CreateContext(provider);
-        });
+        services.AddScoped(provider => SessionFor(provider).CreateLoggingContext());
+    }
+
+    /// <summary>
+    /// The database session a resolution belongs to: the test that made the request, or the host's own
+    /// when there is no request.
+    /// </summary>
+    /// <remarks>
+    /// Falling back rather than throwing because <c>InitializeDatabase</c> does exactly this during
+    /// startup. It is the one place a context is legitimately resolved outside a request; a test wanting
+    /// one should take it from <c>DatabaseTestBase.Db</c> or <c>NewContext()</c>, and
+    /// <c>DatabaseHarnessTests</c> asserts that requests never land here.
+    /// </remarks>
+    private TestDatabaseSession SessionFor(IServiceProvider provider)
+    {
+        var httpContext = provider.GetRequiredService<IHttpContextAccessor>().HttpContext;
+
+        return httpContext is null
+            ? _hostSession
+            : TestDatabaseScope.Resolve(httpContext);
     }
 
     /// <summary>

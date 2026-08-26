@@ -49,6 +49,15 @@ public sealed class DatabaseFixture : IAsyncLifetime
     private const string TemplateDatabase = "vm_template";
 
     /// <summary>
+    /// The usage log lives in a second database, because production puts it there:
+    /// <c>VmLoggingContext</c> is registered against <c>VmUsageLogging:PostgreSql</c>, a connection
+    /// string entirely separate from <c>ConnectionStrings:PostgreSQL</c>, with its own migration history.
+    /// Pointing both contexts at one database would let a test pass while production - where the two are
+    /// separate servers as often as not - has no such table to read.
+    /// </summary>
+    private const string LoggingTemplateDatabase = "vm_logging_template";
+
+    /// <summary>
     /// Cloning and dropping have to connect to something other than the database being cloned or
     /// dropped. The official image always has this one.
     /// </summary>
@@ -79,8 +88,9 @@ public sealed class DatabaseFixture : IAsyncLifetime
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
     /// <summary>
-    /// Hands out an isolated database for a single caller, cloned from the migrated template. Starts
-    /// PostgreSQL and migrates the template on first call.
+    /// Hands out an isolated pair of databases for a single caller - one for <c>VmContext</c> and one for
+    /// <c>VmLoggingContext</c> - cloned from the migrated templates. Starts PostgreSQL and migrates both
+    /// templates on first call.
     /// </summary>
     /// <remarks>
     /// The clone is not serialized. <c>CREATE DATABASE ... TEMPLATE</c> is documented as failing when
@@ -94,13 +104,18 @@ public sealed class DatabaseFixture : IAsyncLifetime
         await _started.Value;
 
         var databaseName = $"vm_test_{Interlocked.Increment(ref _databaseCount)}";
+        var loggingDatabaseName = $"{databaseName}_logging";
 
+        // Two statements, two round trips: Npgsql batches a multi-statement command inside an implicit
+        // transaction, and CREATE DATABASE cannot run in one.
         await ExecuteMaintenanceAsync(
             $"""CREATE DATABASE "{databaseName}" TEMPLATE "{TemplateDatabase}";""");
+        await ExecuteMaintenanceAsync(
+            $"""CREATE DATABASE "{loggingDatabaseName}" TEMPLATE "{LoggingTemplateDatabase}";""");
 
         var (services, mediator) = VmContextFactory.CreateServices();
 
-        return new TestDatabaseSession(this, databaseName, services, mediator);
+        return new TestDatabaseSession(this, databaseName, loggingDatabaseName, services, mediator);
     }
 
     public async ValueTask DisposeAsync()
@@ -142,15 +157,26 @@ public sealed class DatabaseFixture : IAsyncLifetime
             await context.Database.MigrateAsync();
         }
 
+        // The container creates only the one database it was built with, so the second template has to
+        // be created before it can be migrated.
+        await ExecuteMaintenanceAsync($"""CREATE DATABASE "{LoggingTemplateDatabase}";""");
+
+        await using (var context = VmContextFactory.CreateLoggingContext(
+            ConnectionStringFor(LoggingTemplateDatabase)))
+        {
+            await context.Database.MigrateAsync();
+        }
+
         // Load-bearing. CREATE DATABASE ... TEMPLATE fails while any session is connected to the
         // template, and disposing an NpgsqlConnection returns it to the pool rather than closing the
-        // socket - so without this, every clone would fail. Nothing may connect to the template again
-        // after this point, which is why the hosted application gets its own database (see
-        // VmApiFactory) instead of being pointed at the template.
+        // socket - so without this, every clone would fail. Nothing may connect to either template again
+        // after this point, which is why the hosted application gets its own databases (see
+        // VmApiFactory) instead of being pointed at them.
         NpgsqlConnection.ClearAllPools();
 
         TestContext.Current.SendDiagnosticMessage(
-            $"[Player.Vm.Api.Tests] {PostgresImage} started; template '{TemplateDatabase}' migrated");
+            $"[Player.Vm.Api.Tests] {PostgresImage} started; templates '{TemplateDatabase}' and " +
+            $"'{LoggingTemplateDatabase}' migrated");
     }
 
     internal string ConnectionStringFor(string databaseName) =>
@@ -185,11 +211,13 @@ public sealed class DatabaseFixture : IAsyncLifetime
 }
 
 /// <summary>
-/// One caller's isolated database, dropped when it is disposed.
+/// One caller's isolated pair of databases - the application's and the usage log's - both dropped when
+/// it is disposed.
 /// </summary>
 public sealed class TestDatabaseSession(
     DatabaseFixture fixture,
     string databaseName,
+    string loggingDatabaseName,
     IServiceProvider services,
     IMediator mediator) : IAsyncDisposable
 {
@@ -202,12 +230,21 @@ public sealed class TestDatabaseSession(
     /// <summary>The name of this session's database, for the harness's own tests.</summary>
     public string DatabaseName { get; } = databaseName;
 
+    /// <summary>The name of this session's usage log database, for the harness's own tests.</summary>
+    public string LoggingDatabaseName { get; } = loggingDatabaseName;
+
     /// <summary>
     /// This session's database as a connection string, for handing to configuration rather than to a
     /// context - <see cref="VmApiFactory"/> gives it to the hosted application as
     /// <c>ConnectionStrings:PostgreSQL</c>.
     /// </summary>
     public string ConnectionString => fixture.ConnectionStringFor(DatabaseName);
+
+    /// <summary>
+    /// This session's usage log database as a connection string. <see cref="VmApiFactory"/> gives it to
+    /// the hosted application as <c>VmUsageLogging:PostgreSql</c>.
+    /// </summary>
+    public string LoggingConnectionString => fixture.ConnectionStringFor(LoggingDatabaseName);
 
     /// <summary>
     /// A context over this session's database. Call more than once when a test needs to re-read
@@ -226,5 +263,16 @@ public sealed class TestDatabaseSession(
     public VmContext CreateContext(IServiceProvider provider) =>
         VmContextFactory.CreateContext(fixture.ConnectionStringFor(DatabaseName), provider);
 
-    public async ValueTask DisposeAsync() => await fixture.DropDatabaseAsync(DatabaseName);
+    /// <summary>
+    /// A context over this session's usage log database. Takes no provider: the usage log context
+    /// publishes no entity events, so there is nothing for one to resolve.
+    /// </summary>
+    public VmLoggingContext CreateLoggingContext() =>
+        VmContextFactory.CreateLoggingContext(fixture.ConnectionStringFor(LoggingDatabaseName));
+
+    public async ValueTask DisposeAsync()
+    {
+        await fixture.DropDatabaseAsync(DatabaseName);
+        await fixture.DropDatabaseAsync(LoggingDatabaseName);
+    }
 }

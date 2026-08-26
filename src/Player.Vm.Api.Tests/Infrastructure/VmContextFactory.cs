@@ -54,4 +54,20 @@ internal static class VmContextFactory
 
         return new VmContext(builder.Options) { ServiceProvider = services };
     }
+
+    /// <summary>
+    /// A <see cref="VmLoggingContext"/> for the given connection string.
+    /// </summary>
+    /// <remarks>
+    /// Plainer than <see cref="CreateContext"/> because the context is plainer: the usage log is an
+    /// ordinary <c>DbContext</c> with no event publishing, so it needs neither the interceptor nor a
+    /// service provider. Production registers it with <c>AddDbContextPool</c> and nothing else.
+    /// </remarks>
+    public static VmLoggingContext CreateLoggingContext(string connectionString)
+    {
+        var builder = new DbContextOptionsBuilder<VmLoggingContext>()
+            .UseNpgsql(connectionString);
+
+        return new VmLoggingContext(builder.Options);
+    }
 }

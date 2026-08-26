@@ -65,6 +65,16 @@ public abstract class DatabaseTestBase(DatabaseFixture fixture) : IAsyncLifetime
     protected VmContext NewContext() => Session.CreateContext();
 
     /// <summary>
+    /// A context over this test's usage log database, which is a second database with its own migration
+    /// history - see <see cref="DatabaseFixture"/> for why production keeps them apart.
+    /// </summary>
+    /// <remarks>
+    /// The caller owns it, for the same reason <see cref="NewContext"/>'s caller does. Not created for
+    /// every test because almost no test needs it: only the usage log feature reads or writes there.
+    /// </remarks>
+    protected VmLoggingContext NewLoggingContext() => Session.CreateLoggingContext();
+
+    /// <summary>
     /// Adds entities and saves. Returns nothing, so a test keeps using the references it already holds.
     /// </summary>
     protected async Task Seed(params object[] entities)
