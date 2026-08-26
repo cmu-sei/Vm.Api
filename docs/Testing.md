@@ -4,12 +4,12 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 992 tests across 32 test classes. All of them run today; nothing is skipped.
+The suite contains 1,028 tests across 35 test classes. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
 Docker: no network, no vCenter and no Proxmox cluster. The 321 unit tests need not even that.
 
-Fifteen of the thirty-two classes are isolated unit tests. They construct the thing under test
+Fifteen of the thirty-five classes are isolated unit tests. They construct the thing under test
 directly and substitute its collaborators. `VsphereIsoProviderTests` and `VsphereServiceCommandTests`
 are the largest and most important of them: they drive `VsphereService` and its ISO provider through a
 substituted `IVimClient`, which is the only seam between those and a live vCenter.
@@ -89,9 +89,10 @@ so these are the only place the decision itself is under test rather than a rout
   team's network, and so the only thing that makes a range with several teams in it separable at all.
 
 The two service classes talk to real PostgreSQL, because some of the filtering they are asked about
-happens in SQL, but they construct the service directly rather than going over HTTP. Three of the classes
-below - `VmHubGroupTests`, `VmHubPresenceTests` and `VmUsageLoggingServiceTests` - are built the same way,
-which makes five in the suite that need a database without needing a host.
+happens in SQL, but they construct the service directly rather than going over HTTP. Six of the classes
+below are built the same way - `VmHubGroupTests`, `VmHubPresenceTests`, `VmUsageLoggingServiceTests` and
+the three entity-event handler classes - which makes eight in the suite that need a database without
+needing a host.
 
 Four classes cover the two SignalR hubs, which carry everything the application pushes rather than
 answers: console progress while a VM boots, and who else is looking at a machine. A hub is not reachable
@@ -99,9 +100,9 @@ the way a controller is - there is no route to assert and no status code to read
 is the **group name**, since a name is the whole of the addressing. A hub that joins the wrong group and
 one that joins the right one are indistinguishable from either side until a broadcast arrives, and the
 other side of every one of these names is a `Clients.Group(...)` somewhere else in the application: in
-the vSphere and Proxmox task pollers for `ProgressHub`, in the entity-event handlers
-(`VmUpdatedSignalRHandler` and `VmTeamUpdatedSignalRHandler`) for `VmHub`, and in the Angular client's own
-subscriptions for both.
+the vSphere and Proxmox task pollers for `ProgressHub`, in the entity-event handlers for `VmHub` - which
+have three classes of their own, described after these - and in the Angular client's own subscriptions for
+both.
 
 - `ProgressHubTests` covers `ProgressHub`, which is two methods and no dependencies, so it is a unit
   test with no database. What it pins is that `Join` uses the string it was given verbatim - no
@@ -141,6 +142,36 @@ It is separated from the hub that calls it because the rules it applies are its 
 the intersection between the caller's teams and the session's, and a close filter with three clauses. It
 is also the only place a usage log row is written by the application rather than seeded by a test.
 
+Three classes cover the entity-event handlers, which are the sending end of those same group names. A
+change to a Vm never reaches a client directly: `VmContext` raises an entity event on save, MediatR hands
+it to one of five handlers, and the handler works out which groups care and broadcasts to them. So every
+group name in the application is computed twice - once when a client joins and once when something changes -
+and nothing compares the two.
+
+- `VmSignalRHandlerTests` covers the three handlers behind a Vm's own events: created, updated and deleted.
+  All three address the same pair of groups per team, the view and the team, so the shared `GetGroups` gets
+  the arithmetic - a view named once for two teams that share it, a team whose view player.api does not
+  know, a Vm on no team at all. The rest is what each announcement carries, since the payload is the whole
+  message: a create's null property list, an update's camel-cased property names, a delete's bare id. The
+  update's names are taken off a real save rather than written by hand, so they are the ones EF's change
+  tracker produced. Last are the two states a Vm arrives in - with its teams loaded, or without them, which
+  is what every announcement caused by a poller looks like.
+- `VmTeamSignalRHandlerTests` covers the two handlers behind a Vm gaining or losing a team, which say "this
+  Vm has appeared" and "this Vm has gone" to clients for whom nothing about the Vm itself changed. Their
+  one piece of real logic is a suppression, and it is what the class is mostly about: adding a Vm to a
+  second team of a view it is already visible in must not tell that view again, and removing one of two such
+  teams must not tell it the Vm is gone.
+- `EntityEventBroadcastTests` runs the whole path with nothing stubbed between the save and the broadcast -
+  a real `SaveChanges`, the interceptor, real MediatR resolving the handlers the application registered,
+  and the five handlers themselves. It is the only thing that says the wiring exists: the handlers are
+  found by an assembly scan and every exception one throws is caught and logged, so a handler that stopped
+  being registered would leave every other test in the suite green. It is also where the events one save
+  really raises are pinned - creating a Vm on a team raises two, deleting one raises a cascade, and adding
+  a team raises the join row's event only.
+
+`IViewService` is substituted in all three, as it is everywhere else: which view a team belongs to is a
+call to player.api over HTTP, and it is the input every one of these names is computed from.
+
 `Infrastructure/DatabaseHarnessTests` tests the harness itself. Each of its assertions guards a
 property the rest of the suite silently relies on and which would otherwise degrade without failing
 anything: that the provider really is Npgsql, that every migration is applied, that snake_case casing
@@ -156,7 +187,7 @@ dotnet test
 
 **Docker must be running.** PostgreSQL is the only database these tests use, and there is deliberately
 no in-memory or SQLite fallback - a fallback that quietly swaps the provider reports a green run that
-never touched what production uses. Without Docker the 671 database tests fail, each naming the reason;
+never touched what production uses. Without Docker the 707 database tests fail, each naming the reason;
 the other 321 still pass, because the container is started by the first test that asks for a database
 rather than at assembly load.
 
@@ -279,6 +310,14 @@ test wants the whole ordered set, and recording the connection id is what shows 
 connection rather than someone else's. `IHubCallerClients` is substituted, because it has a dozen members
 that shift between framework versions and only `Group` and `Groups` are ever reached.
 
+`Infrastructure/HubContextHarness.cs` is the other end of the same idea: what something *outside* a hub
+broadcasts through an `IHubContext<THub>`, which is how the entity-event handlers and the task pollers reach
+a group. It records the group name, method and arguments of every send and exposes them three ways -
+`Sends` in order, `Of(method)`, and `Recipients(method)` deduplicated - because "which groups were told" and
+"how many messages were sent" are different questions and both have tests. `Clients.All` is recorded under
+a sentinel group name rather than in a list of its own, since a fallback that tells everyone is an answer to
+who was told, and `VmDeletedSignalRHandler` has one.
+
 `Infrastructure/TestAuthHandler.cs` stands in for the JWT bearer handler so no identity server is
 needed. A request carrying `X-Test-User` authenticates as that user; a request without it presents no
 credentials, which is what keeps the 401 path testable. The scopes come from the factory rather than
@@ -393,7 +432,10 @@ request ever lands there. The host gets a throwaway usage log database as well, 
    and the wire - a status code, a response body shape, an authorization outcome. Both cost a database;
    a unit test does not. For a hub method, attach `HubHarness` and invoke it directly, whatever base class
    the assertion needs: the group names are what a hub test is about, and only the hub's edge - its
-   mapping, its authorization, a round trip - is worth a live connection.
+   mapping, its authorization, a round trip - is worth a live connection. For an entity-event handler,
+   construct it over `Db` with a `HubContextHarness` and call `Handle` with the notification a real save
+   published - `DatabaseTestBase.Mediator` has recorded them - rather than with one written by hand, so
+   that what EF says changed is what the handler is given.
 3. Name the method as a sentence. The failure summary is all a reader of CI output gets.
 4. Pass a cancellation token to anything awaited, including inside private helpers - `Ct` on the two
    base classes, `TestContext.Current.CancellationToken` elsewhere. xUnit1051 only sees test methods,
@@ -439,16 +481,22 @@ request ever lands there. The host gets a throwaway usage log database as well, 
    Where a class asks the same question of many routes, mutate in batches whose expected failures have
    different test *names*, and check both the count and the names. `ProxmoxEndpointTests` was verified
    that way in fifteen runs, `VsphereEndpointTests` in eleven, the two usage log controller classes in
-   eight, and the four hub classes together with `VmUsageLoggingServiceTests` in eighteen:
+   eight, the four hub classes together with `VmUsageLoggingServiceTests` in eighteen, and the three
+   entity-event handler classes in fourteen:
    disabling all four checks in Proxmox's `BaseHandler.GetVm` at once, for instance, should fail exactly
    39 cases across exactly five tests, and any other total means a mutation landed somewhere it was not
    aimed. Predict the count and the names before running, and treat a surplus as a finding: dropping
    vSphere's `PowerOnVm` call reddens one row of the power theory *and* the Proxmox-VM characterization
    test, because that test drives the same route. Mutating the connection id that `ProgressHub.Join` adds
    reddens `HubConnectionTests`' live-connection tests as well as the unit ones it was aimed at, for the
-   same kind of reason: the real client never joins the group at all. A surplus that turns out to be
-   explainable is still worth the minute it takes to explain, because the other reading of it is a mutation
-   that landed in two places.
+   same kind of reason: the real client never joins the group at all. Dropping the
+   `teamId != notification.Entity.TeamId` guard in `VmTeamUpdatedSignalRHandler` reddens
+   `EntityEventBroadcastTests.DeletingAVm_AnnouncesTheDeleteForTheVmAndForEachTeamItWasOn` as well as the
+   create tests it was aimed at, and explaining that established something about EF worth knowing: a
+   cascade delete leaves the deleted join row in the parent's collection at the moment the events are
+   published, so on a delete that guard is doing the same work it does on a create. A surplus that turns out
+   to be explainable is still worth the minute it takes to explain, because the other reading of it is a
+   mutation that landed in two places.
 
    Treat a *shortfall* as a finding too - that is where the weak tests are. Two kinds turned up in the
    usage log class, and both are worth checking for when writing one. A test that asserts only that
@@ -551,6 +599,33 @@ The hubs add four of their own, and the first is the one to read before changing
   the report drops it. Both are fixed in the same place. This is the one of the four with a figure a user
   sees attached to it.
 
+The entity-event handlers add three more, and the last is the reason the group names are asserted directly
+rather than through a request:
+
+- `EntityEventBroadcastTests.CreatingAVmOnATeam_AnnouncesItTwiceToEachGroup`. Creating a Vm writes the Vm
+  and its team rows in one save, so two handlers announce it: `VmCreatedSignalRHandler` sends `VmCreated`
+  with the Vm and a modified-property list, and `VmTeamCreatedSignalRHandler` sends `VmCreated` with the Vm
+  alone. Every group hears the same create twice, in two argument shapes. Harmless at the client - the
+  second message carries the same Vm, and SignalR passes a missing argument as the parameter's default -
+  but neither handler can easily know about the other, since each is told only about its own row.
+- `VmSignalRHandlerTests.Created_ForAVmOnNoTeam_TellsNobody`, read against
+  `Deleted_ForAVmWhoseTeamsWereNeverLoaded_TellsEveryone`. Two opposite answers to the same absence: with
+  no teams to compute a group from, a create or an update reaches nobody at all, and a delete falls back to
+  `Clients.All`. Both are defensible on their own - nobody can have joined a group for a team the Vm is not
+  on, and a delete carries only an id - and the comment on the fallback is the only place either is written
+  down.
+- `EntityEventBroadcastTests.WhenAHandlerThrows_TheSaveStillSucceedsAndNobodyIsTold`.
+  `VmContext.PublishEventsAsync` catches and logs each event's exception, so a handler that fails leaves the
+  row written, the request answered and the clients never told. What a user sees is a Vm list quietly out of
+  date until the page is reloaded, and `IViewService` calling player.api over HTTP is a realistic way to get
+  there. Nothing else in the suite would notice, which is why these classes assert group by group rather
+  than that a message was sent.
+
+Smaller ones are `<remarks>`ed in place: the Vm in every broadcast carrying the id of every team it is on,
+whichever group the message went to; the two team handlers loading their Vm with a `FirstOrDefaultAsync()`
+that takes no cancellation token; and a team removal whose Vm has already gone telling the team but not the
+view.
+
 # Continuous integration
 
 `.github/workflows/test.yml` restores, builds and runs the suite on every push and pull request. It
@@ -591,17 +666,18 @@ currently tell you.
   as a gap.
 - **The client's half of the hub contract.** Both hubs are now covered - the group names, the presence
   bookkeeping, the calls into the usage log and the writer behind them, and one round trip over a real
-  connection - and all eight controllers have endpoint tests, covering all 82 actions: `VmController`
+  connection - along with the five entity-event handlers that broadcast into `VmHub`'s groups, so both ends
+  of every name the server uses are asserted. All eight controllers have endpoint tests, covering all 82
+  actions: `VmController`
   (23), `VsphereController` (21), `ProxmoxController` (17), `VmUsageLoggingSessionController` (9,
   including CSV and report generation), `NetworksController` (5), `FileController` (4),
   `HealthCheckController` (2) and `CallbackController` (1). What no test in this repository sees is the
   Angular side: the method names it listens on and the group names it joins are asserted here as the
-  strings *the server* uses, and nothing checks that the two agree. Two things on the server side are
-  still open as well. `VmHub` is not driven over a live connection, for the routing reason above. And the
-  entity-event handlers that broadcast into its groups - `VmUpdatedSignalRHandler` and
-  `VmTeamUpdatedSignalRHandler` - have no class of their own: the names they send to are asserted from the
-  joining side only, so a handler sending to a team id where a view id was joined would pass everything
-  here.
+  strings *the server* uses, and nothing checks that the two agree. Nor do the two server-side ends compare
+  themselves to each other - each asserts the same names independently, and a renamed group would have to be
+  renamed in both suites - which is a gap a test cannot close without one of them stopping being a test of
+  what the code does. One thing on the server side is still genuinely open: `VmHub` is not driven over a
+  live connection, for the routing reason above.
 - **The projections.** The AutoMapper profiles run in every endpoint test, but only the projections those
   tests happen to read are asserted.
 - **The hypervisor edge, permanently.** No harness makes a vCenter or a Proxmox cluster available in
@@ -627,7 +703,9 @@ currently tell you.
    mapping, authorization and one round trip - over the hosted application. Driving `VmHub` itself over a
    live connection was deliberately left out: it would need `TestDatabaseScope` keyed on the connection id
    rather than on a request header, and the hub's own behaviour is already covered by direct invocation.
-6. The entity-event handlers that broadcast into `VmHub`'s groups, which are what is left of the
-   application's own surface. The group names are asserted from the joining side already, so this is the
-   other end of names the suite knows.
+6. ~~The entity-event handlers that broadcast into `VmHub`'s groups, which are what is left of the
+   application's own surface.~~ Done. `VmSignalRHandlerTests` and `VmTeamSignalRHandlerTests` drive the five
+   handlers directly, and `EntityEventBroadcastTests` drives the path from a save through the interceptor and
+   real MediatR to a broadcast, which is also the only test of the wiring itself. The group names are now
+   asserted from both ends, and the argument shapes the client has to tolerate are written down.
 7. Coverage measurement, opt-in and ungated, purely as a map of where the untested risk still is.
