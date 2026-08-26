@@ -16,6 +16,9 @@
     <!-- Hosts the real Startup in-process so tests can exercise routing, model binding,
          authorization, MediatR behaviors and the EF pipeline without a hypervisor or a network. -->
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <!-- Connects to the hosted hubs over the real SignalR protocol, so the group names the hubs join
+         and the ones the application broadcasts to are proved to agree on a live connection. -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
     <PackageReference Include="xunit.v3" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />

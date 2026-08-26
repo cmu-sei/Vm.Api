@@ -73,6 +73,10 @@
          it tracks Microsoft.AspNetCore.Authentication.JwtBearer above rather than the test-tool
          versions around it. -->
     <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.1" />
+    <!-- The SignalR client, for connecting to the hubs the way the Angular UI does. Tied to the
+         ASP.NET Core version for the same reason Mvc.Testing is: it has to speak the protocol the
+         hosted server negotiates. -->
+    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.1" />
     <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="18.8.1" />
     <PackageVersion Include="NSubstitute" Version="6.0.0" />
     <PackageVersion Include="Testcontainers.PostgreSql" Version="4.13.0" />

@@ -4,17 +4,17 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 899 tests across 27 test classes. All of them run today; nothing is skipped.
+The suite contains 992 tests across 32 test classes. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
-Docker: no network, no vCenter and no Proxmox cluster. The 309 unit tests need not even that.
+Docker: no network, no vCenter and no Proxmox cluster. The 321 unit tests need not even that.
 
-Fourteen of the twenty-seven classes are isolated unit tests. They construct the thing under test
+Fifteen of the thirty-two classes are isolated unit tests. They construct the thing under test
 directly and substitute its collaborators. `VsphereIsoProviderTests` and `VsphereServiceCommandTests`
 are the largest and most important of them: they drive `VsphereService` and its ISO provider through a
 substituted `IVimClient`, which is the only seam between those and a live vCenter.
 
-Eleven classes host the application in process and send real HTTP requests through it. Everything between
+Twelve classes host the application in process and send real HTTP requests through it. Everything between
 the request and the hypervisor client is production wiring - routing, model binding, the authorization
 policy, the MediatR pipeline behaviors, the handlers, AutoMapper and EF Core against real PostgreSQL -
 and only the edges are replaced.
@@ -56,8 +56,9 @@ and only the edges are replaced.
   something a test decides per VM; a portgroup registered against another vCenter reaches neither the
   NIC options nor a network change.
 - `VmUsageLoggingSessionEndpointTests` covers `VmUsageLoggingSessionController` on a host with
-  `VmUsageLogging:Enabled` true. It is the only class that writes to the second database, and the only
-  one whose subject is a feature switched off in the shipped configuration. Its nine routes get the same
+  `VmUsageLogging:Enabled` true. It is the only endpoint class that touches the second database, and one
+  of two classes whose subject is a feature switched off in the shipped configuration - the other being
+  `VmUsageLoggingServiceTests`, which covers the writer behind it. Its nine routes get the same
   treatment as Proxmox's and vSphere's - a route table with a reflection test behind it, theories over
   the whole table - plus a table of which permission each route asks for, driven twice: once denying that
   permission and once denying the opposite one, so a handler asking for the wrong pair cannot pass. The
@@ -68,6 +69,8 @@ and only the edges are replaced.
   classes above are running against the configuration `appsettings.json` ships. Its table is tied by a
   count to the other class's, so that between them the two still account for every action and a route
   added to the controller cannot go untested on one side of the flag.
+- `HubConnectionTests` covers the edge of the two SignalR hubs - where they are mapped, who may reach
+  them, and one round trip over a real connection. It is described with the other hub classes below.
 
 Three classes cover authorization, which is where a green run is easiest to mistake for a safe one:
 every other test in the suite runs as a caller who is allowed to do everything unless it says otherwise,
@@ -86,7 +89,57 @@ so these are the only place the decision itself is under test rather than a rout
   team's network, and so the only thing that makes a range with several teams in it separable at all.
 
 The two service classes talk to real PostgreSQL, because some of the filtering they are asked about
-happens in SQL, but they construct the service directly rather than going over HTTP.
+happens in SQL, but they construct the service directly rather than going over HTTP. Three of the classes
+below - `VmHubGroupTests`, `VmHubPresenceTests` and `VmUsageLoggingServiceTests` - are built the same way,
+which makes five in the suite that need a database without needing a host.
+
+Four classes cover the two SignalR hubs, which carry everything the application pushes rather than
+answers: console progress while a VM boots, and who else is looking at a machine. A hub is not reachable
+the way a controller is - there is no route to assert and no status code to read - so what is under test
+is the **group name**, since a name is the whole of the addressing. A hub that joins the wrong group and
+one that joins the right one are indistinguishable from either side until a broadcast arrives, and the
+other side of every one of these names is a `Clients.Group(...)` somewhere else in the application: in
+the vSphere and Proxmox task pollers for `ProgressHub`, in the entity-event handlers
+(`VmUpdatedSignalRHandler` and `VmTeamUpdatedSignalRHandler`) for `VmHub`, and in the Angular client's own
+subscriptions for both.
+
+- `ProgressHubTests` covers `ProgressHub`, which is two methods and no dependencies, so it is a unit
+  test with no database. What it pins is that `Join` uses the string it was given verbatim - no
+  normalization, no casing fold - because the pollers broadcast to `vmId.ToString()` and any
+  transformation on the joining side silently drops the messages. It also characterizes the fact that
+  `Join` authorizes nothing: any authenticated caller can subscribe to any Vm's progress by guessing an
+  id.
+- `VmHubGroupTests` covers the four join and leave pairs on `VmHub` - view, view users, user and vm -
+  which resolve the caller's visibility out of the database and so derive from `DatabaseTestBase`. Every
+  leave is driven against the join it undoes rather than against a literal, since a leave that removes a
+  name nothing joined is indistinguishable from a working one. Two of its findings are characterizations
+  rather than assertions of intent, and are described below:
+  `LeaveView_WhenVisibilityNarrowed_LeavesOnlyWhatIsStillVisible` and
+  `JoinVm_ForATeamMember_AlsoSubscribesTeamsTheVmIsNotOn`.
+- `VmHubPresenceTests` covers the other half of `VmHub`: `SetActiveVirtualMachine`,
+  `UnsetActiveVirtualMachine` and `OnDisconnectedAsync`, which are how the UI knows who is on a console.
+  It is the only class that drives the real `ActiveVirtualMachineService`, and the place the calls into
+  the usage log are asserted - the service itself is substituted there, because what the hub owes it is
+  the user, the Vm and the teams, not a row. The two that matter most are the pairing of set and unset -
+  unset publishes to the teams recorded when the console was opened, not to the ones visible now - and
+  `OnDisconnected_FromAnotherConnectionOfTheSameUser_ClearsNothing`, since presence is keyed per
+  connection and a second browser tab must not clear the first one's.
+- `HubConnectionTests` is the part none of those three can reach, and is the one hub class that hosts the
+  application. A real client cannot see a group name; what it can see, and they cannot, is that the hub
+  is mapped at the path the Angular client dials, that every endpoint a `MapHub` produces requires
+  authorization rather than only the negotiate route, that nothing else is mapped as a hub - including
+  `Player.Vm.Api.Hubs.VmHub`, a second unmapped copy of the type that would compile and pass everything
+  if edited by mistake - and that a broadcast addressed to a joined name actually arrives while one
+  addressed elsewhere does not. Only `ProgressHub` is driven over the connection: a hub invocation is not
+  an HTTP request, so it cannot carry `X-Test-Session`, and a `VmHub` method invoked over a connection
+  would resolve the *host's* database rather than the test's.
+
+`VmUsageLoggingServiceTests` covers `VmUsageLoggingService`, the writer behind that log, directly
+against the usage log database - which sessions a console visit is logged against, what a row says, when
+a visit is closed, and the `DisabledVmUsageLoggingService` that stands in for it when the feature is off.
+It is separated from the hub that calls it because the rules it applies are its own: a session window,
+the intersection between the caller's teams and the session's, and a close filter with three clauses. It
+is also the only place a usage log row is written by the application rather than seeded by a test.
 
 `Infrastructure/DatabaseHarnessTests` tests the harness itself. Each of its assertions guards a
 property the rest of the suite silently relies on and which would otherwise degrade without failing
@@ -103,8 +156,8 @@ dotnet test
 
 **Docker must be running.** PostgreSQL is the only database these tests use, and there is deliberately
 no in-memory or SQLite fallback - a fallback that quietly swaps the provider reports a green run that
-never touched what production uses. Without Docker the 590 database tests fail, each naming the reason;
-the other 309 still pass, because the container is started by the first test that asks for a database
+never touched what production uses. Without Docker the 671 database tests fail, each naming the reason;
+the other 321 still pass, because the container is started by the first test that asks for a database
 rather than at assembly load.
 
 A single class or a single test can be run with a filter:
@@ -157,10 +210,12 @@ dotnet list package --vulnerable --include-transitive
 
 Package versions live in `Directory.Packages.props`. Every `PackageReference` in the repository takes
 its version from there, and `CentralPackageVersionOverrideEnabled` is false so that a project cannot
-pin itself to a different version of a shared package. One entry is versioned against the application
-rather than against the test tools around it: `Microsoft.AspNetCore.Mvc.Testing`, which hosts the
-application, tracks the ASP.NET Core version, since it has to build the host that the application's
-own framework reference expects.
+pin itself to a different version of a shared package. Two entries are versioned against the application
+rather than against the test tools around them, because both have to agree with the framework the
+application is built on rather than with each other: `Microsoft.AspNetCore.Mvc.Testing`, which has to
+build the host the application's own framework reference expects, and
+`Microsoft.AspNetCore.SignalR.Client`, which has to speak the protocol the hosted server negotiates.
+Both track the ASP.NET Core version.
 
 # How the harness works
 
@@ -212,6 +267,17 @@ test happens to need, so a broken profile or a resolver whose dependency goes un
 those tests too. `ConsoleUrlOptions` has to be registered alongside it because `ConsoleUrlResolver`
 takes it as a constructor dependency, and its values are deliberately recognizable: a test asserting on
 a console URL should be reading it from `TestMapper`, not matching a hostname left in a config file.
+
+`Infrastructure/HubHarness.cs` is what lets a hub method be called at all outside a connection. A `Hub`
+reads its caller from `Context`, `Clients` and `Groups`, all three of which SignalR sets after
+constructing it, so the harness builds a `HubCallerContext` with a connection id and a `sub` claim and
+attaches them with `Attach(hub)`. It then records what the hub did: `Added` and `Removed` are the group
+names in order, `AddedChanges` pairs each name with the connection id it was added for, and `Sends`
+holds the groups, method name and arguments of every broadcast. The two collaborators are faked
+differently on purpose. `IGroupManager` is hand-written, because the group names *are* the subject - a
+test wants the whole ordered set, and recording the connection id is what shows a hub adding its own
+connection rather than someone else's. `IHubCallerClients` is substituted, because it has a dozen members
+that shift between framework versions and only `Group` and `Groups` are ever reached.
 
 `Infrastructure/TestAuthHandler.cs` stands in for the JWT bearer handler so no identity server is
 needed. A request carrying `X-Test-User` authenticates as that user; a request without it presents no
@@ -279,6 +345,14 @@ A header rather than an `AsyncLocal`: a lookup that misses fails loudly and name
 not route, where an ambient value that failed to flow across a thread hop would silently resolve some
 other test's database.
 
+The limit of that mechanism is the hubs. A hub invocation is not an HTTP request - the headers belong to
+the connection, and the invocation arrives over it - so a hub method resolving a `VmContext` gets the
+host's own throwaway database rather than the calling test's. That is why `VmHub` is driven by direct
+invocation over the test's own context and only `ProgressHub`, which touches no database, is driven over
+a live connection in `HubConnectionTests`. Making a hub routable would mean keying `TestDatabaseScope` on
+the connection id at negotiation time, which is worth doing only if `VmHub` ever needs to be tested from
+the client's side.
+
 The one place a context is legitimately resolved with no request in flight is startup.
 `Program.Main` matches neither convention `HostFactoryResolver` looks for, so `WebApplicationFactory`
 invokes `Main` on a background thread - and `Main` calls `InitializeDatabase`, which resolves a
@@ -317,11 +391,15 @@ request ever lands there. The host gets a throwaway usage log database as well, 
    `DatabaseTestBase` when the assertion is about what was stored, and from `ApiTestBase` (plus
    `IClassFixture<VmApiFactory>`) when it is a contract that has to survive the handler, the serializer
    and the wire - a status code, a response body shape, an authorization outcome. Both cost a database;
-   a unit test does not.
+   a unit test does not. For a hub method, attach `HubHarness` and invoke it directly, whatever base class
+   the assertion needs: the group names are what a hub test is about, and only the hub's edge - its
+   mapping, its authorization, a round trip - is worth a live connection.
 3. Name the method as a sentence. The failure summary is all a reader of CI output gets.
 4. Pass a cancellation token to anything awaited, including inside private helpers - `Ct` on the two
    base classes, `TestContext.Current.CancellationToken` elsewhere. xUnit1051 only sees test methods,
-   but a helper that hangs hangs the run just the same.
+   but a helper that hangs hangs the run just the same. A token is not enough where the thing awaited is
+   a `TaskCompletionSource` the test itself completes - nothing will cancel it - so bound those with
+   `WaitAsync(TimeSpan, Ct)`, as `HubConnectionTests.Arrives` does.
 5. Scope anything from `NewContext()` with `await using`. One PostgreSQL server serves the whole run,
    and an undisposed context keeps its pooled connection checked out until the process exits.
 6. Do not add Arrange, Act and Assert comments. A blank line already shows the shape of a test.
@@ -334,13 +412,18 @@ request ever lands there. The host gets a throwaway usage log database as well, 
    true or false per method cannot tell those apart.
 8. Break the production code and check the test fails, then restore it with `git checkout`. A test that
    passes the first time it is run has not been shown to assert anything, and every class here has been
-   through it. Two things learned that way are now written into the tests themselves:
+   through it. Three things learned that way are now written into the tests themselves:
    `GetByViewId_OnlyMine_PutsThePrimaryTeamsVmFirst` passed with the ordering it exists to protect
    deleted, because the rows happened to arrive in the right order already - it is now a theory over both
    seeding orders. And `HealthEndpointTests.Health_IsReachableWithoutCredentials` did not notice
    `[AllowAnonymous]` being removed from `HealthController`, because with no global authorization filter
    and no `RequireAuthorization` on `MapControllers`, that attribute is decorative; its `<remarks>` now
-   says what the test does and does not catch instead of implying it guards the attribute.
+   says what the test does and does not catch instead of implying it guards the attribute. And the
+   `HubConnectionTests` broadcast tests *hung* the run instead of failing it when `ProgressHub.Join` was
+   mutated, because a test awaiting a `TaskCompletionSource` nothing will ever complete has nothing to
+   time out; they now go through an `Arrives` helper that bounds the wait with
+   `WaitAsync(TimeSpan, Ct)`. Any test whose assertion is "a message arrived" needs that, and a mutation
+   run is the only thing that finds it.
 
    `TreatWarningsAsErrors` makes a bare `if (false)` un-buildable through CS0162. Mutations that do
    build: `if (false && cond)` in place of `if (cond)`, since the body stays reachable as far as the
@@ -355,12 +438,17 @@ request ever lands there. The host gets a throwaway usage log database as well, 
 
    Where a class asks the same question of many routes, mutate in batches whose expected failures have
    different test *names*, and check both the count and the names. `ProxmoxEndpointTests` was verified
-   that way in fifteen runs, `VsphereEndpointTests` in eleven, and the two usage log classes in eight:
+   that way in fifteen runs, `VsphereEndpointTests` in eleven, the two usage log controller classes in
+   eight, and the four hub classes together with `VmUsageLoggingServiceTests` in eighteen:
    disabling all four checks in Proxmox's `BaseHandler.GetVm` at once, for instance, should fail exactly
    39 cases across exactly five tests, and any other total means a mutation landed somewhere it was not
    aimed. Predict the count and the names before running, and treat a surplus as a finding: dropping
    vSphere's `PowerOnVm` call reddens one row of the power theory *and* the Proxmox-VM characterization
-   test, because that test drives the same route.
+   test, because that test drives the same route. Mutating the connection id that `ProgressHub.Join` adds
+   reddens `HubConnectionTests`' live-connection tests as well as the unit ones it was aimed at, for the
+   same kind of reason: the real client never joins the group at all. A surplus that turns out to be
+   explainable is still worth the minute it takes to explain, because the other reading of it is a mutation
+   that landed in two places.
 
    Treat a *shortfall* as a finding too - that is where the weak tests are. Two kinds turned up in the
    usage log class, and both are worth checking for when writing one. A test that asserts only that
@@ -369,6 +457,15 @@ request ever lands there. The host gets a throwaway usage log database as well, 
    not touch. And a test that acts on the *first* row it seeded passes against a handler that ignores the
    id it was given: `Get_ReturnsOnlyTheSessionAsked_For` and its siblings now seed the bystander first, so
    `FirstOrDefault(e => e.Id == request.Id)` losing its predicate reddens all five id routes.
+
+   Two kinds of test cannot be reddened by any mutation of production code, and are worth recognizing so
+   the search for a mutation is not spent on them. One asserts a zero-iteration boundary -
+   `VmUsageLoggingServiceTests.Create_WithNoSessions_WritesNothing` passes for every rule the loop body
+   could contain, because the loop does not run. The other asserts that a null object does nothing:
+   `TheDisabledService_WritesNothingForAMatchingSession` has no collaborators to break. Both are still
+   worth keeping - the first is the guard against a `First()` on an empty match, and the second is what
+   would fail if `DisabledVmUsageLoggingService` ever grew a body - but neither is evidence that the class
+   around it asserts anything.
 
 Bugs and deliberate oddities found while writing a test are characterized, not fixed. The test
 asserts the current behaviour and says why it is that way.
@@ -430,6 +527,30 @@ id routes, an edit authorizing against the View the session is *already* in, a s
 View being stored against `Guid.Empty`, and the report matching its window against whole sessions rather
 than against when the activity happened.
 
+The hubs add four of their own, and the first is the one to read before changing anything there:
+
+- `ProgressHubTests.Join_ForAVmTheCallerCannotSee_IsNotRefused`. `ProgressHub` requires authentication
+  and then checks nothing at all - it takes a string, never looks at it and never asks who the caller is -
+  so any authenticated caller can subscribe to the task progress of any Vm in the system by naming its id.
+  What that leaks is a task's type, name, state and progress, and so the fact that a Vm exists under that
+  id and what is being done to it. The fix is the check every route that names a Vm already makes: load
+  the Vm and put it through `IVmService.CanAccessVm`, refusing with a `HubException` as `VmHub.JoinUser`
+  does.
+- `VmHubGroupTests.LeaveView_WhenVisibilityNarrowed_LeavesOnlyWhatIsStillVisible`. Leaving is computed
+  from the caller's *current* visibility rather than from what the connection joined, so a caller who
+  loses a team keeps receiving that team's traffic until the connection drops.
+- `VmHubGroupTests.JoinVm_ForATeamMember_AlsoSubscribesTeamsTheVmIsNotOn`. For a caller who is not a view
+  admin, `JoinVm` unions in every team they can see in the view rather than only the teams the Vm is on.
+  Over-broad rather than a leak - reaching the union at all needs one of the Vm's teams to be visible
+  already - and the narrower rule would be `visibility.TeamIds.Intersect(vm.TeamIds)`.
+- `VmUsageLoggingServiceTests.Create_TwiceForTheSameVm_LeavesTwoOpenVisitsThatBothGetClosed`. Nothing
+  closes an open visit before opening another, and `VmHub.SetActiveVirtualMachine` writes an entry every
+  time a console is opened - so a reconnecting client leaves two open rows that a later close stamps with
+  the same instant, and the report counts the time twice. Switching between two Vms is the worse half of
+  the same bug: a close only ever names the Vm being left, so the first Vm's row stays open forever and
+  the report drops it. Both are fixed in the same place. This is the one of the four with a figure a user
+  sees attached to it.
+
 # Continuous integration
 
 `.github/workflows/test.yml` restores, builds and runs the suite on every push and pull request. It
@@ -457,28 +578,32 @@ writing one - fails rather than passing quietly. The NuGet cache is keyed on
 The suite is being grown in stages, and it is worth being explicit about what a green run does *not*
 currently tell you.
 
-- **The usage log's writer.** `VmLoggingContext` itself is now migrated and routed per test, and the
-  controller over it is covered from both sides of the feature flag. What is not covered is the other end
-  of that database: `VmUsageLoggingService.CreateVmLogEntry` and `CloseVmLogEntry`, which are what put
-  entries in it, along with the `DisabledVmUsageLoggingService` that stands in for them when the feature
-  is off. Their only caller is `Features/Vms/Hubs/VmHub.cs`, so covering them means driving a hub, and
-  they are untested for the same reason the hubs are. Every usage log row these tests read was seeded by
-  the test rather than written by the application.
 - **Authorization at the edges of it.** `PlayerService`, `VmService` and `NetworkService` are driven down
   the refusing path as well as the permitting one, and every endpoint class covering an authenticated
   route asserts its 401 and at least one refusal - a 403, or in `BulkPowerOperationEndpointTests` the
   per-VM `"Unauthorized"` a bulk command reports instead. `ProxmoxController` and `VsphereController` now
   each have the full map of which permission every one of their routes asks for, including the ones that
   ask for none beyond team visibility. `VmUsageLoggingSession` has the same map, driven twice - denying
-  the pair each route asks for, and denying the opposite pair to show the route still answers. What is
-  still only ever permitted is the two SignalR hubs' group membership.
-- **The two SignalR hubs.** All eight controllers now have endpoint tests, covering all 82 actions:
-  `VmController` (23), `VsphereController` (21), `ProxmoxController` (17),
-  `VmUsageLoggingSessionController` (9, including CSV and report generation), `NetworksController` (5),
-  `FileController` (4), `HealthCheckController` (2) and `CallbackController` (1). `VmHub` and
-  `ProgressHub` have none - neither their group membership, which authorizes itself rather than
-  delegating, nor the usage log writing `VmHub` drives. The AutoMapper profiles run in every endpoint
-  test, but only the projections those tests happen to read are asserted.
+  the pair each route asks for, and denying the opposite pair to show the route still answers. The hubs
+  are now in that set too, as far as there is anything to deny: `VmHub.JoinUser` is the only hub method
+  that refuses a caller, and its refusals are covered; the rest compute what the caller can see rather
+  than deciding yes or no, and `ProgressHub` decides nothing at all - characterized above rather than left
+  as a gap.
+- **The client's half of the hub contract.** Both hubs are now covered - the group names, the presence
+  bookkeeping, the calls into the usage log and the writer behind them, and one round trip over a real
+  connection - and all eight controllers have endpoint tests, covering all 82 actions: `VmController`
+  (23), `VsphereController` (21), `ProxmoxController` (17), `VmUsageLoggingSessionController` (9,
+  including CSV and report generation), `NetworksController` (5), `FileController` (4),
+  `HealthCheckController` (2) and `CallbackController` (1). What no test in this repository sees is the
+  Angular side: the method names it listens on and the group names it joins are asserted here as the
+  strings *the server* uses, and nothing checks that the two agree. Two things on the server side are
+  still open as well. `VmHub` is not driven over a live connection, for the routing reason above. And the
+  entity-event handlers that broadcast into its groups - `VmUpdatedSignalRHandler` and
+  `VmTeamUpdatedSignalRHandler` - have no class of their own: the names they send to are asserted from the
+  joining side only, so a handler sending to a team id where a view id was joined would pass everything
+  here.
+- **The projections.** The AutoMapper profiles run in every endpoint test, but only the projections those
+  tests happen to read are asserted.
 - **The hypervisor edge, permanently.** No harness makes a vCenter or a Proxmox cluster available in
   CI. Unit tests against `IVimClient` and the Proxmox interfaces are the right tool at that layer and
   are not meant to be replaced by anything further up.
@@ -496,6 +621,13 @@ currently tell you.
    `PlayerService`, `VmService` and `NetworkService` each have a class driving their refusing paths. Then
    all eight controllers - `Vm`, `Vsphere`, `Proxmox`, `Networks`, `File`, `Callback`, `HealthCheck` and
    last `VmUsageLoggingSession`, which needed the second `DbContext` migrated and routed per test before
-   it could be covered at all. What is left of the surface is the two SignalR hubs, under "What is not
-   covered yet".
-5. Coverage measurement, opt-in and ungated, purely as a map of where the untested risk still is.
+   it could be covered at all.
+5. ~~The two SignalR hubs, and with them the usage log's writer.~~ Done. `ProgressHub` as a unit, `VmHub`'s group membership and its presence bookkeeping
+   against real PostgreSQL, `VmUsageLoggingService` as the writer `VmHub` drives, and the hubs' edge -
+   mapping, authorization and one round trip - over the hosted application. Driving `VmHub` itself over a
+   live connection was deliberately left out: it would need `TestDatabaseScope` keyed on the connection id
+   rather than on a request header, and the hub's own behaviour is already covered by direct invocation.
+6. The entity-event handlers that broadcast into `VmHub`'s groups, which are what is left of the
+   application's own surface. The group names are asserted from the joining side already, so this is the
+   other end of names the suite knows.
+7. Coverage measurement, opt-in and ungated, purely as a map of where the untested risk still is.
