@@ -8,9 +8,18 @@ on:
   pull_request:
 
 # A same-repo pull request fires both triggers above, and each new push supersedes the run before it,
-# so cancel anything still in flight for the same ref.
+# so cancel anything still in flight for the same branch.
+#
+# Keyed on the branch name, because no single ref context identifies a branch across both triggers:
+# github.ref is refs/heads/<branch> on push but refs/pull/<n>/merge on pull_request, and github.ref_name
+# is <branch> then <n>/merge. Either on its own puts the two triggers in separate groups, which is how
+# a same-repo pull request ends up running the whole suite twice at once instead of once. Taking the
+# pull request's head ref first and falling back to github.ref_name gives <branch> in both cases.
+#
+# The one thing this conflates is a fork's pull request with a local branch of the same name. Cancelling
+# a stale run for that name is the wanted behaviour anyway, so it is not worth disambiguating.
 concurrency:
-  group: test-${{ github.ref }}
+  group: test-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -49,6 +58,7 @@ jobs:
         run: dotnet build --no-restore --configuration Release
 
       - name: Test
+        id: test
         run: >
           dotnet test src/Player.Vm.Api.Tests/Player.Vm.Api.Tests.csproj
           --no-build
@@ -57,10 +67,16 @@ jobs:
           --results-directory TestResults
 
       # Uploaded on failure too - the .trx is the only record of which assertion failed once the
-      # runner is gone. `error` rather than `warn` on the missing case: no .trx at all means the test
-      # host died before writing one, which should not pass quietly.
+      # runner is gone. `error` rather than `warn` on the missing case: no .trx once the test step has
+      # run means the test host died before writing one, which should not pass quietly.
+      #
+      # Conditioned on the test step's outcome rather than always(). always() also fires when the step
+      # never ran - the job was cancelled, or restore or build failed - and there is legitimately no
+      # .trx in those cases, so if-no-files-found: error turns the real failure into a confusing
+      # "No files were found with the provided path" that reads like the tests are misconfigured.
+      # `outcome` rather than `conclusion`, so a cancelled or skipped step is excluded either way.
       - name: Upload test results
-        if: always()
+        if: ${{ !cancelled() && contains(fromJSON('["success", "failure"]'), steps.test.outcome) }}
         uses: actions/upload-artifact@v4
         with:
           name: test-results
