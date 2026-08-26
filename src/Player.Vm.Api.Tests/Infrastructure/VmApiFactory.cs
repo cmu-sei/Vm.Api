@@ -402,6 +402,36 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
         };
     }
 
+    /// <summary>
+    /// A Proxmox Vm that passes every gate in BulkPowerOperation, as <see cref="VsphereVm"/> is for the
+    /// other hypervisor. Note what it does not need: a power state the handler accepts, because the
+    /// Proxmox path deliberately does not gate on one.
+    /// </summary>
+    /// <remarks>
+    /// The <c>ProxmoxVmInfo</c> row is what makes this a Proxmox Vm rather than a row that merely says
+    /// so. Nothing in the bulk handler reads it - it hands ids to <see cref="Proxmox"/>, which is
+    /// substituted - but the real <c>ProxmoxService.BulkPowerOperation</c> looks the Vm up by it and
+    /// reports "Virtual machine not found" for an id it cannot find, so a seed without one would be a Vm
+    /// the production service could not have acted on.
+    /// </remarks>
+    public static VmEntity ProxmoxVm(
+        Guid? teamId = null,
+        PowerState powerState = PowerState.Off,
+        int vmid = 100)
+    {
+        var id = Guid.NewGuid();
+
+        return new VmEntity
+        {
+            Id = id,
+            Name = $"vm-{id}",
+            Type = VmType.Proxmox,
+            PowerState = powerState,
+            VmTeams = [new VmTeam(teamId ?? Guid.NewGuid(), id)],
+            ProxmoxVmInfo = new ProxmoxVmInfo { Id = vmid, Node = "pve-1" },
+        };
+    }
+
     public override async ValueTask DisposeAsync()
     {
         // The host first: it holds pooled connections to the database the session is about to drop.

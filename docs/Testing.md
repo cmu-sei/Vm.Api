@@ -4,12 +4,12 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 1,028 tests across 35 test classes. All of them run today; nothing is skipped.
+The suite contains 1,090 tests across 39 test classes. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
-Docker: no network, no vCenter and no Proxmox cluster. The 321 unit tests need not even that.
+Docker: no network, no vCenter and no Proxmox cluster. The 350 unit tests need not even that.
 
-Fifteen of the thirty-five classes are isolated unit tests. They construct the thing under test
+Eighteen of the thirty-nine classes are isolated unit tests. They construct the thing under test
 directly and substitute its collaborators. `VsphereIsoProviderTests` and `VsphereServiceCommandTests`
 are the largest and most important of them: they drive `VsphereService` and its ISO provider through a
 substituted `IVimClient`, which is the only seam between those and a live vCenter.
@@ -89,10 +89,10 @@ so these are the only place the decision itself is under test rather than a rout
   team's network, and so the only thing that makes a range with several teams in it separable at all.
 
 The two service classes talk to real PostgreSQL, because some of the filtering they are asked about
-happens in SQL, but they construct the service directly rather than going over HTTP. Six of the classes
-below are built the same way - `VmHubGroupTests`, `VmHubPresenceTests`, `VmUsageLoggingServiceTests` and
-the three entity-event handler classes - which makes eight in the suite that need a database without
-needing a host.
+happens in SQL, but they construct the service directly rather than going over HTTP. Seven of the classes
+below are built the same way - `VmHubGroupTests`, `VmHubPresenceTests`, `VmUsageLoggingServiceTests`, the
+three entity-event handler classes and `CallbackBackgroundServiceTests` - which makes nine in the suite
+that need a database without needing a host.
 
 Four classes cover the two SignalR hubs, which carry everything the application pushes rather than
 answers: console progress while a VM boots, and who else is looking at a machine. A hub is not reachable
@@ -172,6 +172,42 @@ and nothing compares the two.
 `IViewService` is substituted in all three, as it is everywhere else: which view a team belongs to is a
 call to player.api over HTTP, and it is the input every one of these names is computed from.
 
+Four classes cover the things every other class substitutes: the clients that talk out of this process, to
+player.api and to the identity provider. They are the only classes in the suite whose seam is the socket
+rather than an interface - a substituted `HttpMessageHandler`, `Infrastructure/TestHttpHandler.cs`,
+described below - so the generated `PlayerApiClient`'s routes and deserialization, IdentityModel's token
+request and Polly's retry policy all run for real, and what is asserted is the request that went out and
+what was made of the answer.
+
+- `ViewServiceTests` covers `ViewService`, the answer to "what view is this team in?" that every group name
+  in the application is computed from. Its subject is as much the cache as the two calls: the application's
+  singleton `IMemoryCache`, keyed by bare team and view guids with a fifteen-minute sliding expiration and
+  no invalidation anywhere, so every answer is a promise held for fifteen minutes after it was last asked
+  for. Which status codes are forgiven is the other half - 404 on a team is caught and answered as "no
+  view", and cached like any other answer, while nothing else is forgiven and a 404 on a view's teams is
+  not either.
+- `AuthenticationServiceTests` covers the password grant this API authenticates with. The one decision the
+  service makes is when to ask again, and it compares the lifetime the provider *stated* against
+  `TokenRefreshSeconds` rather than counting down - so the answer never changes and a token is either
+  renewed on every single call or never renewed at all. Both are driven, since which one a deployment gets
+  is a configuration value.
+- `AuthenticatingHandlerTests` covers the `DelegatingHandler` that puts the token on every outgoing request
+  and is the reason an expired one is invisible everywhere else: a 401 invalidates the token and re-sends,
+  up to five times. It is the one class in the suite where Polly's policy is under test rather than
+  incidental, and it sets `MaxRetryDelaySeconds` to zero so the six attempts cost no wall clock - which
+  makes it a test of how many attempts are made and not of how long they take. `appsettings.json` ships
+  120, so the waits in a real deployment are 2, 4, 8, 16 and 32 seconds and a request that ends in a 401
+  has held its caller for a minute first; that arithmetic is written down in the class's `<remarks>` and
+  asserted nowhere.
+- `CallbackBackgroundServiceTests` covers what happens after `CallbacksEndpointTests`' 202: a view created
+  from a template gets copies of the parent's maps and usage logging session, and a view deleted takes its
+  maps with it and has its sessions closed. It is the only class that drives the real background service,
+  which is substituted everywhere else because its `ActionBlock` is built in its constructor and nothing a
+  request can await says the work is finished - so this class hands an event to the real queue and then
+  waits, bounded, for the effect. It needs a database and a scope factory of its own: the service resolves
+  a `VmContext` per event out of `IServiceScopeFactory`, and the factory is hand-written rather than
+  substituted so that each scope disposes the context it handed out.
+
 `Infrastructure/DatabaseHarnessTests` tests the harness itself. Each of its assertions guards a
 property the rest of the suite silently relies on and which would otherwise degrade without failing
 anything: that the provider really is Npgsql, that every migration is applied, that snake_case casing
@@ -187,8 +223,8 @@ dotnet test
 
 **Docker must be running.** PostgreSQL is the only database these tests use, and there is deliberately
 no in-memory or SQLite fallback - a fallback that quietly swaps the provider reports a green run that
-never touched what production uses. Without Docker the 707 database tests fail, each naming the reason;
-the other 321 still pass, because the container is started by the first test that asks for a database
+never touched what production uses. Without Docker the 740 database tests fail, each naming the reason;
+the other 350 still pass, because the container is started by the first test that asks for a database
 rather than at assembly load.
 
 A single class or a single test can be run with a filter:
@@ -198,7 +234,9 @@ dotnet test --filter "FullyQualifiedName~VsphereServiceCommandTests"
 dotnet test --filter "FullyQualifiedName~VsphereServiceCommandTests.PowerOn_WhenAlreadyOn_ReportsItAndSendsNothing"
 ```
 
-A full run takes about fifteen seconds, container start and both sets of migrations included.
+A full run takes about twenty seconds, container start and both sets of migrations included. About five of
+those are one test: `CallbackBackgroundServiceTests.WhenTheFirstAttemptFails_TheEventIsKeptAndRetried` waits
+out the real first retry delay, which is the shortest one the service has.
 
 A plain run collects no coverage. `scripts/coverage.sh` is the opt-in way to get it, and nothing gates
 on the figure it produces - see Coverage below for what it is for and why it has no threshold.
@@ -269,6 +307,8 @@ Two of those are worth knowing the reason for, because neither is about avoiding
   its `ActionBlock` in its **constructor**. Removing the `IHostedService` registrations does not stop it:
   handing it an event still starts processing, on a thread pool thread, outside any request - so it
   resolves the host's own `VmContext` and races the test asserting on the row it just wrote.
+  `CallbackBackgroundServiceTests` is what covers the real one, outside the host, with a scope factory of
+  its own - which is the same problem solved the only way it can be rather than avoided.
 - `IIsoProvider` replaces only the storage. `IsoService` itself is left real, because the scope
   resolution, the permission gates, the filename sanitizing and the cross-provider merge are the parts
   worth running. The real pair of providers is removed rather than substituted one for one, since
@@ -317,6 +357,22 @@ a group. It records the group name, method and arguments of every send and expos
 "how many messages were sent" are different questions and both have tests. `Clients.All` is recorded under
 a sentinel group name rather than in a list of its own, since a fallback that tells everyone is an answer to
 who was told, and `VmDeletedSignalRHandler` has one.
+
+`Infrastructure/TestHttpHandler.cs` is the seam under the out-of-process clients, and the only place in
+the suite where what is replaced is the socket rather than an interface. Everything above it is production
+code - the generated `PlayerApiClient`, IdentityModel's token request, the `HttpClient` pipeline and
+whatever `DelegatingHandler`s are wrapped around it - which is the whole reason those tests are worth
+having: a route the client builds, a name its deserializer looks for and a status code its error handling
+keys off are all things this repository consumes rather than declares. Rules are matched by path in the
+order they were added, a rule can be one-shot so that a later one answers the retry, `Throws` fails the way
+a refused connection fails rather than with a status code, and every request is recorded with its method,
+path, query, `Authorization` header and body. A request nothing stubbed **throws**, naming the path asked
+for and every path that is stubbed: a 404 would be swallowed by the very error handling several of these
+tests are about, so an arrangement that has drifted from the route the client builds has to fail loudly.
+Bodies are serialized with System.Text.Json and no options, because the `Player.Api.Client` types carry
+`[JsonPropertyName]` on every property and so serializing one produces the names its own deserializer
+looks for; hand-written JSON is used only where the payload is not a type this repository has - the OAuth
+token response, and the webhook payloads player.api sends as a string.
 
 `Infrastructure/TestAuthHandler.cs` stands in for the JWT bearer handler so no identity server is
 needed. A request carrying `X-Test-User` authenticates as that user; a request without it presents no
@@ -435,13 +491,19 @@ request ever lands there. The host gets a throwaway usage log database as well, 
    mapping, its authorization, a round trip - is worth a live connection. For an entity-event handler,
    construct it over `Db` with a `HubContextHarness` and call `Handle` with the notification a real save
    published - `DatabaseTestBase.Mediator` has recorded them - rather than with one written by hand, so
-   that what EF says changed is what the handler is given.
+   that what EF says changed is what the handler is given. For anything whose subject is a call *out* of
+   this process, put `TestHttpHandler` under the real client instead of substituting the client: what is
+   worth asserting there is the request that went out, and a substitute at the interface asserts only that
+   the test and the production code agree about a method signature.
 3. Name the method as a sentence. The failure summary is all a reader of CI output gets.
 4. Pass a cancellation token to anything awaited, including inside private helpers - `Ct` on the two
    base classes, `TestContext.Current.CancellationToken` elsewhere. xUnit1051 only sees test methods,
    but a helper that hangs hangs the run just the same. A token is not enough where the thing awaited is
    a `TaskCompletionSource` the test itself completes - nothing will cancel it - so bound those with
-   `WaitAsync(TimeSpan, Ct)`, as `HubConnectionTests.Arrives` does.
+   `WaitAsync(TimeSpan, Ct)`, as `HubConnectionTests.Arrives` does. Where the effect being waited for is a
+   row rather than a message, poll for it with a deadline and `Assert.Fail` past it, as
+   `CallbackBackgroundServiceTests.Eventually` does: work handed to a queue has no completion to await, and
+   a missing effect has to fail rather than hang.
 5. Scope anything from `NewContext()` with `await using`. One PostgreSQL server serves the whole run,
    and an undisposed context keeps its pooled connection checked out until the process exits.
 6. Do not add Arrange, Act and Assert comments. A blank line already shows the shape of a test.
@@ -518,8 +580,8 @@ request ever lands there. The host gets a throwaway usage log database as well, 
    Mutation testing answers "does anything assert this", which means it can only be asked about a line
    something already runs. `scripts/coverage.sh` answers the other one - what nothing runs at all - and is
    worth running after finishing a class, because the line it names as unexecuted is usually a branch the
-   arrangement never produced rather than one anybody decided to leave out. It found four of those; they
-   are listed under Coverage below.
+   arrangement never produced rather than one anybody decided to leave out. It found four of those, all
+   since covered; they are listed under Coverage below, along with what each turned out to be.
 
 Bugs and deliberate oddities found while writing a test are characterized, not fixed. The test
 asserts the current behaviour and says why it is that way.
@@ -632,6 +694,45 @@ whichever group the message went to; the two team handlers loading their Vm with
 that takes no cancellation token; and a team removal whose Vm has already gone telling the team but not the
 view.
 
+The out-of-process clients add four, and they are the kind that only a test at the socket can find - each
+one is a decision the interface these classes sit behind does not express:
+
+- `CallbackBackgroundServiceTests.ViewCreated_WhenPlayerFails_ClonesTheMapsWithNoTeamsAndDiscardsTheEvent`.
+  `CloneMaps` catches `ApiException`, returns on a 404 and swallows everything else - then carries on into
+  the loop that builds the clones with both team sets empty. So a 502 from a restarting player.api does not
+  become a retry, which the surrounding machinery exists for and which would fix it; it becomes a set of
+  maps nobody can see and an administrator has to reassign by hand, indistinguishable from a parent team
+  that genuinely has no namesake in the child. Rethrowing anything that is not a 404 is a one-line change.
+- `AuthenticationServiceTests.GetToken_ForATokenNotOutlivingTheThreshold_AsksEveryTime`, read against
+  `GetToken_NeverRenewsATokenItStillHolds`. `ValidateToken` compares the lifetime the provider *stated*
+  against `TokenRefreshSeconds`, which is not a countdown, so the comparison has the same answer for the
+  life of the process: a deployment either renews on every single call - a full token request in front of
+  every outgoing call to player.api, serialized on one lock - or never renews at all. What makes the second
+  safe is `AuthenticatingHandler` treating a 401 as "get another one and retry", and nothing reports the
+  first as anything but latency.
+- `AuthenticatingHandlerTests.SendAsync_WhenNoTokenCanBeHad_ThrowsRatherThanSending`. `Authenticate`
+  dereferences the token response for `IsError` without checking it for null, so a null one fails every
+  outgoing request with a `NullReferenceException` naming nothing to do with authentication. Its only
+  possible producer is `AuthenticationService.RenewToken`'s catch-all, and
+  `AuthenticationServiceTests.GetToken_WhenTheProviderCannotBeReached_ReturnsAnErrorResponseAndNotNull` is
+  the evidence that IdentityModel turns a transport failure into an error response instead - so the pair of
+  tests is what says this is unreachable today and one refactor of either class away from not being.
+- `ViewServiceTests.GetInfoForTeams_ForATeamPlayerDoesNotHave_ReturnsAnEmptyEntry`. A team player.api does
+  not have still produces a `TeamInfo`, with a null view id, because the list is deduplicated by view id
+  and nothing else has claimed null - and the method's only caller,
+  `ActiveVirtualMachineService.SetViewActiveConsolesTelemetry`, casts that to `Guid` unchecked. Reaching it
+  needs a console open on a team player.api has forgotten, which is why nothing has noticed;
+  `GetViewIdsForTeams_SkipsATeamPlayerDoesNotHave` is the same input through the method that does check.
+
+Smaller ones are `<remarks>`ed in place: the fifteen-minute sliding cache in `ViewService` holding the
+*absence* of a team as firmly as its presence, so a Vm added to a team of a view still being created stays
+out of that view's group until the entry lapses; `GetInfoForTeams` returning one entry per view while its
+name and its `TeamName` field promise one per team; a 404 being forgiven on a team lookup but not on a
+view's teams; the five retry waits of a shipped deployment holding a caller for a minute before it gets the
+401 it was always going to get, with Polly's delays taking no cancellation token; and the webhook payloads
+being parsed with Newtonsoft while the DTOs are annotated for System.Text.Json, which works only because
+the names match case-insensitively.
+
 # Continuous integration
 
 `.github/workflows/test.yml` restores, builds and runs the suite on every push and pull request. It
@@ -716,28 +817,30 @@ reaches it - not a dependency's internals leaking into the report.
 
 ## The shape of it
 
-As of the run that added this section: **55.3% of lines** (4,907 of 8,872 coverable), 45.4% of
-branches, 65.9% of methods, across 166 classes. That single number is close to meaningless on its
+As of the run after roadmap item 8: **59.3% of lines** (5,264 of 8,872 coverable), 48.7% of
+branches, 70% of methods, across 166 classes. That single number is close to meaningless on its
 own, because of where the untested lines are:
 
 ```
-  Features                        96.0%       129 untested of 3,236
-  Domain.Models                   69.7%        27 of 89
+  Features                        96.8%       104 untested of 3,236
+  Domain.Models                   86.5%        12 of 89
+  Domain.Services                 83.9%       127 of 789
+  Infrastructure                  72.1%       153 of 548
   Crucible.Common (in-assembly)   68.1%        79 of 248
-  Infrastructure                  65.5%       189 of 548
-  Domain.Services                 48.3%       408 of 789
   Domain.Vsphere                  15.6%     2,213 of 2,622
   Domain.Proxmox                   9.0%       885 of 973
 ```
 
-3,098 of the 3,965 untested lines - 78% of them - are the two hypervisor drivers, which is the one gap
+3,098 of the 3,608 untested lines - 86% of them - are the two hypervisor drivers, which is the one gap
 below that is permanent rather than pending. The application's own request-handling surface, the
-`Features` tree, is at 96%. Whatever this suite is short of, it is not breadth over the code that
-answers a request.
+`Features` tree, is at 96.8%, and `Domain.Services` - which is where the four out-of-process clients live -
+went from 48.3% to 83.9% when they were covered. Whatever this suite is short of, it is not breadth over
+the code that answers a request, and it is no longer breadth over the code that calls out of the process
+either.
 
 That is also why the script ranks by *count* rather than by percentage. The question a reader has is
-"how much untested code is in here", and the two orderings disagree: the 17 uncovered lines in a 94%
-`Startup` are worth less attention than the 169 in a service at 0%.
+"how much untested code is in here", and the two orderings disagree: by percentage the dead eighteen-line
+`Player.Vm.Api.Hubs.VmHub` sorts above `VsphereService`, and by count it is 1,169 lines behind it.
 
 ## What the first run found
 
@@ -750,36 +853,72 @@ characterized. `Player.Vm.Api.Hubs.VmHub` at 0% is the dead second copy of the h
 `HubConnectionTests` asserts is not mapped. A 0% class is not automatically a gap, and coverage
 agreeing with a `<remarks>` written from reading the code is worth something on its own.
 
-Four things were genuinely new, and they are all narrower than a class:
+Four things were genuinely new, and they are all narrower than a class. All four are covered now - this
+is the record of what a measurement found that reading the code had not:
 
-- **`vms/actions/power-off` has no test.** It is the only one of the five bulk routes without one -
-  power-on, shutdown, reboot and revert all have theirs - and the action body is five lines that set
-  `PowerOperation.PowerOff` and send the command.
-- **No Proxmox Vm has ever been through the bulk power path.** The `vm.Type == VmType.Proxmox` accept
-  arm and the `IProxmoxService.BulkPowerOperation` dispatch after the loop are both unexecuted, so
-  everything asserted about bulk power is asserted about vSphere machines only. Two of the per-VM
-  outcome strings are unreachable for the same reason - "Unsupported Operation" for a Proxmox revert,
-  and for a Vm of neither type - and `"Insufficient Permissions"` is never produced by any bulk test,
-  though `"Unauthorized"` is.
-- **`VmHub.JoinUser`'s team-scoped active-Vm branch.** For a caller who cannot view all teams, the arm
-  that reports the active Vm when it is on the team being joined never runs. The view-admin arm beside
-  it does.
-- **`VmTeamDeletedSignalRHandler`'s suppression loop never keeps looking.** Every delete test that
-  reaches the loop matches on the first team it examines, so the path where another team of the Vm
+- **`vms/actions/power-off` had no test.** It was the only one of the five bulk routes without one -
+  power-on, shutdown, reboot and revert all had theirs - and the action body is five lines that set
+  `PowerOperation.PowerOff` and send the command. The three hard-power routes are now one theory,
+  `BulkPowerOperationEndpointTests.EachHardPowerRoute_SendsItsOwnOperation`, so the operation each route
+  sends is asserted per route rather than for the one that happened to have tests.
+- **No Proxmox Vm had ever been through the bulk power path.** The `vm.Type == VmType.Proxmox` accept
+  arm and the `IProxmoxService.BulkPowerOperation` dispatch after the loop were both unexecuted, so
+  everything asserted about bulk power was asserted about vSphere machines only. Two of the per-VM
+  outcome strings were unreachable for the same reason - "Unsupported Operation" for a Proxmox revert,
+  and for a Vm of neither type - and `"Insufficient Permissions"` was never produced by any bulk test,
+  though `"Unauthorized"` was. `BulkPowerOperationEndpointTests` now has a Proxmox region - including a
+  mixed batch, which is the case that shows the two dispatches are independent rather than exclusive -
+  and a permissions region for the three refusals.
+- **`VmHub.JoinUser`'s team-scoped active-Vm branch.** For a caller who could not view all teams, the arm
+  that reports the active Vm when it is on the team being joined never ran; the view-admin arm beside
+  it did. `VmHubGroupTests.JoinUser_ForATeamMember_ReportsAnActiveVmOnThatTeam` is that arm, and asserts
+  the view service is not consulted at all - resolving views is the admin arm's job, and a member
+  reaching it would be one player.api call per subscribed user.
+- **`VmTeamDeletedSignalRHandler`'s suppression loop never kept looking.** Every delete test that
+  reached the loop matched on the first team it examined, so the path where another team of the Vm
   resolves to a *different* view - or to none - and the loop carries on rather than suppressing the view
-  send is unexecuted. The create handler has exactly that test, in
+  send was unexecuted. The create handler had exactly that test, in
   `VmTeamSignalRHandlerTests.Created_WhenAnotherTeamOfTheVmIsInAnotherView_StillTellsTheView`; the
-  delete handler does not. An asymmetry between two test classes with nothing to see for it in the
+  delete handler did not. An asymmetry between two test classes with nothing to see for it in the
   production code, and not something the fourteen mutation runs could have shown: a mutation of that
   guard reddens the tests that do reach it, which is exactly what hides the path that none of them takes.
+  `Deleted_WhenNoOtherTeamOfTheVmIsInTheSameView_StillTellsTheView` is the missing one, as a theory over
+  both absences - the other team in another view, and in none.
 
-The rest of the ranking is the out-of-process integrations, which are untested because none of them
-has a harness yet rather than because anyone judged them low risk:
-`CallbackBackgroundService` (169 lines, 0%), `ViewService` (72, 0%), `AuthenticationService` (48, 0%)
-and `AuthenticatingHandler` (36, 0%) - the player.api and identity clients that every test substitutes -
-along with the untested remainder of `PlayerService` (70 lines of 73.4%) and
-`ActiveVirtualMachineService` (38 of 68%). Covering the first four means a substituted
-`HttpMessageHandler`, which nothing in the suite has needed so far.
+The rest of the ranking was the out-of-process integrations, untested because none of them had a harness
+rather than because anyone had judged them low risk: `CallbackBackgroundService` (169 lines, 0%),
+`ViewService` (72, 0%), `AuthenticationService` (48, 0%) and `AuthenticatingHandler` (36, 0%) - the
+player.api and identity clients that every test substitutes. Covering them meant a substituted
+`HttpMessageHandler`, which nothing in the suite had needed; they now sit at 98.2%, 100%, 89.5% and 100%,
+and the four characterizations above are what came out of writing them.
+
+## What the map says now
+
+`ViewService`, `AuthenticatingHandler`, `VmHub` and `VmTeamDeletedSignalRHandler` have no unexecuted lines
+or branches left at all. What the other three classes item 8 touched have left is eleven lines, each named
+in a `<remarks>` as unreachable or as not worth the arrangement - which is the state to leave a class in
+rather than chasing the last percent:
+`AuthenticationService`'s `RenewToken` catch-all and the null it returns (five lines - the pair of tests
+above is the argument that nothing can reach it), `CallbackBackgroundService`'s retry-delay cap (three
+lines: the delay grows by five seconds an attempt and the ceiling is two minutes, so reaching it takes
+twenty-four failures and about twenty-five minutes of real waiting), and `BulkPowerOperation`'s `catch
+(EntityNotFoundException<Vm>)` in `TryCanAccessVm` (three lines - `CanAccessVm` raises that only for a
+null Vm, and the handler passes it rows it has just loaded, so an id that matches nothing never gets
+that far).
+
+What the ranking says next, once the two hypervisor drivers are set aside as permanent, is smaller and
+more scattered than what item 8 found: the untested remainder of `PlayerService` (70 lines of 73.4%),
+`EntityEventInterceptor` (63 of 66.4%), `ProxmoxIsoProvider` (39 of 71.9%),
+`ActiveVirtualMachineService` (38 of 68%), `IsoService` (29 of 93.2%), `DatabaseExtensions` (25 of 55.3%)
+and the two Swagger operation filters (17 each, 0%). Nothing in that list is a subject the way the clients
+were - each is the residue of a class the suite already drives, which is what a coverage map looks like
+once the classes nothing drives have been dealt with.
+
+One entry on the list is not a test target at all. `Player.Vm.Api.Hubs.VmHub` (18 lines, 0%) is
+unreachable: `Startup` imports `Player.Vm.Api.Features.Vms.Hubs` and nothing anywhere else names the
+`Player.Vm.Api.Hubs` namespace, so the `MapHub<VmHub>` in `Startup` is the feature hub and this copy has
+no caller. The only reference to it in the repository is the assertion in `HubConnectionTests` that it is
+not mapped. Deleting the file is the fix; the coverage figure is only how it was noticed.
 
 # What is not covered yet
 
@@ -789,7 +928,8 @@ currently tell you.
 - **Authorization at the edges of it.** `PlayerService`, `VmService` and `NetworkService` are driven down
   the refusing path as well as the permitting one, and every endpoint class covering an authenticated
   route asserts its 401 and at least one refusal - a 403, or in `BulkPowerOperationEndpointTests` the
-  per-VM `"Unauthorized"` a bulk command reports instead. `ProxmoxController` and `VsphereController` now
+  per-VM `"Unauthorized"` and `"Insufficient Permissions"` a bulk command reports instead, both of them now
+  produced by a request rather than reasoned about. `ProxmoxController` and `VsphereController` now
   each have the full map of which permission every one of their routes asks for, including the ones that
   ask for none beyond team visibility. `VmUsageLoggingSession` has the same map, driven twice - denying
   the pair each route asks for, and denying the opposite pair to show the route still answers. The hubs
@@ -813,11 +953,15 @@ currently tell you.
   live connection, for the routing reason above.
 - **The projections.** The AutoMapper profiles run in every endpoint test, but only the projections those
   tests happen to read are asserted.
-- **The out-of-process clients.** `ViewService`, `AuthenticationService` and `AuthenticatingHandler`
-  are substituted everywhere they appear and are themselves at 0%, as is `CallbackBackgroundService`.
-  What they do is build requests to player.api and to the identity provider and read the answers, so
-  covering them needs a substituted `HttpMessageHandler` - a harness the suite has not needed until
-  now. Named by the coverage map rather than by reading the code; see Coverage above.
+- **What the out-of-process clients assume.** `ViewService`, `AuthenticationService`,
+  `AuthenticatingHandler` and `CallbackBackgroundService` are now covered down to the socket, which is as
+  far as this repository can go: everything above the transport is production code and everything below it
+  is what the tests decided the other service would say. The routes and the DTOs are the generated
+  `Player.Api.Client`'s, so those move with a package bump rather than silently - but which status code
+  player.api answers for a team it does not have, that a refused grant carries an `error` field, and how the
+  webhook payload spells its properties are all assumptions no test here can check. Two smaller things are
+  also unasserted: how the `ActionBlock` orders events beyond the two-event case, and any retry past the
+  first, since the delays are real seconds and the ceiling is twenty-four attempts away.
 - **The hypervisor edge, permanently.** No harness makes a vCenter or a Proxmox cluster available in
   CI. Unit tests against `IVimClient` and the Proxmox interfaces are the right tool at that layer and
   are not meant to be replaced by anything further up. This is most of the untested code in the
@@ -853,11 +997,24 @@ currently tell you.
    anywhere and nothing collected by the build that gates a pull request. The Coverage section above has
    the first run's figures, what the exclusions are, and the four holes it named that reading the code
    had not.
-8. The holes the map named, which is the first list of work here that came from a measurement rather
-   than from reading the code. In the order a user would notice them: the Proxmox half of the bulk power
-   path, which nothing has ever driven; the `vms/actions/power-off` route, the only one of the five with
-   no test; `VmHub.JoinUser`'s active-Vm branch for a caller who is not a view admin; and
-   `VmTeamDeletedSignalRHandler`'s suppression loop past a team in another view. Then the out-of-process
-   clients, which are a harness rather than a test - a substituted `HttpMessageHandler` - and would take
-   `ViewService`, `AuthenticationService`, `AuthenticatingHandler` and `CallbackBackgroundService` off
-   the zero line together.
+8. ~~The holes the map named, which is the first list of work here that came from a measurement rather
+   than from reading the code.~~ Done, and it is the item that changed the coverage figure most - lines
+   from 55.3% to 59.3%, and `Domain.Services` from 48.3% to 83.9%. The four narrow holes first: the
+   Proxmox half of the bulk power path and the two refusals beside it, the `vms/actions/power-off` route,
+   `VmHub.JoinUser`'s active-Vm branch for a caller who is not a view admin, and
+   `VmTeamDeletedSignalRHandler`'s suppression loop past a team in another view - sixteen cases added to
+   three existing classes. Then the out-of-process clients, which needed a harness rather than a test:
+   `Infrastructure/TestHttpHandler.cs`, a substituted transport with the real generated client,
+   IdentityModel and Polly above it, and 45 cases across four new classes -
+   `ViewServiceTests`, `AuthenticationServiceTests`, `AuthenticatingHandlerTests` and
+   `CallbackBackgroundServiceTests` - which took all four off the zero line together. Four
+   characterizations came out of writing them, listed above; the sharpest is a 502 from player.api
+   producing a set of maps nobody can see instead of a retry.
+9. The residue, which is what the map has left to say. It is a different kind of list from item 8's -
+   every entry is part of a class the suite already drives, so each is an arrangement that was never
+   produced rather than a subject nobody has looked at: `PlayerService`'s untested remainder (70 lines),
+   `EntityEventInterceptor` (63), `ProxmoxIsoProvider` (39), `ActiveVirtualMachineService` (38),
+   `IsoService` (29), `DatabaseExtensions` (25) and the two Swagger operation filters (17 each). Worth
+   doing in that order, worth stopping when the remaining lines are all named in a `<remarks>`, and worth
+   doing after deleting `Player.Vm.Api/Hubs/VmHub.cs`, which is 18 unreachable lines that no test can
+   cover and no caller can reach.

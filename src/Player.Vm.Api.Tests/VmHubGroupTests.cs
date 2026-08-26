@@ -448,6 +448,35 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
     }
 
     /// <summary>
+    /// The other side of the arm above, and the answer a client actually renders: a member following a
+    /// user active on the team they joined with is told which Vm it is, so the console indicator appears
+    /// on subscribing rather than only on the next <c>ActiveVirtualMachine</c> broadcast.
+    /// </summary>
+    /// <remarks>
+    /// The team-scoped arm decides from the active Vm's own team ids and nothing else, which is why the
+    /// view service is asserted unused: resolving views is the view admin's arm, and a member reaching it
+    /// would be one player.api call per subscribed user for an answer their teams already gave.
+    /// </remarks>
+    [Fact]
+    public async Task JoinUser_ForATeamMember_ReportsAnActiveVmOnThatTeam()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var vmId = Guid.NewGuid();
+        Visibility(viewId, primaryTeamId: teamId, canViewAllTeams: false, teamId);
+        _player.GetUserById(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
+        _active.GetActiveVirtualMachineForUser(userId)
+            .Returns(new ActiveVirtualMachine(vmId, "other-connection", [teamId], "alice"));
+
+        var result = await Hub.JoinUser(userId, viewId, teamId);
+
+        Assert.Equal(vmId, result.ActiveVmId);
+        await _views.DidNotReceive().GetViewIdsForTeams(
+            Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
     /// A view admin's answer is not "any team the followed user is on" but "any team in a view I asked
     /// about", which is what <c>IViewService.GetViewIdsForTeams</c> is resolving here. A user active in
     /// another view is not reported as active in this one.

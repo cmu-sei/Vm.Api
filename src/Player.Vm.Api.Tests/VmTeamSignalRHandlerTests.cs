@@ -139,6 +139,43 @@ public class VmTeamSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBa
     }
 
     /// <summary>
+    /// The delete's mirror of it, and the case that says the loop is a search rather than a check for any
+    /// other team at all: the Vm is still on another team, so it still exists, but that team is in another
+    /// view - or in none - and the view being left has genuinely lost sight of it. Suppressing here would
+    /// leave the Vm in the list of a client watching this view with no later message to remove it.
+    /// </summary>
+    /// <remarks>
+    /// Named by the coverage map rather than by reading the code, and worth recording why it was missing:
+    /// every other delete test that reaches the loop matches on the first team it examines, so nothing had
+    /// ever run past a non-matching one. A mutation of the guard reddens the tests that do reach it, which
+    /// is precisely what hides a path none of them takes - see the Coverage section of Testing.md. The
+    /// create handler's equivalent is
+    /// <see cref="Created_WhenAnotherTeamOfTheVmIsInAnotherView_StillTellsTheView"/>.
+    /// </remarks>
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Deleted_WhenNoOtherTeamOfTheVmIsInTheSameView_StillTellsTheView(bool otherTeamHasAView)
+    {
+        var (viewId, leaving) = (Guid.NewGuid(), Guid.NewGuid());
+        var otherTeam = Guid.NewGuid();
+        InView(viewId, leaving);
+
+        if (otherTeamHasAView)
+        {
+            InView(Guid.NewGuid(), otherTeam);
+        }
+
+        var vm = await SeedVm(otherTeam);
+
+        await Deleted.Handle(new EntityDeleted<VmTeam>(TeamRow(vm, leaving)), Ct);
+
+        Assert.Equal<string>(
+            [viewId.ToString(), leaving.ToString()],
+            _hub.Recipients(VmHubMethods.VmDeleted));
+    }
+
+    /// <summary>
     /// A team in no view is still told, as everywhere else in these handlers: whatever player.api knows or
     /// does not know about the team, its own subscribers are the ones the change is about.
     /// </summary>
