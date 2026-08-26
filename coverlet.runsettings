@@ -1,0 +1,47 @@
+<!--
+  Coverage settings, used only when a run asks for coverage - `scripts/coverage.sh`, or the manually
+  triggered coverage workflow. There is deliberately no threshold anywhere in this file: coverage
+  here is a map of where the untested risk is, not a gate. A percentage that has to be met turns
+  into tests written to move the percentage, and the exclusions below would be the first thing
+  argued about.
+-->
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat code coverage">
+        <Configuration>
+          <!-- Cobertura is what ReportGenerator reads and what every CI service understands. -->
+          <Format>cobertura</Format>
+
+          <!-- Only this repository's application code. Crucible.Common, the hypervisor clients and
+               the framework are all somebody else's risk, and a report that lists them buries the
+               part a reader can act on. Player.Vm.Api.Client is not in the picture either way: the
+               application does not reference it, so it is never loaded. -->
+          <Include>[Player.Vm.Api]*</Include>
+
+          <!-- EF's migrations are generated, enormous, and exercised by the harness rather than by
+               any test's assertions - the template database is migrated once per run, so they would
+               report as well covered while proving nothing. Both filters are here because they
+               answer to different things: the namespace filter catches the compiled types, the file
+               filter catches anything added under the folder that lands elsewhere. -->
+          <Exclude>[Player.Vm.Api]Player.Vm.Api.Data.Migrations.*</Exclude>
+          <ExcludeByFile>**/Data/Migrations/**/*.cs</ExcludeByFile>
+
+          <!-- Compiler-generated code is not a risk anyone can test, and `[Obsolete]` members are
+               ones nobody should be writing a test for. -->
+          <ExcludeByAttribute>Obsolete,GeneratedCodeAttribute,CompilerGeneratedAttribute</ExcludeByAttribute>
+
+          <!-- Auto-implemented property accessors are skipped. The DTOs and the entities are almost
+               entirely auto-props, and counting each one as a line either way is what makes a raw
+               number meaningless: it moves whenever a model grows a field, in whichever direction
+               the endpoint tests happen to serialize it. -->
+          <SkipAutoProps>true</SkipAutoProps>
+
+          <!-- The test assembly is not the subject. Its own coverage would be near total by
+               construction and would swamp the report. -->
+          <IncludeTestAssembly>false</IncludeTestAssembly>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>

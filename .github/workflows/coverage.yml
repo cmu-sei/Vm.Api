@@ -1,0 +1,63 @@
+name: Coverage
+
+# Manual only, and that is the whole design. Coverage here is a map of where the untested risk is,
+# not a gate: nothing in this workflow can fail a pull request, there is no threshold to meet, and
+# test.yml - the one that does run on every push - never collects coverage and never sees a number.
+#
+# The reason to keep it out of the required build is that a coverage percentage attached to a merge
+# button changes what people write. The figure moves fastest when a test drags an untested file
+# through without asserting anything about it, and this repository's convention is the opposite one:
+# a test exists to pin behaviour, and is verified by breaking the production code to see it fail.
+#
+# Run it from the Actions tab when deciding what to test next, or run scripts/coverage.sh locally,
+# which is the same thing with an HTML report to click through.
+on:
+  workflow_dispatch:
+
+jobs:
+  coverage:
+    name: Coverage
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup dotnet
+        uses: actions/setup-dotnet@v5
+        with:
+          # The SDK version lives in global.json; never pin a second copy of it here.
+          global-json-file: global.json
+
+      # Keyed the same way as test.yml's, so a coverage run warms the cache the test job reads and
+      # the other way round. ReportGenerator is a local tool and restores into the same cache.
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', '**/*.csproj', '.config/dotnet-tools.json') }}
+          restore-keys: nuget-${{ runner.os }}-
+
+      # The suite needs a Docker daemon for its PostgreSQL container, which ubuntu-latest has, and
+      # jq for the ranked list the script prints, which it also has.
+      - name: Coverage
+        id: coverage
+        run: ./scripts/coverage.sh
+
+      # The ranked list and the summary are already in the log; this puts the table on the run's own
+      # page, so the answer to "what is untested" needs no download. `!cancelled()` rather than
+      # always(), and a guard on the file, so that a run whose tests failed still publishes the
+      # coverage it did collect.
+      - name: Publish summary
+        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
+        run: |
+          if [ -f coverage/report/SummaryGithub.md ]; then
+            cat coverage/report/SummaryGithub.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload the report
+        if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: coverage/report
+          if-no-files-found: error

@@ -200,8 +200,8 @@ dotnet test --filter "FullyQualifiedName~VsphereServiceCommandTests.PowerOn_When
 
 A full run takes about fifteen seconds, container start and both sets of migrations included.
 
-There is no coverage collection configured. Nothing gates on a coverage figure, and adding a
-collector without a threshold step would produce a number nobody reads.
+A plain run collects no coverage. `scripts/coverage.sh` is the opt-in way to get it, and nothing gates
+on the figure it produces - see Coverage below for what it is for and why it has no threshold.
 
 # Build settings
 
@@ -515,6 +515,12 @@ request ever lands there. The host gets a throwaway usage log database as well, 
    would fail if `DisabledVmUsageLoggingService` ever grew a body - but neither is evidence that the class
    around it asserts anything.
 
+   Mutation testing answers "does anything assert this", which means it can only be asked about a line
+   something already runs. `scripts/coverage.sh` answers the other one - what nothing runs at all - and is
+   worth running after finishing a class, because the line it names as unexecuted is usually a branch the
+   arrangement never produced rather than one anybody decided to leave out. It found four of those; they
+   are listed under Coverage below.
+
 Bugs and deliberate oddities found while writing a test are characterized, not fixed. The test
 asserts the current behaviour and says why it is that way.
 `VsphereServiceCommandTests` is the worked example: it pins a contract that reads as sloppy error
@@ -648,6 +654,133 @@ fails, so that a failure shows which tests failed rather than only a count, and
 writing one - fails rather than passing quietly. The NuGet cache is keyed on
 `Directory.Packages.props` and the project files, which are what decide what a restore pulls.
 
+`coverage.yml` is the other workflow that runs the suite, and it is `workflow_dispatch` only: nothing
+it produces is visible to any other run, and it cannot fail a pull request. The next section is what it
+is for. Its NuGet cache key is the test job's plus `.config/dotnet-tools.json`, which shares the same
+`restore-keys` prefix, so whichever of the two runs first warms the cache for the other.
+
+# Coverage
+
+`scripts/coverage.sh` runs the suite with coverage and prints the one thing it exists to say: the
+classes with the most lines that nothing executed, most first. It writes an HTML report to
+`coverage/report/index.html` alongside it. `.github/workflows/coverage.yml` is the same script on a
+runner, started by hand from the Actions tab, and it publishes the table to the run's summary page
+and the report as an artifact.
+
+```
+scripts/coverage.sh                              the whole suite
+scripts/coverage.sh --filter VmSignalRHandler    anything further goes to `dotnet test`
+TOP=50 scripts/coverage.sh                       a longer ranking; the default is 25
+```
+
+A filtered run maps only what those tests reach, so everything else in it reads as 0%. That is the
+useful form when the question is "what does this class of mine not touch" and a misleading one for
+anything else; `coverage/` is rebuilt from scratch each time, so the last run is the only one there.
+
+None of it is part of a normal run or of the build that gates a pull request. `coverlet.collector` is
+a VSTest data collector, so it is inert until a run asks for XPlat Code Coverage, and only the script
+and that workflow ask: `dotnet test` neither instruments nor slows down, and `test.yml` never
+collects a figure or sees one. The single extra tool, ReportGenerator, is pinned as a local tool in
+`.config/dotnet-tools.json` and restored by the script. `jq` formats the ranking, and the script says
+so and carries on without it if it is not installed.
+
+## Why there is no threshold
+
+Deliberately, and it is the part of this most worth keeping. A percentage attached to a merge button
+changes what people write, because the cheapest way to move it is a test that drags an untested file
+through without asserting anything about it - which is the exact opposite of convention 8 above,
+where a test earns its place by being watched to fail, and every class here has been through that.
+A coverage gate would reward the one kind of test that never has to be.
+
+The second reason is that the figure is not a fact about the code on its own. Coverage says what
+nothing *executed*. Mutation testing says what nothing *asserts*, and the two find different things:
+`Startup` reports 94.3% covered because every endpoint test hosts the application, and almost nothing
+in the suite asserts anything about it at all. Read a coverage number as a lower bound on the untested
+surface, never as an upper bound on the tested one.
+
+So: a map for deciding what to test next, and nothing else. It has no vote on whether a change merges.
+
+## What is measured
+
+`coverlet.runsettings` holds the settings, and they matter to any figure quoted from it. Only
+`Player.Vm.Api` is instrumented; EF's migrations are excluded by namespace and by file, because the
+harness migrates the template database once per run and would report them as well covered while
+proving nothing; auto-implemented property accessors are skipped, so that a number does not move
+whenever a DTO grows a field; generated and `[Obsolete]` members are out; and so is the test assembly,
+whose own coverage would be near total by construction.
+
+One surprise in the output is not a mistake: the `Crucible.Common.EntityEvents` types are listed
+because that package compiles into this assembly rather than shipping as one. `EntityEventInterceptor`
+at 66.4% is code this repository's tests can and do exercise - `EntityEventBroadcastTests` is what
+reaches it - not a dependency's internals leaking into the report.
+
+## The shape of it
+
+As of the run that added this section: **55.3% of lines** (4,907 of 8,872 coverable), 45.4% of
+branches, 65.9% of methods, across 166 classes. That single number is close to meaningless on its
+own, because of where the untested lines are:
+
+```
+  Features                        96.0%       129 untested of 3,236
+  Domain.Models                   69.7%        27 of 89
+  Crucible.Common (in-assembly)   68.1%        79 of 248
+  Infrastructure                  65.5%       189 of 548
+  Domain.Services                 48.3%       408 of 789
+  Domain.Vsphere                  15.6%     2,213 of 2,622
+  Domain.Proxmox                   9.0%       885 of 973
+```
+
+3,098 of the 3,965 untested lines - 78% of them - are the two hypervisor drivers, which is the one gap
+below that is permanent rather than pending. The application's own request-handling surface, the
+`Features` tree, is at 96%. Whatever this suite is short of, it is not breadth over the code that
+answers a request.
+
+That is also why the script ranks by *count* rather than by percentage. The question a reader has is
+"how much untested code is in here", and the two orderings disagree: the 17 uncovered lines in a 94%
+`Startup` are worth less attention than the 169 in a service at 0%.
+
+## What the first run found
+
+Most of what the ranking surfaced in the covered part of the tree turned out to be already written
+down. `VmController.Get`'s own `if (vm == null) return NotFound(vm)` is unexecuted, and
+`VmsEndpointTests.Get_ForAnUnknownVm_Is404WithAProblemDetailsBody` already says that branch is
+unreachable because the service throws first; the `throw new InvalidOperationException()` in `Create`
+and `Update` is unexecuted, and `[ApiController]` answering 400 before the action runs is already
+characterized. `Player.Vm.Api.Hubs.VmHub` at 0% is the dead second copy of the hub that
+`HubConnectionTests` asserts is not mapped. A 0% class is not automatically a gap, and coverage
+agreeing with a `<remarks>` written from reading the code is worth something on its own.
+
+Four things were genuinely new, and they are all narrower than a class:
+
+- **`vms/actions/power-off` has no test.** It is the only one of the five bulk routes without one -
+  power-on, shutdown, reboot and revert all have theirs - and the action body is five lines that set
+  `PowerOperation.PowerOff` and send the command.
+- **No Proxmox Vm has ever been through the bulk power path.** The `vm.Type == VmType.Proxmox` accept
+  arm and the `IProxmoxService.BulkPowerOperation` dispatch after the loop are both unexecuted, so
+  everything asserted about bulk power is asserted about vSphere machines only. Two of the per-VM
+  outcome strings are unreachable for the same reason - "Unsupported Operation" for a Proxmox revert,
+  and for a Vm of neither type - and `"Insufficient Permissions"` is never produced by any bulk test,
+  though `"Unauthorized"` is.
+- **`VmHub.JoinUser`'s team-scoped active-Vm branch.** For a caller who cannot view all teams, the arm
+  that reports the active Vm when it is on the team being joined never runs. The view-admin arm beside
+  it does.
+- **`VmTeamDeletedSignalRHandler`'s suppression loop never keeps looking.** Every delete test that
+  reaches the loop matches on the first team it examines, so the path where another team of the Vm
+  resolves to a *different* view - or to none - and the loop carries on rather than suppressing the view
+  send is unexecuted. The create handler has exactly that test, in
+  `VmTeamSignalRHandlerTests.Created_WhenAnotherTeamOfTheVmIsInAnotherView_StillTellsTheView`; the
+  delete handler does not. An asymmetry between two test classes with nothing to see for it in the
+  production code, and not something the fourteen mutation runs could have shown: a mutation of that
+  guard reddens the tests that do reach it, which is exactly what hides the path that none of them takes.
+
+The rest of the ranking is the out-of-process integrations, which are untested because none of them
+has a harness yet rather than because anyone judged them low risk:
+`CallbackBackgroundService` (169 lines, 0%), `ViewService` (72, 0%), `AuthenticationService` (48, 0%)
+and `AuthenticatingHandler` (36, 0%) - the player.api and identity clients that every test substitutes -
+along with the untested remainder of `PlayerService` (70 lines of 73.4%) and
+`ActiveVirtualMachineService` (38 of 68%). Covering the first four means a substituted
+`HttpMessageHandler`, which nothing in the suite has needed so far.
+
 # What is not covered yet
 
 The suite is being grown in stages, and it is worth being explicit about what a green run does *not*
@@ -680,9 +813,16 @@ currently tell you.
   live connection, for the routing reason above.
 - **The projections.** The AutoMapper profiles run in every endpoint test, but only the projections those
   tests happen to read are asserted.
+- **The out-of-process clients.** `ViewService`, `AuthenticationService` and `AuthenticatingHandler`
+  are substituted everywhere they appear and are themselves at 0%, as is `CallbackBackgroundService`.
+  What they do is build requests to player.api and to the identity provider and read the answers, so
+  covering them needs a substituted `HttpMessageHandler` - a harness the suite has not needed until
+  now. Named by the coverage map rather than by reading the code; see Coverage above.
 - **The hypervisor edge, permanently.** No harness makes a vCenter or a Proxmox cluster available in
   CI. Unit tests against `IVimClient` and the Proxmox interfaces are the right tool at that layer and
-  are not meant to be replaced by anything further up.
+  are not meant to be replaced by anything further up. This is most of the untested code in the
+  repository - `Domain.Vsphere` at 15.6% and `Domain.Proxmox` at 9.0%, 3,098 lines between them - and
+  the one figure in the coverage map that is not meant to move.
 
 ## Roadmap
 
@@ -708,4 +848,16 @@ currently tell you.
    handlers directly, and `EntityEventBroadcastTests` drives the path from a save through the interceptor and
    real MediatR to a broadcast, which is also the only test of the wiring itself. The group names are now
    asserted from both ends, and the argument shapes the client has to tolerate are written down.
-7. Coverage measurement, opt-in and ungated, purely as a map of where the untested risk still is.
+7. ~~Coverage measurement, opt-in and ungated, purely as a map of where the untested risk still is.~~
+   Done. `scripts/coverage.sh` locally and a hand-started `coverage.yml` on a runner, with no threshold
+   anywhere and nothing collected by the build that gates a pull request. The Coverage section above has
+   the first run's figures, what the exclusions are, and the four holes it named that reading the code
+   had not.
+8. The holes the map named, which is the first list of work here that came from a measurement rather
+   than from reading the code. In the order a user would notice them: the Proxmox half of the bulk power
+   path, which nothing has ever driven; the `vms/actions/power-off` route, the only one of the five with
+   no test; `VmHub.JoinUser`'s active-Vm branch for a caller who is not a view admin; and
+   `VmTeamDeletedSignalRHandler`'s suppression loop past a team in another view. Then the out-of-process
+   clients, which are a harness rather than a test - a substituted `HttpMessageHandler` - and would take
+   `ViewService`, `AuthenticationService`, `AuthenticatingHandler` and `CallbackBackgroundService` off
+   the zero line together.

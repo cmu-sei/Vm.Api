@@ -20,6 +20,14 @@
          and the ones the application broadcasts to are proved to agree on a live connection. -->
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
     <PackageReference Include="xunit.v3" />
+    <!-- Coverage, opt-in. Nothing here changes what a normal run does: the collector is only loaded
+         when `dotnet test` is asked for XPlat Code Coverage, which only `scripts/coverage.sh` and the
+         manually triggered coverage workflow do. Settings and exclusions live in coverlet.runsettings
+         at the repository root. -->
+    <PackageReference Include="coverlet.collector">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <!-- PostgreSQL is the only database the tests run against, and this starts and disposes it. There

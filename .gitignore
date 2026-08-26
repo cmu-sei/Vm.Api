@@ -4,6 +4,10 @@ player/
 
 # Test run output. `dotnet test --results-directory TestResults` writes here, as CI does.
 TestResults/
+
+# Coverage output. `scripts/coverage.sh` writes the raw cobertura files and the generated report
+# here, and both are regenerated from scratch on every run.
+coverage/
 *.user
 *.csproj.lscache
 player_vm.db
