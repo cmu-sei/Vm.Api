@@ -45,21 +45,31 @@ namespace Player.Vm.Api.Data
 
         public override async Task PublishEventsAsync(IReadOnlyList<IEntityEvent> events, CancellationToken cancellationToken)
         {
-            if (ServiceProvider is not null)
-            {
-                var mediator = ServiceProvider.GetRequiredService<IMediator>();
-                var logger = ServiceProvider.GetRequiredService<ILogger<VmContext>>();
+            if (ServiceProvider is null)
+                return;
 
-                foreach (var evt in events.Cast<INotification>())
+            IMediator mediator;
+            ILogger<VmContext> logger;
+
+            try
+            {
+                mediator = ServiceProvider.GetRequiredService<IMediator>();
+                logger = ServiceProvider.GetRequiredService<ILogger<VmContext>>();
+            }
+            catch (ObjectDisposedException)
+            {
+                return;
+            }
+
+            foreach (var evt in events.Cast<INotification>())
+            {
+                try
                 {
-                    try
-                    {
-                        await mediator.Publish(evt, cancellationToken);
-                    }
-                    catch (Exception ex)
-                    {
-                        logger.LogError(ex, "Error publishing entity event {EventType}", evt.GetType().Name);
-                    }
+                    await mediator.Publish(evt, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    logger.LogError(ex, "Error publishing entity event {EventType}", evt.GetType().Name);
                 }
             }
         }
