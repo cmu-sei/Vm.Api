@@ -40,7 +40,6 @@ namespace Player.Vm.Api.Features.Proxmox
         {
             private readonly IMapper _mapper;
             private readonly IProxmoxService _proxmoxService;
-
             public Handler(
                 VmContext db,
                 IPlayerService playerService,
@@ -56,8 +55,10 @@ namespace Player.Vm.Api.Features.Proxmox
             public async Task<ProxmoxConsole> Handle(Query request, CancellationToken cancellationToken)
             {
                 var vm = await GetVm(request.Id, [], [], [], cancellationToken);
+                var console = _mapper.Map<ProxmoxConsole>(
+                    await _proxmoxService.GetConsole(vm.ProxmoxVmInfo));
 
-                return _mapper.Map<ProxmoxConsole>(await _proxmoxService.GetConsole(vm.ProxmoxVmInfo));
+                return console;
             }
         }
     }

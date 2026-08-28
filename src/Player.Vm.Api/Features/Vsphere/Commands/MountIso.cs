@@ -41,6 +41,7 @@ namespace Player.Vm.Api.Features.Vsphere
             private readonly IVmService _vmService;
             private readonly IMapper _mapper;
             private readonly IIsoService _isoService;
+            private readonly IXApiService _xApiService;
 
             public Handler(
                 IVsphereService vsphereService,
@@ -49,13 +50,15 @@ namespace Player.Vm.Api.Features.Vsphere
                 IPlayerService playerService,
                 IPrincipal principal,
                 IViewService viewService,
-                IIsoService isoService) :
+                IIsoService isoService,
+                IXApiService xApiService) :
                 base(mapper, vsphereService, playerService, principal, vmService, viewService)
             {
                 _vsphereService = vsphereService;
                 _vmService = vmService;
                 _mapper = mapper;
                 _isoService = isoService;
+                _xApiService = xApiService;
             }
 
             public async Task<VsphereVirtualMachine> Handle(Command request, CancellationToken cancellationToken)
@@ -74,6 +77,7 @@ namespace Player.Vm.Api.Features.Vsphere
                     vm.Id, VmType.Vsphere, vm.TeamIds, request.Iso, cancellationToken);
 
                 await _vsphereService.ReconfigureVm(request.Id, Feature.iso, "", iso);
+                await _xApiService.TrackIsoMountedAsync(vm.Id, iso, cancellationToken);
 
                 return await base.GetVsphereVirtualMachine(vm, cancellationToken);
             }

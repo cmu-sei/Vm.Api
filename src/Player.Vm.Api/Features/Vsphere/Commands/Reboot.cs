@@ -30,6 +30,7 @@ namespace Player.Vm.Api.Features.Vsphere
         public class Handler : BaseHandler, IRequestHandler<Command, string>
         {
             private readonly IVsphereService _vsphereService;
+            private readonly IXApiService _xApiService;
 
             public Handler(
                 IVsphereService vsphereService,
@@ -37,17 +38,21 @@ namespace Player.Vm.Api.Features.Vsphere
                 IMapper mapper,
                 IPlayerService playerService,
                 IPrincipal principal,
-                IViewService viewService) :
+                IViewService viewService,
+                IXApiService xApiService) :
                 base(mapper, vsphereService, playerService, principal, vmService, viewService)
             {
                 _vsphereService = vsphereService;
+                _xApiService = xApiService;
             }
 
             public async Task<string> Handle(Command request, CancellationToken cancellationToken)
             {
                 var vm = await base.GetVmForEditing(request.Id, cancellationToken);
 
-                return await _vsphereService.RebootVm(vm.Id);
+                var result = await _vsphereService.RebootVm(vm.Id);
+                await _xApiService.TrackPowerOperationAsync(vm.Id, PowerOperation.Reboot, cancellationToken);
+                return result;
             }
         }
     }

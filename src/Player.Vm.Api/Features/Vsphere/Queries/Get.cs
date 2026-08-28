@@ -41,7 +41,6 @@ namespace Player.Vm.Api.Features.Vsphere
             private readonly ILogger<Get> _logger;
             private readonly VsphereOptions _vsphereOptions;
             private readonly ClaimsPrincipal _user;
-
             public Handler(
                 IVmService vmService,
                 IMapper mapper,

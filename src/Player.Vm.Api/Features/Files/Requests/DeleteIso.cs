@@ -4,6 +4,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Shared.Interfaces;
 
 namespace Player.Vm.Api.Features.Files.Requests
@@ -13,10 +14,12 @@ namespace Player.Vm.Api.Features.Files.Requests
     public class DeleteIso : IFeatureHandler
     {
         private readonly IIsoService _isoService;
+        private readonly IXApiService _xApiService;
 
-        public DeleteIso(IIsoService isoService)
+        public DeleteIso(IIsoService isoService, IXApiService xApiService)
         {
             _isoService = isoService;
+            _xApiService = xApiService;
         }
 
         public async Task<IsoUploadResult> HandleAsync(Guid viewId, string scope, string filename, Guid? teamId, CancellationToken ct)
@@ -26,7 +29,9 @@ namespace Player.Vm.Api.Features.Files.Requests
 
             var scopeId = await _isoService.ResolveDeleteScopeIdAsync(viewId, scope, teamId, ct);
 
-            return await _isoService.DeleteAsync(viewId, scopeId, filename, ct);
+            var result = await _isoService.DeleteAsync(viewId, scopeId, filename, ct);
+            await _xApiService.TrackIsoDeletedAsync(viewId, scope, filename, ct);
+            return result;
         }
     }
 }
