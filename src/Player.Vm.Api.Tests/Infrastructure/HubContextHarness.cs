@@ -1,6 +1,7 @@
 // Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
+using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -44,6 +45,7 @@ internal sealed class HubContextHarness<THub>
     public const string Everyone = "<all clients>";
 
     private readonly List<HubSend> _sends = [];
+    private readonly Dictionary<string, Exception> _failures = [];
 
     public HubContextHarness()
     {
@@ -65,6 +67,19 @@ internal sealed class HubContextHarness<THub>
         _sends.Where(x => x.Method == method).ToArray();
 
     /// <summary>
+    /// Makes every send to one group throw, for the callers that broadcast to each group in turn inside a
+    /// <c>try</c> and have to be shown that one dead group does not cost the others theirs.
+    /// </summary>
+    /// <remarks>
+    /// Offered here because a test cannot arrange it from outside: <c>Clients.Group</c> is stubbed with a
+    /// lambda that builds and configures a fresh <see cref="IClientProxy"/> per call, so re-stubbing one
+    /// group name from a test consumes NSubstitute's pending-call state inside that lambda and fails with
+    /// "Could not find a call to return from". The failing send is not recorded, because it did not
+    /// happen - <see cref="Recipients"/> means "was told", not "was addressed".
+    /// </remarks>
+    public void FailsFor(string group, Exception failure) => _failures[group] = failure;
+
+    /// <summary>
     /// Every group name that received <paramref name="method"/>, in the order first addressed.
     /// </summary>
     /// <remarks>
@@ -81,6 +96,11 @@ internal sealed class HubContextHarness<THub>
         proxy.SendCoreAsync(Arg.Any<string>(), Arg.Any<object[]>(), Arg.Any<CancellationToken>())
             .Returns(call =>
             {
+                if (_failures.TryGetValue(group, out var failure))
+                {
+                    throw failure;
+                }
+
                 _sends.Add(new HubSend([group], call.ArgAt<string>(0), call.ArgAt<object[]>(1)));
                 return Task.CompletedTask;
             });

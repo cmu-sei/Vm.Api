@@ -31,6 +31,13 @@ namespace Player.Vm.Api.Tests.Infrastructure;
 /// request is an arrangement that has drifted from the route the client builds - and a 404 would be
 /// swallowed by the very error handling several of these tests are about.
 /// </para>
+/// <para>
+/// Every builder takes a path pattern, which may be prefixed with a method - <c>"GET nodes/pve1/qemu/100/config"</c>
+/// - to answer only that method. Without a prefix a rule answers whatever method arrives, which is
+/// what the clients whose routes are one-per-path want. The prefix exists for Proxmox, where reading a
+/// VM's config and writing it are the same path and differ only in verb, so a path-only rule would
+/// answer the read with the write's body.
+/// </para>
 /// </remarks>
 public sealed class TestHttpHandler : HttpMessageHandler
 {
@@ -60,6 +67,18 @@ public sealed class TestHttpHandler : HttpMessageHandler
         string path, string json, HttpStatusCode status = HttpStatusCode.OK, bool once = false) =>
         Add(path, status, json, once);
 
+    /// <summary>
+    /// A body computed when the request arrives rather than when the rule is written, for a resource
+    /// whose content a test goes on to change - a cluster that gains machines after the rule is
+    /// registered, or one whose machine migrates between two reads of the same path.
+    /// </summary>
+    public TestHttpHandler AnswersJson(string path, Func<string> json)
+    {
+        _rules.Add(new Rule(path, HttpStatusCode.OK, json, once: false));
+
+        return this;
+    }
+
     /// <summary>A status and nothing else, for the refusals.</summary>
     public TestHttpHandler Answers(string path, HttpStatusCode status) =>
         Add(path, status, string.Empty, once: false);
@@ -77,7 +96,7 @@ public sealed class TestHttpHandler : HttpMessageHandler
     /// </summary>
     public TestHttpHandler Throws(string path)
     {
-        _rules.Add(new Rule(path, HttpStatusCode.OK, body: null, once: false));
+        _rules.Add(new Rule(path, HttpStatusCode.OK, body: (Func<string>)null, once: false));
 
         return this;
     }
@@ -94,31 +113,34 @@ public sealed class TestHttpHandler : HttpMessageHandler
             request.Headers.Authorization?.ToString(),
             request.Content is null ? null : await request.Content.ReadAsStringAsync(cancellationToken)));
 
-        var rule = _rules.FirstOrDefault(x => !x.Used && x.Matches(path));
+        var rule = _rules.FirstOrDefault(x => !x.Used && x.Matches(request.Method, path));
         rule?.Use();
 
         if (rule is null)
         {
             throw new InvalidOperationException(
                 $"TestHttpHandler was asked for {request.Method} {path}, which nothing stubbed. " +
-                $"Stubbed: {(_rules.Count == 0 ? "nothing" : string.Join(", ", _rules.Select(x => x.Path)))}.");
+                $"Stubbed: {(_rules.Count == 0 ? "nothing" : string.Join(", ", _rules.Select(x => x.Pattern)))}.");
         }
 
-        if (rule.Body is null)
+        // Read once: a lazily computed body may not answer the same way twice.
+        var body = rule.Body;
+
+        if (body is null)
         {
             throw new HttpRequestException($"TestHttpHandler was told to fail {path}.");
         }
 
         return new HttpResponseMessage(rule.Status)
         {
-            Content = new StringContent(rule.Body, Encoding.UTF8, "application/json"),
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
             RequestMessage = request,
         };
     }
 
     private TestHttpHandler Add(string path, HttpStatusCode status, string body, bool once)
     {
-        _rules.Add(new Rule(path, status, body, once));
+        _rules.Add(new Rule(path, status, () => body, once));
 
         return this;
     }
@@ -131,25 +153,57 @@ public sealed class TestHttpHandler : HttpMessageHandler
     public sealed record SentRequest(
         HttpMethod Method, string Path, string Query, string Authorization, string Body);
 
-    private sealed class Rule(string path, HttpStatusCode status, string body, bool once)
+    private sealed class Rule
     {
-        public string Path { get; } = path;
-        public HttpStatusCode Status { get; } = status;
+        public Rule(string pattern, HttpStatusCode status, Func<string> body, bool once)
+        {
+            Pattern = pattern;
+            Status = status;
+            _body = body;
+            _once = once;
 
-        /// <summary>Null means "throw instead of answering".</summary>
-        public string Body { get; } = body;
+            // "GET some/path" scopes the rule to one method; a bare path answers any of them.
+            var verb = pattern.IndexOf(' ');
+
+            if (verb > 0)
+            {
+                Method = HttpMethod.Parse(pattern.AsSpan(0, verb));
+                Path = pattern[(verb + 1)..];
+            }
+            else
+            {
+                Path = pattern;
+            }
+        }
+
+        private readonly bool _once;
+        private readonly Func<string> _body;
+
+        /// <summary>As the test wrote it, method prefix and all. What an unmatched request is told about.</summary>
+        public string Pattern { get; }
+
+        public string Path { get; }
+
+        /// <summary>Null means "any method", which is every rule that did not ask for one.</summary>
+        public HttpMethod Method { get; }
+
+        public HttpStatusCode Status { get; }
+
+        /// <summary>Null means "throw instead of answering". Read once per request that matches.</summary>
+        public string Body => _body?.Invoke();
 
         public bool Used { get; private set; }
 
-        public void Use() => Used = once;
+        public void Use() => Used = _once;
 
         /// <summary>
         /// The path, or a prefix of it when the rule ends in <c>*</c> - which is what an arrangement that
-        /// does not care about the id in the route wants.
+        /// does not care about the id in the route wants - and the method when the rule named one.
         /// </summary>
-        public bool Matches(string requested) =>
-            Path.EndsWith('*')
+        public bool Matches(HttpMethod method, string requested) =>
+            (Method is null || Method == method) &&
+            (Path.EndsWith('*')
                 ? requested.StartsWith(Path.TrimEnd('*'), StringComparison.Ordinal)
-                : string.Equals(requested, Path.TrimStart('/'), StringComparison.Ordinal);
+                : string.Equals(requested, Path.TrimStart('/'), StringComparison.Ordinal));
     }
 }

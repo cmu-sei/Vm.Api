@@ -4,15 +4,28 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 1,090 tests across 39 test classes. All of them run today; nothing is skipped.
+The suite contains 1,422 tests across 50 test classes. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
-Docker: no network, no vCenter and no Proxmox cluster. The 350 unit tests need not even that.
+Docker: no network, no vCenter and no Proxmox cluster. The 560 unit tests need not even that.
 
-Eighteen of the thirty-nine classes are isolated unit tests. They construct the thing under test
+Twenty-four of the fifty classes are isolated unit tests. They construct the thing under test
 directly and substitute its collaborators. `VsphereIsoProviderTests` and `VsphereServiceCommandTests`
 are the largest and most important of them: they drive `VsphereService` and its ISO provider through a
 substituted `IVimClient`, which is the only seam between those and a live vCenter.
+
+Six of them are the Proxmox driver, and they are substituted a layer lower than that. `ProxmoxService`
+builds its own `PveClient` in its constructor out of `IHttpClientFactory.CreateClient("proxmox")`, so
+the seam available is the socket rather than an interface, and `Infrastructure/FakeProxmoxCluster.cs` is
+a cluster that answers requests: the client's route building, its `{"data": ...}` envelope, its typed
+model binding and its task waiting all run for real, and a test asserts the request Proxmox would
+actually have received. `ProxmoxServiceCommandTests` (power commands, the cluster-wide reads and the NIC
+options), `ProxmoxServiceConsoleTests`, `ProxmoxServiceConfigTests`, `ProxmoxServiceIsoMountTests`,
+`ProxmoxServiceSnapshotTests` and `ProxmoxServiceGuestAgentTests` divide it by method; the seventh
+class, `ProxmoxServiceVmLookupTests`, is database-backed rather than isolated, because
+`GetCurrentNodeForVm` and `BulkPowerOperation` are the only two of the interface's twenty-one members
+that read one. That every other class passes a **null** `VmContext` is itself the assertion that the
+rest do not.
 
 Twelve classes host the application in process and send real HTTP requests through it. Everything between
 the request and the hypervisor client is production wiring - routing, model binding, the authorization
@@ -44,7 +57,8 @@ and only the edges are replaced.
   hands the cluster, the ISO mount authorization refusing to pass a client's volume id through, the
   view-network rows reaching the NIC options, and which routes wake the task poller. `ProxmoxService`
   itself is substituted, and the ISO and network rules already have unit classes, so neither is restated
-  here.
+  here - and since the driver behind that substitute now has seven classes of its own, what this class
+  asserts is the request a handler makes of it, not what it does with one.
 - `VsphereEndpointTests` covers `VsphereController`, and is built the same way: a table of its
   twenty-one routes with a reflection test keeping it in step with the controller, theories over the
   whole table for the questions every route shares, and then only what a real request reaches. Two
@@ -89,10 +103,13 @@ so these are the only place the decision itself is under test rather than a rout
   team's network, and so the only thing that makes a range with several teams in it separable at all.
 
 The two service classes talk to real PostgreSQL, because some of the filtering they are asked about
-happens in SQL, but they construct the service directly rather than going over HTTP. Seven of the classes
+happens in SQL, but they construct the service directly rather than going over HTTP. Eight of the classes
 below are built the same way - `VmHubGroupTests`, `VmHubPresenceTests`, `VmUsageLoggingServiceTests`, the
-three entity-event handler classes and `CallbackBackgroundServiceTests` - which makes nine in the suite
-that need a database without needing a host.
+three entity-event handler classes, `CallbackBackgroundServiceTests` and `ProxmoxServiceVmLookupTests` - as
+are the three poller classes and `PollLoopSmokeTests`, which makes fourteen in the suite that need a
+database without needing a host, against twelve that need a host and twenty-four that need neither.
+The pollers need one because writing `HasPendingTasks` and `PowerState` is most of what they do, and a
+pass writes through a context of its own: a value read any other way could be one the pass never saved.
 
 Four classes cover the two SignalR hubs, which carry everything the application pushes rather than
 answers: console progress while a VM boots, and who else is looking at a machine. A hub is not reachable
@@ -141,6 +158,38 @@ a visit is closed, and the `DisabledVmUsageLoggingService` that stands in for it
 It is separated from the hub that calls it because the rules it applies are its own: a session window,
 the intersection between the caller's teams and the session's, and a close filter with three clauses. It
 is also the only place a usage log row is written by the application rather than seeded by a test.
+
+Three classes cover the background pollers that broadcast into `ProgressHub`'s groups and keep
+`Vm.HasPendingTasks` and `Vm.PowerState` in step with the hypervisor. They are the loops behind the
+spinner, the progress bar and the power indicator, and until now none of the four had a test: every other
+class in the suite substitutes them away, because a `BackgroundService` whose loop returns nothing and
+signals nothing is not assertable from outside.
+
+`Infrastructure/PollLoop.cs` is what makes one assertable, and reading it first is worth more than reading
+any of the three classes. It is the `IServiceProvider` the loop resolves its per-pass scope from, so a pass
+is one `CreateScope` - which makes passes countable, and makes a pass asked for past its allowance
+refusable with an exception each service's own `catch` already swallows. That refusal is a barrier: the
+extra turn does no work and cannot write to the database the test is about to read. Timing is deliberately
+not what advances the loop; the intervals are configured to a minute and the service's own `CheckTasks` or
+`CheckState` is nudged instead, so what a pass does is deterministic rather than a race. The exception is
+a test whose subject *is* the interval, which configures the arm it expects at 25ms and the other at a
+minute - four orders of magnitude, so swapping the two in the service fails by timing out rather than by a
+hair. `Infrastructure/PollLoopSmokeTests` tests the harness itself and nothing about any service.
+
+- `TaskServiceTests` covers vSphere's `TaskService`: the property filter it builds, the notification it
+  hands a client, which Vms it flags and clears, the state check a finished power task triggers, what one
+  unreachable vCenter or one unreadable task costs the rest of a pass, the readiness stamp, and which of
+  the two intervals it picks. The moref lookup is asserted per vCenter rather than per moref, since
+  `vm-123` exists on every vCenter of any size.
+- `ProxmoxTaskServiceTests` covers `ProxmoxTaskService`, the mirror image, and is where the two pollers'
+  shared column is pinned from the other side. Each excludes the other provider's machines, and neither
+  exclusion is asserted by anything but its own class - so a green run of one says nothing about the other,
+  which is why both classes lead with that test.
+- `MachineStateServiceTests` covers `MachineStateService`, which is not a task poller: it asks each vCenter
+  for the power events since it last looked and writes what they imply onto `Vm.PowerState`. Its subject is
+  as much the window as the mapping - where the first one starts, when it advances and when it must not -
+  because a window that moves over an outage drops the events in it silently and the indicator is simply
+  wrong from then on.
 
 Three classes cover the entity-event handlers, which are the sending end of those same group names. A
 change to a Vm never reaches a client directly: `VmContext` raises an entity event on save, MediatR hands
@@ -223,8 +272,8 @@ dotnet test
 
 **Docker must be running.** PostgreSQL is the only database these tests use, and there is deliberately
 no in-memory or SQLite fallback - a fallback that quietly swaps the provider reports a green run that
-never touched what production uses. Without Docker the 740 database tests fail, each naming the reason;
-the other 350 still pass, because the container is started by the first test that asks for a database
+never touched what production uses. Without Docker the 862 database tests fail, each naming the reason;
+the other 560 still pass, because the container is started by the first test that asks for a database
 rather than at assembly load.
 
 A single class or a single test can be run with a filter:
@@ -251,6 +300,15 @@ xUnit analyzers that ship with `xunit.v3`. These fail the build:
 - xUnit1051 - An awaited call that does not take the test's cancellation token.
 - xUnit2000 - `Assert.Equal` with the expected value passed second.
 - xUnit2012 - `Assert.True` over a collection lookup, where `Assert.Contains` says what failed.
+- xUnit2029 - `Assert.Empty` over a filtered collection, where `Assert.DoesNotContain` says what was
+  found.
+- xUnit2031 - a `Where` before `Assert.Single`, where the `Assert.Single(collection, predicate)` overload
+  says which element was expected.
+
+The last two are syntactic rather than semantic, which is worth knowing before rearranging an assertion:
+`Assert.Empty(log.At(LogLevel.Error))` builds only because the `Where` is inside `RecordingLogger.At`, so
+inlining that helper breaks the build and the fix is `Assert.DoesNotContain` rather than un-hiding the
+filter.
 
 xUnit1051 is the one that earns its keep here. Without a token, the runner cannot cancel a test left
 hanging on the in-process host, so a hung test hangs the whole CI job instead of failing it.
@@ -733,6 +791,142 @@ view's teams; the five retry waits of a shipped deployment holding a caller for 
 being parsed with Newtonsoft while the DTOs are annotated for System.Text.Json, which works only because
 the names match case-insensitively.
 
+The Proxmox driver adds the largest cluster of all, which is what 907 lines that had never had a request
+made of them looks like. The first two are the ones to read before touching that file:
+
+- **The `!= null` guards on a Proxmox response do not guard anything.** `PveClient` surfaces bodies as
+  `ExpandoObject`, and dynamic member access to an *absent* key throws `RuntimeBinderException` rather
+  than returning null - so in `data.exited != null ? (int)data.exited : 0` the exception is thrown while
+  evaluating the condition and the fallback arm is unreachable code. Eight sites share the mistake:
+  `exited` and `exitcode` in `RunGuestProcess`, `pid` in both guest-process methods, `content` in
+  `ReadGuestFile`, and `description`, `parent`, `vmstate` and `snaptime` in `GetSnapshots`. The
+  consequence is worst in `GetSnapshots`, because PVE appends a synthetic `current` entry to any
+  non-empty snapshot list and that entry carries no `description`: a VM with snapshots gets a binder
+  error naming `ExpandoObject` where the method means to return a list. The deadness was proved by
+  mutation rather than inferred - changing both fallback literals in `RunGuestProcess` at once reddens
+  *nothing*, which is normally a coverage hole and here is the finding. `DecodeAgentOutput` is the one
+  response path that is safe, and only by accident: hyphenated keys like `out-data` cannot be reached
+  dynamically at all, which forced it onto `IDictionary.TryGetValue`. What no test here can settle is how
+  often a real cluster omits one of these keys - with `exited: 0` the code never reads `exitcode` - so
+  the proven part is that the guards cannot work, not how often they are reached.
+- **`BulkPowerOperation` reports a failed power operation as a success.** The per-VM dictionary uses
+  `string.Empty` for "this one worked" and `result.GetError()` for a refusal, and `GetError()` is built
+  only from an `errors` object in the body - so a bare 500 yields an empty string, indistinguishable
+  from success. An unreachable node is worse: `PveClient` catches the transport exception itself and
+  returns an unsuccessful `Result` with no `errors` object, so the per-VM `catch` never runs (the
+  stale-node retry still does, which is the proof) and a whole node being down is invisible to the UI.
+  The corollary is that the only exception which reaches that `catch` in practice is the
+  `NotSupportedException` for `Revert`. Pinned in
+  `ProxmoxServiceVmLookupTests.BulkPowerOperation_WhenAVmsNodeIsUnreachable_ReportsItAsSuccessButStillSubmitsTheRest`.
+- **`GetCurrentNodeForVm` does not refresh the stored node**, though the interface doc comment says it
+  does. `ResolveNode` assigns `info.Node` in memory, the query is `AsNoTracking`, and nothing calls
+  `SaveChanges` on any path - so after a migration the call returns the new node while the row still
+  holds the old one. Asserted against a fresh `DbContext`, which is the only way to see it.
+- **`GetConsole` throws its refusals with no message.** `throw new Exception(result.GetError())` at
+  `ProxmoxService.cs:175` discards the status code, the reason phrase and the route, so a rejected API
+  token surfaces as an empty exception. Every other refusal in the file interpolates `GetError()` into
+  context naming the operation and the vmid, which is why those tests assert with `Assert.StartsWith`.
+
+Smaller ones are `<remarks>`ed in place: `ReplaceBridge`'s `bridge=` append branch being unreachable
+through its only caller, since `ChangeNetwork` refuses an adapter whose bridge is blank and it is blank
+exactly when there is no token to replace - it is also the only line of `ProxmoxService` that no test
+covers; a config key like `netx` reaching `int.Parse` in `ChangeNetwork` as an unhandled
+`FormatException`, which no real PVE config produces; `RunGuestProcessFast` reporting a pid as `long`
+while `RunGuestProcess` narrows it to `int` for the status query, so pid `4294967303` is polled as
+`?pid=7`, unreachable on Linux; `EnsureQemu` refusing a container with a 500 where `MountIso` refuses the
+same impossibility with a 400; `GetError()` rendering an `errors` object as `"field : message"`, so a
+Proxmox power refusal - which carries no field - reaches the UI with a leading `" : "`; and the two
+`UrlEncode` families in use disagreeing on case, `WebUtility` in the console URL emitting upper-case hex
+where `HttpUtility` in the query path emits lower-case and `+` for a space.
+
+The three pollers add a cluster of their own, and it divides in a way the others do not: two of them are
+about an operator never being told, and the rest are about a user seeing something wrong. The first is the
+one to read before anything else in `MachineStateService`:
+
+- **`MachineStateService`'s loop-level catch logs at `Debug`.** No deployment runs at Debug, so this poller
+  failing every pass is silent: the power indicator stops following anything, every machine in the UI keeps
+  whatever state it last had, and nothing is logged at a level anybody sees. The same class logs the
+  *smaller*, per-connection failure at `Error` nine lines below, and the other three pollers use `Error` at
+  their loop level, so it is a slip rather than a decision. Pinned in
+  `WhenAWholePassFails_ItIsSwallowedAndLoggedAtDebugWhereNothingWillSeeIt`.
+- **`HealthAllowanceSeconds` has no default and is compared with a strict `<`**, so zero means
+  "unresponsive however recently it ran" - and vSphere's `TaskService` is the only thing that ever writes
+  either half of that readiness check. It overwrites the class's own field default of 90 on every pass, so a
+  deployment that sets any other `Vsphere` option without this one fails readiness forever while the poller
+  works perfectly. An environment-variable install cannot inherit a single key from `appsettings.json` once
+  it overrides the section, which is how that happens. `appsettings.json` ships 180. Pinned in
+  `WithNoAllowanceConfigured_ReadinessFailsThoughThePassSucceeded`.
+- **The power indicator is only correct from startup onward.** The first window per vCenter is seeded from
+  the clock (`_lastCheckedTimes.GetOrAdd(connection.Address, DateTime.UtcNow)`), and `_lastCheckedTimes` is
+  a field of a singleton `BackgroundService`, so "first pass" is once per process rather than once per
+  reconnect. A machine powered off while the API was restarting still reads as on until something else
+  changes its state. Pinned in
+  `TheFirstWindowBeginsAtStartup_SoAPowerEventFromBeforeTheApiStartedIsNeverSeen`.
+- **A window is not advanced when `GetEvents` fails**, which is the good half of the same design and is
+  pinned for that reason: the `catch` returns before the assignment, so an outage does not consume the
+  window and the events are re-requested next pass. Tidying the assignment above the `try` would silently
+  drop every power event in the outage.
+  `WhenAVcenterCannotBeReached_ItIsLoggedAndItsWindowIsNotAdvanced` is the test that would object.
+- **`ProxmoxTaskService`'s query that *sets* `HasPendingTasks` has no provider filter, while the query that
+  *clears* it does.** So a Vm with a `ProxmoxVmInfo` row and some other `Vm.Type` can be flagged by this
+  poller and then skipped by its own clearing sweep forever - a spinner that never stops and power buttons
+  that never come back. A trap door rather than a live bug: nothing in the application writes a
+  `ProxmoxVmInfo` for a Vm it did not also type as Proxmox, so it needs a mis-migration or hand-edited
+  data. The fix is the same `Type == VmType.Proxmox` clause on the second query. Pinned in
+  `AVmWithProxmoxInfoButAnotherType_IsFlaggedAndThenNeverCleared`.
+- **vSphere's `TaskService` is the one poller whose `WaitAsync` is given no cancellation token.** Cancelling
+  leaves it asleep for up to a full `CheckTaskProgressIntervalMilliseconds` - five seconds as shipped - so
+  every restart and every rolling update waits that out, after which the container is killed rather than
+  stopped if the orchestrator's grace period is shorter. `ProxmoxTaskService` and `MachineStateService` both
+  pass one. It is also why `PollLoop.Stop` has to nudge after cancelling, and so why every test in that
+  class depends on the defect being there - the `<remarks>` says which assertion replaces it once the token
+  is passed. Pinned in `WhenCancelled_TheLoopSleepsOnUntilSomethingNudgesIt`.
+- **A task that cannot be processed costs its own machine's spinner.** The per-task `catch` isolates the
+  rest of the list, which is what it is for, but a task missing from `stillPendingVmIds` is
+  indistinguishable from a task that finished - so the machine whose task could not be read is cleared while
+  vCenter is still working on it. Pinned in
+  `ATaskThatCannotBeProcessed_IsLoggedAndTheRestOfTheListStillIs`, which asserts both halves.
+- **One hub, two vocabularies.** Both pollers broadcast the same `Notification` type to the same hub, and
+  they do not agree on it. vSphere sends `queued`/`running`/`success` with a real `info.progress`; Proxmox
+  sends `running` or PVE's own status string with `progress` **permanently the empty string**, because
+  PVE's cluster task list carries no percentage. A client rendering a progress bar off that field shows one
+  for a vSphere machine and nothing for a Proxmox one. Pinned from both sides.
+- **The newest-event rule is per vCenter only.** The `GroupBy`/`OrderByDescending` that picks the latest
+  event for a machine runs inside the per-connection loop, and the cross-connection merge is
+  `eventDict.TryAdd` - so where two vCenters both resolve to the same Player Vm, the first connection in
+  `GetAllConnections()` order wins outright however much older its event is. Narrow to reach - a machine
+  moved between vCenters while both connection caches still hold its moref - and deterministic when it is.
+  Pinned in `WhenTwoVcentersBothNameTheSameVm_TheFirstConnectionWinsRatherThanTheNewerEvent`.
+
+Two more were found by mutation rather than by reading, and are the reason the convention in "Adding a
+test" is worth the round trip: removing `_runningTasks.Clear()` and removing `_tasksPending = false`, both
+of them a single line at the top of a pass, each reddened *nothing* in a class that already had 37 cases.
+Neither is a defect - both lines are correct - but nothing asserted what they were for, and what they are
+for is large. Without the first, every task the process ever saw is rebroadcast to its group on every pass
+forever, a progress bar frozen at whatever percentage the task was on when it finished. Without the second,
+the first task anybody starts pins every vCenter on the fast interval for the life of the process.
+`ATaskThatHasLeftTheRecentList_IsNotBroadcastAgainByTheNextPass` and
+`OnceNothingIsRunning_TheNextPassComesOnTheSlowIntervalAgain` are what came of it. Both needed a two-pass
+arrangement, which no other test in the class had; cross-pass state was the shape of the gap, not those two
+lines.
+
+Smaller ones are `<remarks>`ed in place: `AsyncExExtensions.WaitAsync` disposing neither its timeout CTS
+nor its linked CTS, so every pass of all four pollers leaves a callback registered on the long-lived
+stopping token; three of the eight `Task` properties vSphere is asked for never being read - `info.name`,
+`info.cancelled` and `info.error` - so a cancelled or failed task is only ever "not queued and not
+running" to that poller and a user is told a task ended, never that it failed; `_tasksPending` being set
+from a task's state before the code asks whether a Player Vm was resolved, so another tenant's long
+datastore operation holds this deployment's poller at its fast interval; `MachineStateService`'s
+`endTimeSpecified` left false, so consecutive windows overlap rather than abut and an event can be
+delivered twice - harmless, since writing a state twice equals writing it once; its first two passes asking
+for the same instant, because the stored time is read one statement before its replacement is captured, so
+the first window that has genuinely moved is the third pass's; there being no machine-state interval at all,
+so slowing task-progress polling to spare a busy vCenter also slows how fast the power indicator notices
+anything; `ProxmoxTaskService`'s per-task `catch` logging `task?.UniqueTaskId`, written for a null task
+that would already have been dereferenced two lines earlier; and `Include(x => x.VmTeams)` on
+`MachineStateService`'s update query, which nothing in that method reads - unlike the two pollers' own
+`Include`s, which the entity-event handlers need in order to compute group names after the save.
+
 # Continuous integration
 
 `.github/workflows/test.yml` restores, builds and runs the suite on every push and pull request. It
@@ -817,26 +1011,31 @@ reaches it - not a dependency's internals leaking into the report.
 
 ## The shape of it
 
-As of the run after roadmap item 8: **59.3% of lines** (5,264 of 8,872 coverable), 48.7% of
-branches, 70% of methods, across 166 classes. That single number is close to meaningless on its
+As of the run after roadmap item 11: **71.0% of lines** (6,303 of 8,872 coverable), 68.0% of
+branches, 78.6% of methods, across 166 classes. That single number is close to meaningless on its
 own, because of where the untested lines are:
 
 ```
   Features                        96.8%       104 untested of 3,236
   Domain.Models                   86.5%        12 of 89
-  Domain.Services                 83.9%       127 of 789
-  Infrastructure                  72.1%       153 of 548
+  Domain.Services                 84.8%       120 of 789
+  Domain.Proxmox                  77.2%       222 of 973
+  Infrastructure                  74.3%       141 of 548
   Crucible.Common (in-assembly)   68.1%        79 of 248
-  Domain.Vsphere                  15.6%     2,213 of 2,622
-  Domain.Proxmox                   9.0%       885 of 973
+  Domain.Vsphere                  29.2%     1,856 of 2,622
 ```
 
-3,098 of the 3,608 untested lines - 86% of them - are the two hypervisor drivers, which is the one gap
-below that is permanent rather than pending. The application's own request-handling surface, the
-`Features` tree, is at 96.8%, and `Domain.Services` - which is where the four out-of-process clients live -
-went from 48.3% to 83.9% when they were covered. Whatever this suite is short of, it is not breadth over
-the code that answers a request, and it is no longer breadth over the code that calls out of the process
-either.
+2,078 of the 2,569 untested lines - 81% of them - are still the two hypervisor drivers, but that gap is
+no longer one thing, and it is no longer the whole of either namespace. `Domain.Proxmox` went from 9.0% to
+77.2% without a cluster, because the Proxmox driver's seam is a substituted `HttpClient` rather than an
+interface - `ProxmoxService` alone went from 3.7% to **99.4%** (508 of 511 lines). `Domain.Vsphere` went
+from 15.6% to 29.2% for a different reason: not the driver, which can still only be reached through
+`IVimClient`, but the two pollers above it, which needed no vCenter at all and are now at 100%. What is
+left in each namespace is the client and the connection cache, plus one background service on the Proxmox
+side and the ISO upload path. The application's own request-handling surface, the `Features`
+tree, is at 96.8%, and `Domain.Services` - which is where the four out-of-process clients live - went from
+48.3% to 83.9% when they were covered. Whatever this suite is short of, it is not breadth over the code
+that answers a request, and it is no longer breadth over the code that calls out of the process either.
 
 That is also why the script ranks by *count* rather than by percentage. The question a reader has is
 "how much untested code is in here", and the two orderings disagree: by percentage the dead eighteen-line
@@ -906,13 +1105,38 @@ twenty-four failures and about twenty-five minutes of real waiting), and `BulkPo
 null Vm, and the handler passes it rows it has just loaded, so an id that matches nothing never gets
 that far).
 
-What the ranking says next, once the two hypervisor drivers are set aside as permanent, is smaller and
-more scattered than what item 8 found: the untested remainder of `PlayerService` (70 lines of 73.4%),
-`EntityEventInterceptor` (63 of 66.4%), `ProxmoxIsoProvider` (39 of 71.9%),
+What the ranking says next, once `Domain.Vsphere` is set aside as reachable only through `IVimClient`, is
+smaller and more scattered than what item 8 found: the untested remainder of `PlayerService` (70 lines of
+73.4%), `EntityEventInterceptor` (63 of 66.4%), `ProxmoxIsoProvider` (39 of 71.9%),
 `ActiveVirtualMachineService` (38 of 68%), `IsoService` (29 of 93.2%), `DatabaseExtensions` (25 of 55.3%)
 and the two Swagger operation filters (17 each, 0%). Nothing in that list is a subject the way the clients
 were - each is the residue of a class the suite already drives, which is what a coverage map looks like
 once the classes nothing drives have been dealt with.
+
+Item 10 changed what the top of that ranking means. `ProxmoxService` was the single largest untested class
+in the repository after `VsphereService`; it is now at 99.4%, and its one uncovered line is
+`ReplaceBridge`'s `bridge=` append at `:352`, which the tests prove is unreachable through its only
+caller - the state to leave a class in rather than chasing the last percent. What the Proxmox namespace had
+left after it was three classes, and one of them is the reason the other two were worth doing:
+`ProxmoxTaskService` (130 lines, 0% at that point) and `ProxmoxStateService` (126, 0%) are the background
+services, both reachable through their own substituted interfaces without a cluster, and
+`ProxmoxIsoStorageService` (81 untested of 25%) is the ISO upload path, which shares the same
+`IHttpClientFactory` seam the driver tests already use.
+
+Item 11 took the last three background services with no tests off the zero line, and did it without moving
+what the ranking is *about*: `TaskService` 0% → 100% of 213 lines, `MachineStateService` 0% → 100% of 131,
+and `ProxmoxTaskService` 0% → 100% of 130. Branch coverage is 98.3%, 100% and 96.8%. All three left the
+untested-lines ranking entirely, `Domain.Vsphere` went from 15.6% to 29.2% and `Domain.Proxmox` from 63.8%
+to 77.2%, and the assembly from 65.3% to 71.0%. The four lines that survived the first full run of
+`TaskServiceTests` were its per-task `catch`, which is now covered too - the only way in is a moref
+translation that throws, which needed one line of harness rather than a new arrangement.
+
+What that leaves at the top of the Vsphere namespace is unchanged in kind and shorter by three entries:
+`VsphereService` (1,169 lines of 25.2%) and `VsphereConnection` (405 of 3.8%) are below `IVimClient` and
+close to their ceiling, `ConnectionService` (180, 0%) is the connection cache and login loop, and
+`VimExtensions` (96 of 6.7%) is the property-bag reader the pollers use and nothing tests directly. On the
+Proxmox side `ProxmoxStateService` (126, 0%) is now the largest untested class in that namespace, and it is
+the fourth poller - the same shape as the three above, so `PollLoop` is already most of a harness for it.
 
 One entry on the list is not a test target at all. `Player.Vm.Api.Hubs.VmHub` (18 lines, 0%) is
 unreachable: `Startup` imports `Player.Vm.Api.Features.Vms.Hubs` and nothing anywhere else names the
@@ -962,11 +1186,18 @@ currently tell you.
   webhook payload spells its properties are all assumptions no test here can check. Two smaller things are
   also unasserted: how the `ActionBlock` orders events beyond the two-event case, and any retry past the
   first, since the delays are real seconds and the ceiling is twenty-four attempts away.
-- **The hypervisor edge, permanently.** No harness makes a vCenter or a Proxmox cluster available in
-  CI. Unit tests against `IVimClient` and the Proxmox interfaces are the right tool at that layer and
-  are not meant to be replaced by anything further up. This is most of the untested code in the
-  repository - `Domain.Vsphere` at 15.6% and `Domain.Proxmox` at 9.0%, 3,098 lines between them - and
-  the one figure in the coverage map that is not meant to move.
+- **The hypervisor edge - vSphere permanently, Proxmox no longer.** No harness makes a vCenter or a
+  Proxmox cluster available in CI, and this is still most of the untested code in the repository - 2,078
+  lines between `Domain.Vsphere` at 29.2% and `Domain.Proxmox` at 77.2%. But the two halves are not the
+  same kind of gap, and this section used to say they were. vSphere's client is reached only through
+  `IVimClient`, so a substitute there is as far down as a test can go and `VsphereService` at 25.2% is
+  close to the ceiling. Proxmox's is not: `ProxmoxService` constructs its `PveClient` from
+  `IHttpClientFactory.CreateClient("proxmox")`, so the transport can be replaced instead of the client,
+  and the driver is now at 99.4% with no cluster involved. What remains genuinely out of reach is
+  narrower than "the hypervisor edge": whether the routes and payloads these tests assert are the ones a
+  real PVE accepts, whether a real cluster ever omits the response keys the driver mishandles, and every
+  vSphere call below `IVimClient`. The first two of those are what `crucible-tests` against a deployed
+  environment is for; the third is not meant to move.
 
 ## Roadmap
 
@@ -1018,3 +1249,45 @@ currently tell you.
    doing in that order, worth stopping when the remaining lines are all named in a `<remarks>`, and worth
    doing after deleting `Player.Vm.Api/Hubs/VmHub.cs`, which is 18 unreachable lines that no test can
    cover and no caller can reach.
+10. ~~The Proxmox driver at the socket.~~ Done, out of order and ahead of item 9, because it came from a
+    question rather than from the map: which of the gaps above can be closed with no hypervisor at all?
+    `ProxmoxService` turned out to be one of them. It constructs its own `PveClient` from
+    `IHttpClientFactory.CreateClient("proxmox")`, so the seam is the transport, and item 8's
+    `TestHttpHandler` was already most of a harness for it - it needed a method prefix on a rule pattern,
+    because reading a VM's config and writing it are the same path and differ only in verb, and a lazily
+    computed body, because a cluster gains machines and migrates them between two reads of one path.
+    On top of that, `Infrastructure/FakeProxmoxCluster.cs`: one cluster holding whatever machines a test
+    registers, arranged in Proxmox's own vocabulary of paths and JSON, with the real client's route
+    building, `{"data": ...}` envelope, model binding and task waiting all still running. Then 236 cases
+    across seven classes - `ProxmoxServiceCommandTests`, `…ConfigTests`, `…ConsoleTests`,
+    `…GuestAgentTests`, `…IsoMountTests`, `…SnapshotTests` and `…VmLookupTests`, the last of these against
+    real PostgreSQL because the node-refresh path reads the database. `ProxmoxService` went from 3.7% to
+    99.4% of its lines, `Domain.Proxmox` from 9.0% to 63.8%, and the assembly from 59.3% to 65.3%.
+    Ten characterizations came out of it, listed above; the sharpest is that eight `!= null` guards
+    against a missing Proxmox response key are dead code, because reading an absent member of an
+    `ExpandoObject` throws rather than answering null. What is left of the driver is the three classes
+    beside the service - `ProxmoxIsoStorageService` past its statics, `ProxmoxPrimaryHandler`, and the
+    unguarded named-client registrations in `ServiceCollectionExtensions` - none of which need a cluster
+    either.
+11. ~~The background pollers.~~ Done, still ahead of item 9 and for the same reason as item 10: they were
+    the largest thing left that needs no hypervisor. Three services that had never been driven at all -
+    vSphere's `TaskService` (213 lines), `MachineStateService` (131) and `ProxmoxTaskService` (130) - each
+    an infinite `while` around a scope, a hypervisor query, some database writes and a SignalR broadcast.
+    The problem was never the hypervisor, which `IVimClient` and item 10's `FakeProxmoxCluster` already
+    answer for; it was the loop, which has no seam and no way to be asked for exactly one pass.
+    `Infrastructure/PollLoop.cs` is that seam, and it is the item's real product: the test's own
+    `IServiceProvider`, which counts passes because a pass is one `CreateScope`, and bounds them because
+    a pass past its allowance throws into a `catch` the service already has. A refused pass is a barrier,
+    so `Run(passes: n)` returning means pass *n* finished - writes and broadcasts included - without a
+    sleep anywhere in the suite. Then 96 cases across four classes: `TaskServiceTests` (40),
+    `ProxmoxTaskServiceTests` (31), `MachineStateServiceTests` (21) and `PollLoopSmokeTests` (4) for the
+    harness itself. All three services went from 0% to **100%** of their lines, `Domain.Vsphere` from
+    15.6% to 29.2%, `Domain.Proxmox` from 63.8% to 77.2%, and the assembly from 65.3% to 71.0%. Eleven
+    characterizations came out of it, listed above; the sharpest is that `MachineStateService`'s
+    loop-level catch logs at `Debug`, so the poller behind every power indicator in the UI can fail every
+    pass for the life of a deployment and log nothing anybody reads. Two of the eleven were found by
+    mutation rather than by reading - `_runningTasks.Clear()` and `_tasksPending = false`, one line each,
+    both correct, neither asserted by any of 37 existing cases - which is the strongest evidence in this
+    document for step 8 of "Adding a test". What is left above the two drivers is `ProxmoxStateService`
+    (126 lines, 0%), which is the fourth poller and needs nothing this item did not already build, and
+    `ConnectionService` (180, 0%), which is the vSphere connection cache and does need a vCenter.
