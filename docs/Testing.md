@@ -4,12 +4,12 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 1,422 tests across 50 test classes. All of them run today; nothing is skipped.
+The suite contains 1,463 tests across 53 test classes. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
 Docker: no network, no vCenter and no Proxmox cluster. The 560 unit tests need not even that.
 
-Twenty-four of the fifty classes are isolated unit tests. They construct the thing under test
+Twenty-four of the fifty-three classes are isolated unit tests. They construct the thing under test
 directly and substitute its collaborators. `VsphereIsoProviderTests` and `VsphereServiceCommandTests`
 are the largest and most important of them: they drive `VsphereService` and its ISO provider through a
 substituted `IVimClient`, which is the only seam between those and a live vCenter.
@@ -27,7 +27,7 @@ class, `ProxmoxServiceVmLookupTests`, is database-backed rather than isolated, b
 that read one. That every other class passes a **null** `VmContext` is itself the assertion that the
 rest do not.
 
-Twelve classes host the application in process and send real HTTP requests through it. Everything between
+Fourteen classes host the application in process and send real HTTP requests through it. Everything between
 the request and the hypervisor client is production wiring - routing, model binding, the authorization
 policy, the MediatR pipeline behaviors, the handlers, AutoMapper and EF Core against real PostgreSQL -
 and only the edges are replaced.
@@ -85,6 +85,10 @@ and only the edges are replaced.
   added to the controller cannot go untested on one side of the flag.
 - `HubConnectionTests` covers the edge of the two SignalR hubs - where they are mapped, who may reach
   them, and one round trip over a real connection. It is described with the other hub classes below.
+- `ContractTests` and `OpenApiSurfaceTests` are the two classes whose subject is not this application but
+  its agreement with the clients that consume it. They host it because that is the only way to reach the
+  two things they assert against: the hub endpoints the application actually maps, and the OpenAPI
+  document it actually serves. Both are described in "The contract with the clients" below.
 
 Three classes cover authorization, which is where a green run is easiest to mistake for a safe one:
 every other test in the suite runs as a caller who is allowed to do everything unless it says otherwise,
@@ -106,8 +110,8 @@ The two service classes talk to real PostgreSQL, because some of the filtering t
 happens in SQL, but they construct the service directly rather than going over HTTP. Eight of the classes
 below are built the same way - `VmHubGroupTests`, `VmHubPresenceTests`, `VmUsageLoggingServiceTests`, the
 three entity-event handler classes, `CallbackBackgroundServiceTests` and `ProxmoxServiceVmLookupTests` - as
-are the three poller classes and `PollLoopSmokeTests`, which makes fourteen in the suite that need a
-database without needing a host, against twelve that need a host and twenty-four that need neither.
+are the four poller classes and `PollLoopSmokeTests`, which makes fifteen in the suite that need a
+database without needing a host, against fourteen that need a host and twenty-four that need neither.
 The pollers need one because writing `HasPendingTasks` and `PowerState` is most of what they do, and a
 pass writes through a context of its own: a value read any other way could be one the pass never saved.
 
@@ -159,14 +163,14 @@ It is separated from the hub that calls it because the rules it applies are its 
 the intersection between the caller's teams and the session's, and a close filter with three clauses. It
 is also the only place a usage log row is written by the application rather than seeded by a test.
 
-Three classes cover the background pollers that broadcast into `ProgressHub`'s groups and keep
+Four classes cover the background pollers that broadcast into `ProgressHub`'s groups and keep
 `Vm.HasPendingTasks` and `Vm.PowerState` in step with the hypervisor. They are the loops behind the
-spinner, the progress bar and the power indicator, and until now none of the four had a test: every other
-class in the suite substitutes them away, because a `BackgroundService` whose loop returns nothing and
-signals nothing is not assertable from outside.
+spinner, the progress bar and the power indicator, and until recently none of the four had a test: every
+other class in the suite substitutes them away, because a `BackgroundService` whose loop returns nothing
+and signals nothing is not assertable from outside.
 
 `Infrastructure/PollLoop.cs` is what makes one assertable, and reading it first is worth more than reading
-any of the three classes. It is the `IServiceProvider` the loop resolves its per-pass scope from, so a pass
+any of the four classes. It is the `IServiceProvider` the loop resolves its per-pass scope from, so a pass
 is one `CreateScope` - which makes passes countable, and makes a pass asked for past its allowance
 refusable with an exception each service's own `catch` already swallows. That refusal is a barrier: the
 extra turn does no work and cannot write to the database the test is about to read. Timing is deliberately
@@ -174,7 +178,11 @@ not what advances the loop; the intervals are configured to a minute and the ser
 `CheckState` is nudged instead, so what a pass does is deterministic rather than a race. The exception is
 a test whose subject *is* the interval, which configures the arm it expects at 25ms and the other at a
 minute - four orders of magnitude, so swapping the two in the service fails by timing out rather than by a
-hair. `Infrastructure/PollLoopSmokeTests` tests the harness itself and nothing about any service.
+hair. `ProxmoxStateService` is the one poller that cannot be given that margin, because it floors its own
+interval at one second: its interval tests are a second against a minute, and the short arm is asserted
+with a lower bound on elapsed time rather than only an upper one, so a service that stopped honouring the
+floor and slept for nothing would still fail. `Infrastructure/PollLoopSmokeTests` tests the harness itself
+and nothing about any service.
 
 - `TaskServiceTests` covers vSphere's `TaskService`: the property filter it builds, the notification it
   hands a client, which Vms it flags and clears, the state check a finished power task triggers, what one
@@ -185,6 +193,18 @@ hair. `Infrastructure/PollLoopSmokeTests` tests the harness itself and nothing a
   shared column is pinned from the other side. Each excludes the other provider's machines, and neither
   exclusion is asserted by anything but its own class - so a green run of one says nothing about the other,
   which is why both classes lead with that test.
+- `ProxmoxStateServiceTests` covers `ProxmoxStateService`, which is the other half of the Proxmox pair and
+  owns the other column: `ProxmoxTaskService` writes `HasPendingTasks`, this one writes `PowerState` and
+  `ProxmoxVmInfo.Node`, and the two disagree about which rows are theirs - `Type == VmType.Proxmox` for the
+  task poller against `ProxmoxVmInfo != null` for this one - so a row can be in one poller's set and not
+  the other's. Its resources come out of `FakeProxmoxCluster` through the real `ProxmoxService` rather than
+  being hand-built, because `IsRunning`, `IsStopped` and `IsPaused` are deserialized from PVE's `status`
+  field rather than computed from it, and a resource constructed in a test therefore reports
+  `PowerState.Unknown` whatever its `Status` says. `IProxmoxService` itself is substituted on top of that,
+  so a pass can be made to meet an unreachable cluster or a vmid the cluster lists twice. The class also
+  covers `UpdateVm`, the out-of-band entry point that is not a pass at all: the hub and the command
+  handlers hand it a single machine and it is serviced by a `MaxDegreeOfParallelism = -1` `ActionBlock`,
+  which creates a scope per item and so is counted by the same barrier.
 - `MachineStateServiceTests` covers `MachineStateService`, which is not a task poller: it asks each vCenter
   for the power events since it last looked and writes what they imply onto `Vm.PowerState`. Its subject is
   as much the window as the mapping - where the first one starts, when it advances and when it must not -
@@ -264,6 +284,198 @@ and store-generated UUIDs reached the schema, that foreign keys are enforced, th
 own rows, that a request writes to the database of the test that made it, and that the usage log is a
 second database of its own rather than the same one with more tables in it.
 
+# The contract with the clients
+
+Everything above tests what this application does. This section is about what it *agrees* with the
+browsers that use it, which is a different thing and fails in a different way.
+
+Two of the three channels between this API and its clients are agreed at build time by repositories that
+never see each other, and a disagreement produces no error anywhere:
+
+- **SignalR** dispatches by name *and* argument count. A client that invokes `JoinView` with two
+  arguments against a one-argument hub method gets a rejected invocation on a connection that stays up -
+  the view simply stops receiving updates. A client that registers a handler for a message name nothing
+  sends is never called. `vm.ui` and `console.ui` each hold their own copy of every one of these strings.
+- **The generated API client.** `vm.ui/src/app/generated/vm-api` is generated from this API's OpenAPI
+  document by `npm run swagger:gen` and then *committed*. Nothing runs that on a schedule, in a pipeline,
+  or as a condition of merging - so a DTO property renamed here changes the JSON this API sends and
+  changes nothing about the TypeScript interface the browser parses it into. Both repositories build,
+  both test suites pass, and the field is `undefined` in production.
+
+The third channel, plain HTTP, is not in this category: a route that moves is a 404 somebody notices.
+
+## What is written down
+
+`contracts/` at the root of the repository holds two files, and `contracts/README.md` describes them for
+a reader who arrives at the directory rather than at this document.
+
+`contracts/signalr-contract.json` is **generated**. It lists both hubs with the path each is mapped at,
+the invocations each declares with their argument counts, the messages each broadcasts with the argument
+counts they go out with and the producers that send them, which clients consume each hub, and the
+`modifiedProperties` names `VmUpdated` can carry. Everything structural in it is taken from the
+application - the paths from the endpoints `MapHub` added, the invocations by reflection over the hub
+classes, the broadcasts and their `sentBy` lists by driving the real producers - so nobody types a name
+into it and nobody has to remember to.
+
+Regeneration writes *into* the file rather than replacing it, because it is read by people on the other
+side of the estate and most of what makes it worth reading is not derivable here. Four things survive a
+regeneration untouched and are the parts to edit by hand: the `description` fields, the per-entry `note`
+prose, the `clients` lists naming which Angular service talks to which hub, and
+`clientListenersWithNoSender`. All four are facts about the browser clients or about why an entry is the
+shape it is, and a repository that cannot see those clients cannot generate them.
+
+The `progress` hub's `broadcasts` are the one structural exception, and the one thing in the file still
+written by hand. `Progress` has no constant and no event handler behind it - both task pollers write the
+literal - so driving it would mean standing up a whole poller harness for a fact `TaskServiceTests` and
+`ProxmoxTaskServiceTests` already establish. `ContractTests` names the exception in
+`HubsWhoseBroadcastsAreDriven` rather than leaving a reader to notice it, and keeps the entry honest in
+`TheProgressBroadcast_IsTheLiteralBothPollersSend`.
+
+`contracts/openapi-surface.json` is **generated** too, and is a derived summary rather than the document. The
+document is 170KB and most of it is XML doc comments, so a snapshot of it reddens when a `<summary>` is
+reworded - and a test that fails for reasons that do not matter gets regenerated without being read,
+which is the failure mode that makes snapshot tests worthless. What is kept is what a generated client is
+built out of: operation ids and tags, because they become method and service names; parameters, request
+bodies and response types, because they become signatures; and schema properties with their types,
+nullability and required flags, because they become interfaces.
+
+Both files are read from the repository rather than from a copy in the test output, because the point of
+them is that something outside this repository reads the same bytes. `Infrastructure/Contracts.cs` is the
+one place that knows where they are, and it takes the path from an `AssemblyMetadata` item in
+`Player.Vm.Api.Tests.csproj` rather than walking up from the test binary - a walk guesses at a directory
+layout, and a copy in `bin/` would let a regeneration write somewhere git never sees. A missing directory
+throws rather than skipping: a contract test that quietly passes when it cannot find its contract is
+worth less than no test.
+
+## What this repository asserts
+
+`ContractTests` (13 cases) both generates the file and asserts it against the server. The generation is
+one case, `TheContract_IsWhatTheApplicationGenerates`, which is the whole file at once; the others assert
+the halves of it separately, because the halves are reachable separately and a failure that names the one
+that moved is worth more than a diff of the file. Keeping both is also the only defence against a bug in
+the generation itself: a lone generated snapshot compared against its own generator can only ever agree
+with it, and would stay green against a file the focused cases fail.
+
+- **The hubs.** The `EndpointDataSource` of the running application, filtered to endpoints carrying
+  `HubMetadata`, must be exactly the hub types the contract names, each at the path its `RouteEndpoint`
+  is mapped at. This is what stops the file describing a hub nobody can reach, or naming a path `MapHub`
+  no longer uses - `HubConnectionTests` writes the two paths out as constants of its own and connects to
+  them, which is a different question, and nothing but this compares a path in the file to where
+  `MapHub` actually put it. The negotiate endpoint `MapHub` adds a segment below each hub is dropped: it
+  belongs to the transport, and no client names it.
+- **That every hub names a client.** The one field regeneration cannot fill in is `clients`, so a newly
+  mapped hub arrives in the file with an empty list - and an empty list is what makes the entry inert,
+  because `crucible-tests` generates its per-client checks by looping it. A hub with none is in the shared
+  list, reads as covered, and is compared to nothing. It is checked here rather than there for two
+  reasons: this repository's pipeline is the one that runs on the commit that emptied the list, and
+  `crucible-tests` does not run the contract specs in CI at all. A hub that genuinely has no browser
+  client goes in `HubsWithNoBrowserClient`, empty today - an exception written as a line of code, because
+  an empty list in the file cannot be told apart from one nobody filled in.
+- **The invocations**, per hub, by reflection over the hub class: the public declared instance methods
+  that are not `OnConnectedAsync`/`OnDisconnectedAsync`, as `name/parameter-count` pairs, must be exactly
+  what the contract lists. The count is in the set rather than checked separately, so a failure names the
+  arity and the method together.
+- **The return payloads.** `JoinViewUsers` and `JoinUser` answer the caller, and the client destructures
+  what comes back. The keys are taken from the *host's own* `JsonOptions` - `JsonTypeInfo.Properties` for
+  the declared return type, unwrapped through `Task<>` and through `IEnumerable<>` - so they are the keys
+  the configured serializer will actually produce, not the property names of the CLR type.
+- **The broadcasts**, by driving the real producers. All five entity-event handlers are constructed
+  against a `HubContextHarness<VmHub>` and given a real saved `Vm`; `VmHub.SetActiveVirtualMachine` and
+  `UnsetActiveVirtualMachine` are invoked against a `HubHarness`. What is asserted is the set of
+  `name(arities) from producers` that came out. Reading `VmHubMethods`' constants would have been easier
+  and would have asserted the wrong thing: a constant is what the server *has*, and the arity - the half
+  SignalR dispatches on and no compiler checks - only exists at the call site. A separate case does read
+  the constants, for the narrower question of whether any of them is missing from the contract entirely.
+  Each drive is bracketed so the sends it produced are attributed to it, which is where the `sentBy`
+  lists come from; they are worth deriving rather than annotating because a handler can be split or
+  renamed without changing anything about what goes on the wire, so `sentBy` is the part of an entry
+  most likely to go stale.
+- **`modifiedProperties`**, from both ends. The names must be exactly the camel-cased scalar properties of
+  the `Vm` entity as EF's model reports them, because that is what `TrackedEntityEntry.GetModifiedProperties`
+  can ever return; and every one of them must be a JSON key of the `Vm` DTO, because `vm.ui` spends the
+  list as `model[x] = vm[x]` and a name that is not a key writes `undefined` over a value that was correct
+  a moment ago. The keys with no scalar behind them are recorded too, and asserted to be exactly the ones
+  recorded - they are real keys that `modifiedProperties` can never name, and a client that only applies
+  what it names will never see them move.
+
+`OpenApiSurfaceTests` (3 cases) pins the surface. The document comes from the hosted application over
+HTTP - `app.UseSwagger()` is unconditional, so the in-process host serves it - and one case asserts the
+summary matches the checked-in snapshot. The second fetches the document twice and asserts the two
+summaries agree, because a snapshot is worth nothing if the thing it snapshots is a dictionary iterated in
+hash order. The third asserts no `$ref` in the document names a schema it does not define, which is worth
+its own case because `ModelDocumentFilter` adds schemas by hand for types no controller signature
+mentions - exactly the arrangement in which a rename leaves a reference behind.
+
+## What `crucible-tests` asserts
+
+Neither class above can see a client; this repository's CI runs alone. The other half is
+`crucible-tests/playerVm/tests/contract/`, which can see every repository in the workspace and reads the
+same two files. `signalr-contract.spec.ts` asserts, per hub and per client, that the client invokes only
+methods the contract declares with the argument counts it declares, listens only for messages it says are
+sent, binds no more arguments than the smallest arity a message is sent with, and dials the path it says
+the hub is mapped at - plus, in the direction this repository cannot check, that every message the API
+broadcasts is listened for by somebody. `openapi-surface.spec.ts` compares the pinned surface to the
+committed client: the schema set against the generated models, each schema's properties against the
+generated interface, each enum's values against the generated union, and every operation id against a
+method on the service its tag names. 24 cases between them, needing nothing running.
+
+That division is deliberate. This repository owns "the file is true of the server", which needs the
+server; `crucible-tests` owns "the clients honour the file", which needs the clients. Neither half is
+useful alone, and the file is what joins them.
+
+## Regenerating the contracts
+
+```bash
+VMAPI_UPDATE_CONTRACTS=1 dotnet test --filter "FullyQualifiedName~ContractTests"
+VMAPI_UPDATE_CONTRACTS=1 dotnet test --filter "FullyQualifiedName~OpenApiSurfaceTests"
+```
+
+Each rewrites its file and then **fails on purpose**. Regenerating is not a way of passing: a run with
+the variable set must never be green, or a pipeline that inherited the variable would rewrite the file on
+every build and the test would never say anything again. Read the diff and re-run without the variable -
+and for the surface, regenerate `vm.ui`'s client in the same change, because a surface that moved without
+the client moving with it is precisely the state this is here to prevent.
+
+Both files share the protocol, in `Contracts.AssertMatchesOrRewrite`. Sharing it is not only about
+duplication: the deliberate failure above is the load-bearing line, and one of two copies of it is one
+that can be the copy that gets dropped.
+
+The obvious objection to either file is that a file a test can rewrite is a file that agrees with
+whatever the code currently does. That is true, and it is why the diff is the product rather than the
+green run: regeneration is a two-command sequence a person drives after reading what moved, and the
+generated bytes are what `crucible-tests` holds the *clients* to. The alternative that was tried first -
+`signalr-contract.json` maintained by hand, with the tests only asserting - put the same strings in a
+third place and asked a person to keep them right, which is the arrangement these tests exist to replace
+everywhere else in the estate.
+
+## What writing it down found
+
+Six things, none of which any test in either repository had been in a position to notice:
+
+- **`console.ui` listens for a message nothing sends.** Its notification service registers a `Complete`
+  handler that clears the progress state, and no part of this application ever sends `Complete`. The
+  state is cleared by the last `Progress` message instead. Recorded under
+  `clientListenersWithNoSender` with a `Pending upstream:` note, and asserted from the client side, so the
+  entry is deleted when the handler is - rather than left as documentation of something no longer true.
+- **`ProgressHub.Leave` has no caller.** A console that navigates away drops the connection, and the
+  group is cleaned up by the disconnect. The method is not dead - it is just never reached from the UI.
+- **`ActiveVirtualMachine` is bound with one argument of the four it sends.** `vm.ui` binds all four;
+  `console.ui` binds only `vmId`. That is legal - SignalR drops what a handler does not bind - and it is
+  why the client-side arity assertion is one-sided.
+- **`VmCreated` goes out with two different argument counts.** `VmCreatedSignalRHandler` sends
+  `(vm, null)` because it shares `VmBaseSignalRHandler`'s send with `VmUpdated`; `VmTeamCreatedSignalRHandler`
+  sends `(vm)`. So a client may bind one argument and no more, and one that bound two would see
+  `undefined` for half the VMs it was told about.
+- **Three keys of the `Vm` DTO can never appear in `modifiedProperties`.** `defaultUrl`, `proxmoxVmInfo`
+  and `teamIds` have no scalar property of the `Vm` entity behind them, so EF's change tracker never
+  reports them however they change. A client that applies only what `modifiedProperties` names will never
+  see those three move on an update; it has to take them from the whole `Vm` the first argument carries.
+- **`Progress` is the one broadcast name in the application that is not a constant.** Both pollers write
+  the literal, at `Domain/Vsphere/Services/TaskService.cs` and `Domain/Proxmox/Services/ProxmoxTaskService.cs`.
+  It is also the one name `ContractTests` pins against a literal of its own rather than by driving a
+  producer, which the class says in a `<remarks>` along with what does cover the sending side -
+  `TaskServiceTests` and `ProxmoxTaskServiceTests`.
+
 # Running the tests
 
 ```bash
@@ -272,7 +484,7 @@ dotnet test
 
 **Docker must be running.** PostgreSQL is the only database these tests use, and there is deliberately
 no in-memory or SQLite fallback - a fallback that quietly swaps the provider reports a green run that
-never touched what production uses. Without Docker the 862 database tests fail, each naming the reason;
+never touched what production uses. Without Docker the 903 database tests fail, each naming the reason;
 the other 560 still pass, because the container is started by the first test that asks for a database
 rather than at assembly load.
 
@@ -289,6 +501,9 @@ out the real first retry delay, which is the shortest one the service has.
 
 A plain run collects no coverage. `scripts/coverage.sh` is the opt-in way to get it, and nothing gates
 on the figure it produces - see Coverage below for what it is for and why it has no threshold.
+
+A plain run also asserts the contract files under `contracts/` and never writes them. The two commands
+that write them are in "Regenerating the contracts" above, and both fail deliberately.
 
 # Build settings
 
@@ -431,6 +646,12 @@ Bodies are serialized with System.Text.Json and no options, because the `Player.
 `[JsonPropertyName]` on every property and so serializing one produces the names its own deserializer
 looks for; hand-written JSON is used only where the payload is not a type this repository has - the OAuth
 token response, and the webhook payloads player.api sends as a string.
+
+`Infrastructure/Contracts.cs` is not a substitute for anything - it is the loader for the two files under
+`contracts/`, and the only thing in the suite that reads from the repository rather than from the test
+output. The path comes from an `AssemblyMetadata` item in the test project rather than from a walk up from
+the test binary, and a missing directory throws instead of skipping. "The contract with the clients" above
+is what those files are for.
 
 `Infrastructure/TestAuthHandler.cs` stands in for the JWT bearer handler so no identity server is
 needed. A request carrying `X-Test-User` authenticates as that user; a request without it presents no
@@ -641,6 +862,24 @@ request ever lands there. The host gets a throwaway usage log database as well, 
    arrangement never produced rather than one anybody decided to leave out. It found four of those, all
    since covered; they are listed under Coverage below, along with what each turned out to be.
 
+   A test whose subject is a *file* is mutated on both sides. `ContractTests` and `OpenApiSurfaceTests`
+   were verified with eleven mutations - nine to `contracts/signalr-contract.json` and two to the hub
+   classes - and the client-side specs in `crucible-tests` with thirteen more, to both Angular services,
+   the committed client and the contract files. A contract test that only ever mutates the code is a test
+   of the code; the mutation that matters is the one that makes the *file* wrong, because that is the
+   direction a stale contract actually drifts. Both mutations of application source used for this have to
+   compile: changing `ProgressHub.Join(string)` to take two parameters broke twelve existing callers, so
+   the build failed, the run used a stale binary and reported the *previous* mutation's failures - adding a
+   new `JoinAll()` method instead reddened exactly the intended case. Check that a mutation run actually
+   rebuilt before reading its result.
+
+9. If the change touches a hub method, a broadcast, or anything a client can see over HTTP, regenerate
+   `contracts/` in the same change. A hub method renamed or given another parameter, a new broadcast, a
+   broadcast sent with a different number of arguments, or a new scalar property on the `Vm` entity all
+   redden `ContractTests` - and each of them means a matching change in `vm.ui` or `console.ui`, which is
+   the point. Both files have a regeneration command in "The contract with the clients"; run it, read the
+   diff rather than the green run, and regenerate `vm.ui`'s committed client alongside the surface.
+
 Bugs and deliberate oddities found while writing a test are characterized, not fixed. The test
 asserts the current behaviour and says why it is that way.
 `VsphereServiceCommandTests` is the worked example: it pins a contract that reads as sloppy error
@@ -839,7 +1078,7 @@ Proxmox power refusal - which carries no field - reaches the UI with a leading `
 `UrlEncode` families in use disagreeing on case, `WebUtility` in the console URL emitting upper-case hex
 where `HttpUtility` in the query path emits lower-case and `+` for a space.
 
-The three pollers add a cluster of their own, and it divides in a way the others do not: two of them are
+The four pollers add a cluster of their own, and it divides in a way the others do not: two of them are
 about an operator never being told, and the rest are about a user seeing something wrong. The first is the
 one to read before anything else in `MachineStateService`:
 
@@ -874,6 +1113,32 @@ one to read before anything else in `MachineStateService`:
   `ProxmoxVmInfo` for a Vm it did not also type as Proxmox, so it needs a mis-migration or hand-edited
   data. The fix is the same `Type == VmType.Proxmox` clause on the second query. Pinned in
   `AVmWithProxmoxInfoButAnotherType_IsFlaggedAndThenNeverCleared`.
+- **`ProxmoxStateService` is what closes that trap door, and only under two conditions neither file
+  states.** Its pass selects on `ProxmoxVmInfo != null` - the same set as the flagging query, not the
+  clearing one - and assigns `vm.Type = VmType.Proxmox` for every row the cluster still lists, so the
+  mis-typed row above is retyped within one interval and the clearing sweep can then see it. That is the
+  whole reason the trap door is a trap door rather than a live bug. It stops working if `Proxmox:Enabled` is
+  false, which is the shipped default, and it never applies to a row PVE has stopped listing, because the
+  retype lives inside the same `if (pveVm != null)` as the power state. Pinned from this side in
+  `AVmWithProxmoxInfoButAnotherType_IsRetypedAsProxmox`, and the two tests are each other's other half.
+- **A machine the cluster stops reporting keeps its state; a machine it reports in a state the client does
+  not model loses it.** `ProcessVms` looks each row up with `TryGetValue` and passes the miss straight to
+  `UpdateVm`, whose `if (pveVm != null)` leaves the row alone - so a machine deleted on PVE, or an entire
+  cluster answering an empty list, freezes every indicator at whatever it last was, with nothing logged
+  above `Debug` to distinguish it from an idle pass. But a machine PVE *does* list with a status the
+  client has no flag for - anything that is not `running`, `stopped` or `paused` - is written as
+  `PowerState.Unknown` and loses the state it had. The asymmetry is the finding: absence is treated as
+  "no news" and an unrecognized presence as "no state". Pinned in
+  `AMachineTheClusterNoLongerReports_KeepsTheStateItLastHad` and
+  `AMachineTheClusterCallsUnknown_LosesTheStateItHad`.
+- **`StateRefreshIntervalSeconds` has no property default**, unlike every other interval on
+  `ProxmoxOptions`, so a deployment that overrides the `Proxmox` section without that key binds 0 and gets
+  the floor - a one-second reconciliation of the whole cluster, which is the busiest this poller can be
+  rather than the "off" an operator might read 0 as. `appsettings.json` ships 5. It is the same shape as
+  `HealthAllowanceSeconds` above and reached the same way, an environment-variable install inheriting no
+  single key from the file it overrode; the difference is that this one warns, once per distinct bad value.
+  Pinned in `WithNoIntervalConfigured_ItFloorsAtOneSecondAndWarnsOnce`, with
+  `AnIntervalCorrectedAndThenBrokenAgain_IsWarnedAboutAgain` for the once-per-*value* part.
 - **vSphere's `TaskService` is the one poller whose `WaitAsync` is given no cancellation token.** Cancelling
   leaves it asleep for up to a full `CheckTaskProgressIntervalMilliseconds` - five seconds as shipped - so
   every restart and every rolling update waits that out, after which the container is killed rather than
@@ -925,7 +1190,17 @@ so slowing task-progress polling to spare a busy vCenter also slows how fast the
 anything; `ProxmoxTaskService`'s per-task `catch` logging `task?.UniqueTaskId`, written for a null task
 that would already have been dereferenced two lines earlier; and `Include(x => x.VmTeams)` on
 `MachineStateService`'s update query, which nothing in that method reads - unlike the two pollers' own
-`Include`s, which the entity-event handlers need in order to compute group names after the save.
+`Include`s, which the entity-event handlers need in order to compute group names after the save;
+`ProxmoxStateService`'s `DistinctBy(x => x.VmId)`, which is load-bearing rather than tidy, because PVE
+lists a machine mid-migration under both nodes and the `ToDictionary` behind it would otherwise throw the
+whole pass away - it keeps the first entry, so which node gets written for a migrating machine is PVE's
+list order and nothing else; the same service's `Proxmox:Enabled` being read inside the loop rather than
+around it, so turning Proxmox off does not stop the poller, it only makes every pass an empty one that
+still wakes on the interval - and turning it on needs no restart; and its `UpdateVm` entry point, which
+the hub and the command handlers use to write one machine without waiting for a pass, taking no
+cancellation token, resolving its row with a `FirstOrDefaultAsync` that takes none either, and running on
+an `ActionBlock` with `MaxDegreeOfParallelism = -1`, so a burst of console opens is a scope and a
+`DbContext` per machine with no ceiling.
 
 # Continuous integration
 
@@ -1011,28 +1286,29 @@ reaches it - not a dependency's internals leaking into the report.
 
 ## The shape of it
 
-As of the run after roadmap item 11: **71.0% of lines** (6,303 of 8,872 coverable), 68.0% of
-branches, 78.6% of methods, across 166 classes. That single number is close to meaningless on its
+As of the run after roadmap item 12: **72.5% of lines** (6,436 of 8,872 coverable), 69.0% of
+branches, 80.0% of methods, across 166 classes. That single number is close to meaningless on its
 own, because of where the untested lines are:
 
 ```
   Features                        96.8%       104 untested of 3,236
+  Domain.Proxmox                  90.2%        95 of 973
   Domain.Models                   86.5%        12 of 89
   Domain.Services                 84.8%       120 of 789
-  Domain.Proxmox                  77.2%       222 of 973
-  Infrastructure                  74.3%       141 of 548
+  Infrastructure                  75.4%       135 of 548
   Crucible.Common (in-assembly)   68.1%        79 of 248
   Domain.Vsphere                  29.2%     1,856 of 2,622
 ```
 
-2,078 of the 2,569 untested lines - 81% of them - are still the two hypervisor drivers, but that gap is
-no longer one thing, and it is no longer the whole of either namespace. `Domain.Proxmox` went from 9.0% to
-77.2% without a cluster, because the Proxmox driver's seam is a substituted `HttpClient` rather than an
-interface - `ProxmoxService` alone went from 3.7% to **99.4%** (508 of 511 lines). `Domain.Vsphere` went
+1,951 of the 2,436 untested lines - 80% of them - are still the two hypervisor drivers, but that gap is
+no longer one thing, it is no longer the whole of either namespace, and it is now almost entirely one of
+the two. `Domain.Proxmox` went from 9.0% to 90.2% without a cluster, because the Proxmox driver's seam is
+a substituted `HttpClient` rather than an interface - `ProxmoxService` alone went from 3.7% to **99.4%**
+(508 of 511 lines), and both of its background services are at 100%. `Domain.Vsphere` went
 from 15.6% to 29.2% for a different reason: not the driver, which can still only be reached through
 `IVimClient`, but the two pollers above it, which needed no vCenter at all and are now at 100%. What is
-left in each namespace is the client and the connection cache, plus one background service on the Proxmox
-side and the ISO upload path. The application's own request-handling surface, the `Features`
+left in each namespace is the client and the connection cache, plus the ISO upload path on the Proxmox
+side. The application's own request-handling surface, the `Features`
 tree, is at 96.8%, and `Domain.Services` - which is where the four out-of-process clients live - went from
 48.3% to 83.9% when they were covered. Whatever this suite is short of, it is not breadth over the code
 that answers a request, and it is no longer breadth over the code that calls out of the process either.
@@ -1109,7 +1385,8 @@ What the ranking says next, once `Domain.Vsphere` is set aside as reachable only
 smaller and more scattered than what item 8 found: the untested remainder of `PlayerService` (70 lines of
 73.4%), `EntityEventInterceptor` (63 of 66.4%), `ProxmoxIsoProvider` (39 of 71.9%),
 `ActiveVirtualMachineService` (38 of 68%), `IsoService` (29 of 93.2%), `DatabaseExtensions` (25 of 55.3%)
-and the two Swagger operation filters (17 each, 0%). Nothing in that list is a subject the way the clients
+and the two Swagger operation filters (17 each, 0% at the time - item 13 took them off the list without
+setting out to). Nothing in that list is a subject the way the clients
 were - each is the residue of a class the suite already drives, which is what a coverage map looks like
 once the classes nothing drives have been dealt with.
 
@@ -1134,9 +1411,28 @@ translation that throws, which needed one line of harness rather than a new arra
 What that leaves at the top of the Vsphere namespace is unchanged in kind and shorter by three entries:
 `VsphereService` (1,169 lines of 25.2%) and `VsphereConnection` (405 of 3.8%) are below `IVimClient` and
 close to their ceiling, `ConnectionService` (180, 0%) is the connection cache and login loop, and
-`VimExtensions` (96 of 6.7%) is the property-bag reader the pollers use and nothing tests directly. On the
-Proxmox side `ProxmoxStateService` (126, 0%) is now the largest untested class in that namespace, and it is
-the fourth poller - the same shape as the three above, so `PollLoop` is already most of a harness for it.
+`VimExtensions` (96 of 6.7%) is the property-bag reader the pollers use and nothing tests directly.
+
+Item 12 then took the fourth poller off the zero line with the harness item 11 had already built:
+`ProxmoxStateService` 0% → **100%** of its 126 lines and 20 of 20 branches. `Domain.Proxmox` went from
+77.2% to 90.2% (878 of 973 lines), the assembly from 71.0% to 72.5% line and 69% branch, and
+`ProxmoxExtensions` came along with it to 80.3%, since `GetPowerState` is what the poller writes through.
+What that leaves with the most untested lines in the Proxmox namespace is `ProxmoxIsoStorageService`
+(81 untested of 25%), the ISO upload path - not a class nothing drives, since
+`ProxmoxIsoStorageServiceTests` covers its statics, but the residue of one, which is the same kind of
+entry as everything on item 9's list. It needs no cluster either: it shares the `IHttpClientFactory` seam
+the driver tests already use.
+
+Item 13 moved the figure by accident, which is worth recording because it is the only entry on this list
+that did. The contract tests were written for a reason that has nothing to do with coverage, but
+`OpenApiSurfaceTests` fetches `/swagger/v1/swagger.json` from the hosted application - and generating that
+document runs every Swashbuckle filter this API registers. The four of them were 54 lines at 0%, named on
+item 9's list and again at the end of item 12 as work still to do; they are now 50 of those 54 lines, with
+`DefaultResponseOperationFilter`, `JsonIgnoreQueryOperationFilter` and `ModelDocumentFilter` complete and
+`JsonIgnoreFormDataOperationFilter` at 13 of 17 lines and 10 of 14 branches. The assembly went from 72.5%
+to 73.1% line and 69.0% to 69.5% branch on 14 new cases. It is a reminder that a coverage figure measures
+what was executed rather than what was asserted: nothing in either contract class asserts anything about
+those filters, and the four uncovered lines that remain are the only honest signal in the change.
 
 One entry on the list is not a test target at all. `Player.Vm.Api.Hubs.VmHub` (18 lines, 0%) is
 unreachable: `Startup` imports `Player.Vm.Api.Features.Vms.Hubs` and nothing anywhere else names the
@@ -1161,20 +1457,33 @@ currently tell you.
   that refuses a caller, and its refusals are covered; the rest compute what the caller can see rather
   than deciding yes or no, and `ProgressHub` decides nothing at all - characterized above rather than left
   as a gap.
-- **The client's half of the hub contract.** Both hubs are now covered - the group names, the presence
+- **The client's half of the hub contract - the method names now, the group names still not.** Both hubs are now covered - the group names, the presence
   bookkeeping, the calls into the usage log and the writer behind them, and one round trip over a real
   connection - along with the five entity-event handlers that broadcast into `VmHub`'s groups, so both ends
   of every name the server uses are asserted. All eight controllers have endpoint tests, covering all 82
   actions: `VmController`
   (23), `VsphereController` (21), `ProxmoxController` (17), `VmUsageLoggingSessionController` (9,
   including CSV and report generation), `NetworksController` (5), `FileController` (4),
-  `HealthCheckController` (2) and `CallbackController` (1). What no test in this repository sees is the
-  Angular side: the method names it listens on and the group names it joins are asserted here as the
-  strings *the server* uses, and nothing checks that the two agree. Nor do the two server-side ends compare
-  themselves to each other - each asserts the same names independently, and a renamed group would have to be
-  renamed in both suites - which is a gap a test cannot close without one of them stopping being a test of
-  what the code does. One thing on the server side is still genuinely open: `VmHub` is not driven over a
-  live connection, for the routing reason above.
+  `HealthCheckController` (2) and `CallbackController` (1). The Angular side used to be entirely unseen -
+  the method names it listens on were asserted here as the strings *the server* uses and nothing checked
+  that the two agree - and that is what `contracts/signalr-contract.json` and the section above now close:
+  the method names, their argument counts, the message names and their arities are written down once and
+  asserted from this repository against the server and from `crucible-tests` against both clients. What is
+  still not compared is the *group* names. Those are computed twice inside this application - once when a
+  client joins and once when something changes - and each end asserts them independently, so a renamed
+  group would have to be renamed in both suites. That is a gap a test cannot close without one of the two
+  stopping being a test of what the code does; a client cannot see a group name at all, so there is no
+  third party to arbitrate. One thing on the server side is also still genuinely open: `VmHub` is not
+  driven over a live connection, for the routing reason above.
+- **When the contract checks actually run.** The two halves of the contract are asserted in two
+  repositories, and only one of them gates a change to this one. `dotnet test` here fails if either file
+  stops being what the application generates - a hub method added, a path moved, a broadcast's arity
+  changed, the OpenAPI surface moved - and that much is a merge gate. Whether `vm.ui`'s committed client and the two Angular services still honour
+  the same file is asserted only by `crucible-tests`, which is a separate repository with its own
+  pipeline and is not run as a condition of merging here. So the order of discovery is: a change to this
+  API that breaks a client reddens *this* suite first, at the snapshot, and the client-side spec confirms
+  what broke afterwards. A change made only in a client - a renamed handler, a regenerated model - is
+  caught by `crucible-tests` and by nothing here.
 - **The projections.** The AutoMapper profiles run in every endpoint test, but only the projections those
   tests happen to read are asserted.
 - **What the out-of-process clients assume.** `ViewService`, `AuthenticationService`,
@@ -1187,8 +1496,9 @@ currently tell you.
   also unasserted: how the `ActionBlock` orders events beyond the two-event case, and any retry past the
   first, since the delays are real seconds and the ceiling is twenty-four attempts away.
 - **The hypervisor edge - vSphere permanently, Proxmox no longer.** No harness makes a vCenter or a
-  Proxmox cluster available in CI, and this is still most of the untested code in the repository - 2,078
-  lines between `Domain.Vsphere` at 29.2% and `Domain.Proxmox` at 77.2%. But the two halves are not the
+  Proxmox cluster available in CI, and this is still most of the untested code in the repository - 1,951
+  lines between `Domain.Vsphere` at 29.2% and `Domain.Proxmox` at 90.2%, though 1,856 of those are now on
+  the vSphere side alone. But the two halves are not the
   same kind of gap, and this section used to say they were. vSphere's client is reached only through
   `IVimClient`, so a substitute there is as far down as a test can go and `VsphereService` at 25.2% is
   close to the ceiling. Proxmox's is not: `ProxmoxService` constructs its `PveClient` from
@@ -1245,7 +1555,8 @@ currently tell you.
    every entry is part of a class the suite already drives, so each is an arrangement that was never
    produced rather than a subject nobody has looked at: `PlayerService`'s untested remainder (70 lines),
    `EntityEventInterceptor` (63), `ProxmoxIsoProvider` (39), `ActiveVirtualMachineService` (38),
-   `IsoService` (29), `DatabaseExtensions` (25) and the two Swagger operation filters (17 each). Worth
+   `IsoService` (29), `DatabaseExtensions` (25) and the two Swagger operation filters (17 each - since
+   executed, though not asserted, by item 13). Worth
    doing in that order, worth stopping when the remaining lines are all named in a `<remarks>`, and worth
    doing after deleting `Player.Vm.Api/Hubs/VmHub.cs`, which is 18 unreachable lines that no test can
    cover and no caller can reach.
@@ -1291,3 +1602,60 @@ currently tell you.
     document for step 8 of "Adding a test". What is left above the two drivers is `ProxmoxStateService`
     (126 lines, 0%), which is the fourth poller and needs nothing this item did not already build, and
     `ConnectionService` (180, 0%), which is the vSphere connection cache and does need a vCenter.
+12. ~~The fourth poller.~~ Done, and it is the cheapest item on this list, because item 11's `PollLoop` was
+    already most of a harness for it: `ProxmoxStateService` (126 lines, 0%) is the loop behind the Proxmox
+    power indicator, and `ProxmoxStateServiceTests` took it to **100%** of its lines and 20 of 20 branches
+    in 27 cases with no new infrastructure at all. What it did need was a decision about where the
+    resources come from, and the answer is not the obvious one: `IsRunning`, `IsStopped` and `IsPaused` on
+    a `ClusterResource` are plain settable booleans the client's deserializer fills from PVE's `status`
+    field rather than properties computed from `Status`, so a hand-built resource reports
+    `PowerState.Unknown` however its status reads, and a test that built its own would assert nothing about
+    the chain that matters. Every resource in the class therefore comes out of item 10's
+    `FakeProxmoxCluster` through the real `ProxmoxService`, with `IProxmoxService` substituted above that
+    so a pass can still be made to meet an unreachable cluster or a vmid the cluster lists twice.
+    `Domain.Proxmox` went from 77.2% to 90.2% and the assembly from 71.0% to 72.5%, and `ProxmoxExtensions`
+    came along to 80.3%. Three characterizations came out of it, listed above; the sharpest is not about
+    this service on its own but about the pair - this poller's `vm.Type = VmType.Proxmox` is the only thing
+    that closes `ProxmoxTaskService`'s never-cleared-spinner trap door, so that trap door is dormant only
+    while `Proxmox:Enabled` is true and only for a machine PVE still lists, and nothing in either file says
+    so. One coverage hole was
+    found by reasoning rather than by a run and is worth repeating as a pattern: removing the
+    `if (pveVm != null)` guard from the private `UpdateVm` reddens nothing, because "the row was left
+    alone" and "the pass threw on its way past" look identical from the row. The fix is to assert the
+    absence of a logged failure alongside the unchanged row, which is now what every "nothing should have
+    happened" test in the class does. Between them items 11 and 12 covered every `BackgroundService` in the
+    repository that can be reached without a hypervisor; the one still at zero is `ConnectionService`
+    (180 lines), which is the vSphere connection cache and does need a vCenter. The largest thing left in
+    the Proxmox namespace is the untested remainder of `ProxmoxIsoStorageService` (81 lines of 25%), which
+    needs no cluster either. Beyond that, item 9's list plus the four Swagger filters (54 lines, 0%) and
+    `IdentityResolver` (10, 0%, a two-line wrapper over `IHttpContextAccessor` that nothing in the suite -
+    and, on a grep of the repository, no caller either - reaches) is what the map has left to say.
+13. ~~The contract with the clients: a generated-client freshness check, and one list of hub method and
+    message names asserted from both repositories.~~ Done, and it is the first item on this list that did
+    not come from the coverage map at all - it came from asking what a green run on both sides can still
+    be wrong about. The answer was two whole channels. SignalR dispatches by name *and* argument count, and
+    every one of those strings is written twice in the estate, once here and once in `vm.ui` or
+    `console.ui`; the OpenAPI client `vm.ui` ships is generated by a command nothing runs and committed by
+    hand, so a renamed DTO property is `undefined` in a browser and green in both suites. `contracts/`
+    is the product: `signalr-contract.json` and `openapi-surface.json`, both generated, both regenerated
+    only by a person reading a diff. `signalr-contract.json` started out hand-maintained and deliberately
+    without a regeneration path, on the reasoning that a file a test can rewrite agrees with whatever the
+    code currently does; that was the wrong trade. It put the same strings in a third place and asked a
+    person to keep them right, which is the arrangement these two classes exist to replace everywhere
+    else. Everything structural in it is now derived - paths from the mapped endpoints, `sentBy` from
+    which producer each observed send came out of - and what is carried forward is only what this
+    repository cannot see: the prose, and which Angular service talks to which hub - which is itself
+    asserted to be filled in, because the one field a regeneration leaves empty is the one that decides
+    whether the entry is checked against anything. Then `ContractTests`
+    (13 cases) and `OpenApiSurfaceTests` (3), which generate the files and assert them
+    against the server - the mapped hub endpoints, reflection over the hub classes, the host's own
+    serializer metadata for the return payloads, and the five real event handlers driven into a recording
+    hub context for the broadcast arities, because an arity only exists at a call site and reading the
+    `VmHubMethods` constants would have asserted the wrong half. `crucible-tests/playerVm/tests/contract/`
+    is the other side, 24 cases reading the same two files against both Angular services and the committed
+    client. Six characterizations came out of it, listed in the section above; the sharpest is that
+    `console.ui` has a `Complete` handler for a message no part of this application sends, which had been
+    unreachable code masquerading as a feature for as long as both files have existed. The coverage effect
+    was incidental and is described above. What this does not reach is stated as its own entry under "What
+    is not covered yet": the group names are still asserted twice rather than compared, and the client half
+    of the file is gated by a different repository's pipeline than this one's.

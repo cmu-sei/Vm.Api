@@ -38,4 +38,12 @@
   <ItemGroup>
     <ProjectReference Include="..\Player.Vm.Api\Player.Vm.Api.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <!-- Where contracts/ is, baked into the assembly so ContractTests can read the checked-in files
+         rather than a copy of them. A copy in the output directory would let a regeneration write
+         somewhere git never sees, and a path walked up from the test binary at runtime guesses at a
+         directory layout this knows. Forward slashes on purpose: MSBuild accepts them on every platform,
+         and a backslash here is a literal filename character to Path.GetFullPath on Linux. -->
+    <AssemblyMetadata Include="ContractsDirectory" Value="$(MSBuildThisFileDirectory)../../contracts" />
+  </ItemGroup>
 </Project>

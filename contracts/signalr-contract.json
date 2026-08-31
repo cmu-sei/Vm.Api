@@ -1,0 +1,204 @@
+{
+  "description": "The SignalR contract between Player.Vm.Api and its browser clients. Every name here is written twice in the estate - once in this repository and once in player/vm.ui or player/console.ui - and nothing at build or run time compares the two. Asserted against the server by src/Player.Vm.Api.Tests/ContractTests.cs and against the clients by crucible-tests/playerVm/tests/contract/signalr-contract.spec.ts. GENERATED - do not edit the structure by hand: run VMAPI_UPDATE_CONTRACTS=1 dotnet test --filter FullyQualifiedName~ContractTests, read the diff, and re-run without the variable. The descriptions, the note prose, the clients lists and clientListenersWithNoSender are carried forward untouched and are the parts to edit, along with the progress hub's broadcasts - see HubsWhoseBroadcastsAreDriven in ContractTests.cs for why that one is not derived.",
+  "hubs": [
+    {
+      "name": "vm",
+      "path": "/hubs/vm",
+      "hubType": "Player.Vm.Api.Features.Vms.Hubs.VmHub",
+      "clients": [
+        {
+          "app": "vm.ui",
+          "source": "src/app/services/signalr/signalr.service.ts"
+        },
+        {
+          "app": "console.ui",
+          "source": "src/app/services/signalr/signalr.service.ts"
+        }
+      ],
+      "invocations": [
+        {
+          "name": "JoinView",
+          "arguments": 1
+        },
+        {
+          "name": "LeaveView",
+          "arguments": 1
+        },
+        {
+          "name": "JoinViewUsers",
+          "arguments": 1,
+          "returns": {
+            "collection": true,
+            "keys": [
+              "id",
+              "name",
+              "users"
+            ]
+          }
+        },
+        {
+          "name": "LeaveViewUsers",
+          "arguments": 1
+        },
+        {
+          "name": "JoinUser",
+          "arguments": 3,
+          "returns": {
+            "collection": false,
+            "keys": [
+              "userId",
+              "teamId",
+              "username",
+              "activeVmId",
+              "lastVmId",
+              "lastSeen"
+            ]
+          }
+        },
+        {
+          "name": "LeaveUser",
+          "arguments": 2
+        },
+        {
+          "name": "JoinVm",
+          "arguments": 1
+        },
+        {
+          "name": "LeaveVm",
+          "arguments": 1
+        },
+        {
+          "name": "SetActiveVirtualMachine",
+          "arguments": 1
+        },
+        {
+          "name": "UnsetActiveVirtualMachine",
+          "arguments": 0
+        }
+      ],
+      "broadcasts": [
+        {
+          "name": "VmCreated",
+          "arguments": [
+            1,
+            2
+          ],
+          "sentBy": [
+            "VmCreatedSignalRHandler",
+            "VmTeamCreatedSignalRHandler"
+          ],
+          "note": "Two arities. VmCreatedSignalRHandler goes through VmBaseSignalRHandler and sends (vm, null) because it shares the send with VmUpdated; VmTeamCreatedSignalRHandler sends (vm). A client may bind one argument and no more."
+        },
+        {
+          "name": "VmUpdated",
+          "arguments": [
+            2
+          ],
+          "sentBy": [
+            "VmUpdatedSignalRHandler"
+          ],
+          "note": "(vm, modifiedProperties). The second argument is the camelCased list under modifiedProperties below."
+        },
+        {
+          "name": "VmDeleted",
+          "arguments": [
+            1
+          ],
+          "sentBy": [
+            "VmDeletedSignalRHandler",
+            "VmTeamDeletedSignalRHandler"
+          ]
+        },
+        {
+          "name": "ActiveVirtualMachine",
+          "arguments": [
+            4
+          ],
+          "sentBy": [
+            "VmHub"
+          ],
+          "note": "(vmId, userId, lastSeen, teamIds). vm.ui binds all four; console.ui binds only the first, which SignalR allows - the rest are dropped on arrival."
+        },
+        {
+          "name": "CurrentVirtualMachineUsers",
+          "arguments": [
+            3
+          ],
+          "sentBy": [
+            "VmHub"
+          ],
+          "note": "(vmId, usernames, groupId). Consumed by console.ui only."
+        }
+      ],
+      "clientListenersWithNoSender": []
+    },
+    {
+      "name": "progress",
+      "path": "/hubs/progress",
+      "hubType": "Player.Vm.Api.Features.Vms.Hubs.ProgressHub",
+      "clients": [
+        {
+          "app": "console.ui",
+          "source": "src/app/services/notification/notification.service.ts"
+        }
+      ],
+      "invocations": [
+        {
+          "name": "Join",
+          "arguments": 1
+        },
+        {
+          "name": "Leave",
+          "arguments": 1,
+          "note": "No client calls this. A console that navigates away drops the connection instead, so the group is cleaned up by the disconnect rather than by an invocation."
+        }
+      ],
+      "broadcasts": [
+        {
+          "name": "Progress",
+          "arguments": [
+            1
+          ],
+          "sentBy": [
+            "TaskService",
+            "ProxmoxTaskService"
+          ],
+          "note": "The only broadcast name in the application that is not a constant: both pollers write the literal, at Domain/Vsphere/Services/TaskService.cs and Domain/Proxmox/Services/ProxmoxTaskService.cs."
+        }
+      ],
+      "clientListenersWithNoSender": [
+        {
+          "name": "Complete",
+          "listenedForBy": [
+            "console.ui"
+          ],
+          "note": "Pending upstream: console.ui's notification service registers a Complete handler that clears its progress state, and no part of Player.Vm.Api ever sends it. The state is cleared by the last Progress message instead."
+        }
+      ]
+    }
+  ],
+  "modifiedProperties": {
+    "description": "The second argument of VmUpdated. VmUpdatedSignalRHandler camelCases the property names EF's change tracker reported, and vm.ui uses each one to index the serialized Vm - model[x] = vm[x] - so a name that is not a JSON key of the DTO silently writes undefined over a live value.",
+    "names": [
+      "consoleConnectionInfo",
+      "embeddable",
+      "hasPendingTasks",
+      "hasSnapshot",
+      "id",
+      "ipAddresses",
+      "name",
+      "powerState",
+      "type",
+      "url",
+      "userId"
+    ],
+    "neverSent": {
+      "description": "JSON keys of the Vm DTO with no scalar property of the Vm entity behind them, so they never appear in modifiedProperties however they change. A client that only applies what modifiedProperties names will never see these move on an update - it has to take them from the whole Vm the first argument carries.",
+      "keys": [
+        "defaultUrl",
+        "proxmoxVmInfo",
+        "teamIds"
+      ]
+    }
+  }
+}

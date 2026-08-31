@@ -1,0 +1,2336 @@
+{
+  "openapi": "3.0.4",
+  "operations": {
+    "POST /api/callback": {
+      "operationId": "handleCallback",
+      "tags": [
+        "Callbacks"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "WebhookEvent",
+          "application/json": "WebhookEvent",
+          "text/json": "WebhookEvent"
+        }
+      },
+      "responses": {
+        "202": null,
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/health/live": {
+      "operationId": "Health_GetLiveliness",
+      "tags": [
+        "Health"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "HealthStatus",
+          "text/json": "HealthStatus",
+          "text/plain": "HealthStatus"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/health/ready": {
+      "operationId": "Health_GetReadiness",
+      "tags": [
+        "Health"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "HealthStatus",
+          "text/json": "HealthStatus",
+          "text/plain": "HealthStatus"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/isos": {
+      "operationId": "getAllIsos",
+      "tags": [
+        "File"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "ManagedIsoResult[]",
+          "text/json": "ManagedIsoResult[]",
+          "text/plain": "ManagedIsoResult[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/teams/{teamId}/map": {
+      "operationId": "getTeamMap",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path teamId: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VmMap",
+          "text/json": "VmMap",
+          "text/plain": "VmMap"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/teams/{teamId}/vms": {
+      "operationId": "getTeamVms",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path teamId: string(uuid)",
+        "query includePersonal?: boolean",
+        "query name?: string",
+        "query onlyMine?: boolean"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "Vm[]",
+          "text/json": "Vm[]",
+          "text/plain": "Vm[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "DELETE /api/teams/{teamId}/vms/{vmId}": {
+      "operationId": "removeVmFromTeam",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path teamId: string(uuid)",
+        "path vmId: string(uuid)"
+      ],
+      "responses": {
+        "204": null,
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/teams/{teamId}/vms/{vmId}": {
+      "operationId": "addVmToTeam",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path teamId: string(uuid)",
+        "path vmId: string(uuid)"
+      ],
+      "responses": {
+        "200": null,
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/views/maps": {
+      "operationId": "getAllMaps",
+      "tags": [
+        "Vms"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VmMap[]",
+          "text/json": "VmMap[]",
+          "text/plain": "VmMap[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/views/maps/viewmaps/{viewId}": {
+      "operationId": "getViewMaps",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path viewId: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VmMap[]",
+          "text/json": "VmMap[]",
+          "text/plain": "VmMap[]"
+        },
+        "404": {
+          "application/json": "ProblemDetails",
+          "text/json": "ProblemDetails",
+          "text/plain": "ProblemDetails"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "DELETE /api/views/maps/{mapId}": {
+      "operationId": "deleteMap",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path mapId: string(uuid)"
+      ],
+      "responses": {
+        "204": null,
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/views/maps/{mapId}": {
+      "operationId": "getMap",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path mapId: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VmMap",
+          "text/json": "VmMap",
+          "text/plain": "VmMap"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "PUT /api/views/maps/{mapId}": {
+      "operationId": "updateMap",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path mapId: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "VmMapUpdateForm",
+          "application/json": "VmMapUpdateForm",
+          "text/json": "VmMapUpdateForm"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "VmMap",
+          "text/json": "VmMap",
+          "text/plain": "VmMap"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "DELETE /api/views/{uuid}/isos": {
+      "operationId": "deleteIso",
+      "tags": [
+        "File"
+      ],
+      "parameters": [
+        "path uuid: string(uuid)",
+        "query filename?: string",
+        "query scope?: string",
+        "query teamId?: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "IsoUploadResult",
+          "text/json": "IsoUploadResult",
+          "text/plain": "IsoUploadResult"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/views/{uuid}/isos": {
+      "operationId": "getViewIsos",
+      "tags": [
+        "File"
+      ],
+      "parameters": [
+        "path uuid: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "ManagedIsoResult",
+          "text/json": "ManagedIsoResult",
+          "text/plain": "ManagedIsoResult"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/views/{uuid}/isos": {
+      "operationId": "uploadFileAsIso",
+      "tags": [
+        "File"
+      ],
+      "parameters": [
+        "path uuid: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "IsoUploadResult",
+          "text/json": "IsoUploadResult",
+          "text/plain": "IsoUploadResult"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/views/{viewId}/map": {
+      "operationId": "createMap",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path viewId: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "VmMapCreateForm",
+          "application/json": "VmMapCreateForm",
+          "text/json": "VmMapCreateForm"
+        }
+      },
+      "responses": {
+        "201": {
+          "application/json": "VmMap",
+          "text/json": "VmMap",
+          "text/plain": "VmMap"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/views/{viewId}/networks": {
+      "operationId": "getViewNetworks",
+      "tags": [
+        "Networks"
+      ],
+      "parameters": [
+        "path viewId: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "ViewNetwork[]",
+          "text/json": "ViewNetwork[]",
+          "text/plain": "ViewNetwork[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/views/{viewId}/networks": {
+      "operationId": "createViewNetwork",
+      "tags": [
+        "Networks"
+      ],
+      "parameters": [
+        "path viewId: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "CreateViewNetworkForm",
+          "application/json": "CreateViewNetworkForm",
+          "text/json": "CreateViewNetworkForm"
+        }
+      },
+      "responses": {
+        "201": {
+          "application/json": "ViewNetwork",
+          "text/json": "ViewNetwork",
+          "text/plain": "ViewNetwork"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "DELETE /api/views/{viewId}/networks/{id}": {
+      "operationId": "deleteViewNetwork",
+      "tags": [
+        "Networks"
+      ],
+      "parameters": [
+        "path id: string(uuid)",
+        "path viewId: string(uuid)"
+      ],
+      "responses": {
+        "204": null,
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/views/{viewId}/networks/{id}": {
+      "operationId": "getViewNetwork",
+      "tags": [
+        "Networks"
+      ],
+      "parameters": [
+        "path id: string(uuid)",
+        "path viewId: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "ViewNetwork",
+          "text/json": "ViewNetwork",
+          "text/plain": "ViewNetwork"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "PUT /api/views/{viewId}/networks/{id}": {
+      "operationId": "updateViewNetwork",
+      "tags": [
+        "Networks"
+      ],
+      "parameters": [
+        "path id: string(uuid)",
+        "path viewId: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "UpdateViewNetworkForm",
+          "application/json": "UpdateViewNetworkForm",
+          "text/json": "UpdateViewNetworkForm"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "ViewNetwork",
+          "text/json": "ViewNetwork",
+          "text/plain": "ViewNetwork"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/views/{viewId}/teams": {
+      "operationId": "getTeams",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path viewId: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "SimpleTeam[]",
+          "text/json": "SimpleTeam[]",
+          "text/plain": "SimpleTeam[]"
+        },
+        "404": {
+          "application/json": "ProblemDetails",
+          "text/json": "ProblemDetails",
+          "text/plain": "ProblemDetails"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/views/{viewId}/vms": {
+      "operationId": "getViewVms",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path viewId: string(uuid)",
+        "query includePersonal?: boolean",
+        "query name?: string",
+        "query onlyMine?: boolean"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "Vm[]",
+          "text/json": "Vm[]",
+          "text/plain": "Vm[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vms": {
+      "operationId": "getAll",
+      "tags": [
+        "Vms"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "Vm[]",
+          "text/json": "Vm[]",
+          "text/plain": "Vm[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms": {
+      "operationId": "createVm",
+      "tags": [
+        "Vms"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "VmCreateForm",
+          "application/json": "VmCreateForm",
+          "text/json": "VmCreateForm"
+        }
+      },
+      "responses": {
+        "201": {
+          "application/json": "Vm",
+          "text/json": "Vm",
+          "text/plain": "Vm"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/actions/power-off": {
+      "operationId": "bulkPowerOff",
+      "tags": [
+        "Vms"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "BulkPowerOperation",
+          "application/json": "BulkPowerOperation",
+          "text/json": "BulkPowerOperation"
+        }
+      },
+      "responses": {
+        "202": {
+          "application/json": "BulkPowerOperationResponse",
+          "text/json": "BulkPowerOperationResponse",
+          "text/plain": "BulkPowerOperationResponse"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/actions/power-on": {
+      "operationId": "bulkPowerOn",
+      "tags": [
+        "Vms"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "BulkPowerOperation",
+          "application/json": "BulkPowerOperation",
+          "text/json": "BulkPowerOperation"
+        }
+      },
+      "responses": {
+        "202": {
+          "application/json": "BulkPowerOperationResponse",
+          "text/json": "BulkPowerOperationResponse",
+          "text/plain": "BulkPowerOperationResponse"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/actions/reboot": {
+      "operationId": "bulkReboot",
+      "tags": [
+        "Vms"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "BulkPowerOperation",
+          "application/json": "BulkPowerOperation",
+          "text/json": "BulkPowerOperation"
+        }
+      },
+      "responses": {
+        "202": {
+          "application/json": "BulkPowerOperationResponse",
+          "text/json": "BulkPowerOperationResponse",
+          "text/plain": "BulkPowerOperationResponse"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/actions/revert": {
+      "operationId": "bulkRevert",
+      "tags": [
+        "Vms"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "BulkPowerOperation",
+          "application/json": "BulkPowerOperation",
+          "text/json": "BulkPowerOperation"
+        }
+      },
+      "responses": {
+        "202": {
+          "application/json": "BulkPowerOperationResponse",
+          "text/json": "BulkPowerOperationResponse",
+          "text/plain": "BulkPowerOperationResponse"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/actions/shutdown": {
+      "operationId": "bulkShutdown",
+      "tags": [
+        "Vms"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "BulkPowerOperation",
+          "application/json": "BulkPowerOperation",
+          "text/json": "BulkPowerOperation"
+        }
+      },
+      "responses": {
+        "202": {
+          "application/json": "BulkPowerOperationResponse",
+          "text/json": "BulkPowerOperationResponse",
+          "text/plain": "BulkPowerOperationResponse"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vms/proxmox/{id}": {
+      "operationId": "getProxmoxVirtualMachine",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "ProxmoxVirtualMachine",
+          "text/json": "ProxmoxVirtualMachine",
+          "text/plain": "ProxmoxVirtualMachine"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/change-network": {
+      "operationId": "changeProxmoxVirtualMachineNetwork",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "ChangeProxmoxVirtualMachineNetwork",
+          "application/json": "ChangeProxmoxVirtualMachineNetwork",
+          "text/json": "ChangeProxmoxVirtualMachineNetwork"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "ProxmoxVirtualMachine",
+          "text/json": "ProxmoxVirtualMachine",
+          "text/plain": "ProxmoxVirtualMachine"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/mount-iso": {
+      "operationId": "mountProxmoxVirtualMachineIso",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "MountProxmoxVirtualMachineIso",
+          "application/json": "MountProxmoxVirtualMachineIso",
+          "text/json": "MountProxmoxVirtualMachineIso"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "ProxmoxVirtualMachine",
+          "text/json": "ProxmoxVirtualMachine",
+          "text/plain": "ProxmoxVirtualMachine"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/power-off": {
+      "operationId": "powerOffProxmoxVirtualMachine",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/power-on": {
+      "operationId": "powerOnProxmoxVirtualMachine",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/read-guest-file": {
+      "operationId": "readGuestFileFromProxmoxVirtualMachine",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "ReadGuestFileFromProxmoxVirtualMachine",
+          "application/json": "ReadGuestFileFromProxmoxVirtualMachine",
+          "text/json": "ReadGuestFileFromProxmoxVirtualMachine"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/reboot": {
+      "operationId": "rebootProxmoxVirtualMachine",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/run-guest-process": {
+      "operationId": "runGuestProcessOnProxmoxVirtualMachine",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "RunGuestProcessOnProxmoxVirtualMachine",
+          "application/json": "RunGuestProcessOnProxmoxVirtualMachine",
+          "text/json": "RunGuestProcessOnProxmoxVirtualMachine"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "GuestProcessResult",
+          "text/json": "GuestProcessResult",
+          "text/plain": "GuestProcessResult"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/run-guest-process-fast": {
+      "operationId": "runGuestProcessFastOnProxmoxVirtualMachine",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "RunGuestProcessFastOnProxmoxVirtualMachine",
+          "application/json": "RunGuestProcessFastOnProxmoxVirtualMachine",
+          "text/json": "RunGuestProcessFastOnProxmoxVirtualMachine"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "integer(int64)",
+          "text/json": "integer(int64)",
+          "text/plain": "integer(int64)"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/shutdown": {
+      "operationId": "shutdownProxmoxVirtualMachine",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/snapshots": {
+      "operationId": "createProxmoxVirtualMachineSnapshot",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "CreateProxmoxVirtualMachineSnapshot",
+          "application/json": "CreateProxmoxVirtualMachineSnapshot",
+          "text/json": "CreateProxmoxVirtualMachineSnapshot"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "DELETE /api/vms/proxmox/{id}/actions/snapshots/{name}": {
+      "operationId": "deleteProxmoxVirtualMachineSnapshot",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)",
+        "path name: string"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/snapshots/{name}/revert": {
+      "operationId": "revertProxmoxVirtualMachineSnapshot",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)",
+        "path name: string"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/proxmox/{id}/actions/upload-file": {
+      "operationId": "uploadFileToProxmoxVirtualMachine",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "multipart/form-data": "object{FilePath: string, Files: string(binary)[]}"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vms/proxmox/{id}/console": {
+      "operationId": "getProxmoxConsole",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "ProxmoxConsole",
+          "text/json": "ProxmoxConsole",
+          "text/plain": "ProxmoxConsole"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vms/proxmox/{id}/isos": {
+      "operationId": "getProxmoxVirtualMachineIsos",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "MountableIsoResult[]",
+          "text/json": "MountableIsoResult[]",
+          "text/plain": "MountableIsoResult[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vms/proxmox/{id}/snapshots": {
+      "operationId": "getProxmoxVirtualMachineSnapshots",
+      "tags": [
+        "Proxmox"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "ProxmoxSnapshot[]",
+          "text/json": "ProxmoxSnapshot[]",
+          "text/plain": "ProxmoxSnapshot[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vms/vsphere/{id}": {
+      "operationId": "getVsphereVirtualMachine",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VsphereVirtualMachine",
+          "text/json": "VsphereVirtualMachine",
+          "text/plain": "VsphereVirtualMachine"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/change-network": {
+      "operationId": "changeVsphereVirtualMachineNetwork",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "ChangeVsphereVirtualMachineNetwork",
+          "application/json": "ChangeVsphereVirtualMachineNetwork",
+          "text/json": "ChangeVsphereVirtualMachineNetwork"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "VsphereVirtualMachine",
+          "text/json": "VsphereVirtualMachine",
+          "text/plain": "VsphereVirtualMachine"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/file-url": {
+      "operationId": "getFileUrlVsphereVirtualMachine",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "GetFileUrlVsphereVirtualMachine",
+          "application/json": "GetFileUrlVsphereVirtualMachine",
+          "text/json": "GetFileUrlVsphereVirtualMachine"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "FileVmUrlResponse",
+          "text/json": "FileVmUrlResponse",
+          "text/plain": "FileVmUrlResponse"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/mount-iso": {
+      "operationId": "mountVsphereVirtualMachineIso",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "MountVsphereIso",
+          "application/json": "MountVsphereIso",
+          "text/json": "MountVsphereIso"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "VsphereVirtualMachine",
+          "text/json": "VsphereVirtualMachine",
+          "text/plain": "VsphereVirtualMachine"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/power-off": {
+      "operationId": "powerOffVsphereVirtualMachine",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/power-on": {
+      "operationId": "powerOnVsphereVirtualMachine",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/read-guest-file": {
+      "operationId": "readGuestFileFromVsphereVirtualMachine",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "ReadGuestFileFromVsphereVirtualMachine",
+          "application/json": "ReadGuestFileFromVsphereVirtualMachine",
+          "text/json": "ReadGuestFileFromVsphereVirtualMachine"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/reboot": {
+      "operationId": "rebootVsphereVirtualMachine",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/revert": {
+      "operationId": "revertVsphereVirtualMachine",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": null,
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/revert-to-snapshot": {
+      "operationId": "revertToVsphereVirtualMachineSnapshot",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "RevertToVsphereVirtualMachineSnapshot",
+          "application/json": "RevertToVsphereVirtualMachineSnapshot",
+          "text/json": "RevertToVsphereVirtualMachineSnapshot"
+        }
+      },
+      "responses": {
+        "200": null,
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/run-guest-process": {
+      "operationId": "runGuestProcessOnVsphereVirtualMachine",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "RunGuestProcessOnVsphereVirtualMachine",
+          "application/json": "RunGuestProcessOnVsphereVirtualMachine",
+          "text/json": "RunGuestProcessOnVsphereVirtualMachine"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "GuestProcessResult",
+          "text/json": "GuestProcessResult",
+          "text/plain": "GuestProcessResult"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/run-guest-process-fast": {
+      "operationId": "runGuestProcessFastOnVsphereVirtualMachine",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "RunGuestProcessFastOnVsphereVirtualMachine",
+          "application/json": "RunGuestProcessFastOnVsphereVirtualMachine",
+          "text/json": "RunGuestProcessFastOnVsphereVirtualMachine"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "integer(int64)",
+          "text/json": "integer(int64)",
+          "text/plain": "integer(int64)"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/set-resolution": {
+      "operationId": "setVsphereVirtualMachineResolution",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "SetVsphereVirtualMachineResolution",
+          "application/json": "SetVsphereVirtualMachineResolution",
+          "text/json": "SetVsphereVirtualMachineResolution"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/shutdown": {
+      "operationId": "shutdownVsphereVirtualMachine",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/snapshots": {
+      "operationId": "createVsphereVirtualMachineSnapshot",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "CreateVsphereVirtualMachineSnapshot",
+          "application/json": "CreateVsphereVirtualMachineSnapshot",
+          "text/json": "CreateVsphereVirtualMachineSnapshot"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "DELETE /api/vms/vsphere/{id}/actions/snapshots/{snapshotId}": {
+      "operationId": "deleteVsphereVirtualMachineSnapshot",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)",
+        "path snapshotId: string"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/upload-file": {
+      "operationId": "uploadFileToVsphereVirtualMachine",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "multipart/form-data": "object{FilePath: string, Files: string(binary)[], Password: string, Username: string}"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vms/vsphere/{id}/actions/validate-credentials": {
+      "operationId": "validateVsphereVirtualMachineCredentials",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "ValidateVsphereVirtualMachineCredentials",
+          "application/json": "ValidateVsphereVirtualMachineCredentials",
+          "text/json": "ValidateVsphereVirtualMachineCredentials"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "string",
+          "text/json": "string",
+          "text/plain": "string"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vms/vsphere/{id}/isos": {
+      "operationId": "getVsphereVirtualMachineIsos",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "MountableIsoResult[]",
+          "text/json": "MountableIsoResult[]",
+          "text/plain": "MountableIsoResult[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vms/vsphere/{id}/snapshots": {
+      "operationId": "getVsphereVirtualMachineSnapshots",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VmSnapshot[]",
+          "text/json": "VmSnapshot[]",
+          "text/plain": "VmSnapshot[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vms/vsphere/{id}/tools": {
+      "operationId": "getVsphereVirtualMachineToolsStatus",
+      "tags": [
+        "Vsphere"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VirtualMachineToolsStatus",
+          "text/json": "VirtualMachineToolsStatus",
+          "text/plain": "VirtualMachineToolsStatus"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "DELETE /api/vms/{id}": {
+      "operationId": "deleteVm",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "204": null,
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vms/{id}": {
+      "operationId": "getVm",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "Vm",
+          "text/json": "Vm",
+          "text/plain": "Vm"
+        },
+        "404": {
+          "application/json": "Vm",
+          "text/json": "Vm",
+          "text/plain": "Vm"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "PUT /api/vms/{id}": {
+      "operationId": "updateVm",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "VmUpdateForm",
+          "application/json": "VmUpdateForm",
+          "text/json": "VmUpdateForm"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "Vm",
+          "text/json": "Vm",
+          "text/plain": "Vm"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vms/{id}/permissions": {
+      "operationId": "getVmPermissions",
+      "tags": [
+        "Vms"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VmPermissionResult",
+          "text/json": "VmPermissionResult",
+          "text/plain": "VmPermissionResult"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vmusageloggingsessions": {
+      "operationId": "GetAllSessions",
+      "tags": [
+        "VmUsageLoggingSession"
+      ],
+      "parameters": [
+        "query onlyActive?: boolean",
+        "query viewId?: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VmUsageLoggingSession[]",
+          "text/json": "VmUsageLoggingSession[]",
+          "text/plain": "VmUsageLoggingSession[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vmusageloggingsessions": {
+      "operationId": "CreateSession",
+      "tags": [
+        "VmUsageLoggingSession"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "CreateVmUsageLoggingSessionCommand",
+          "application/json": "CreateVmUsageLoggingSessionCommand",
+          "text/json": "CreateVmUsageLoggingSessionCommand"
+        }
+      },
+      "responses": {
+        "201": {
+          "application/json": "VmUsageLoggingSession",
+          "text/json": "VmUsageLoggingSession",
+          "text/plain": "VmUsageLoggingSession"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vmusageloggingsessions/isloggingenabled": {
+      "operationId": "GetIsLoggingEnabled",
+      "tags": [
+        "VmUsageLoggingSession"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "boolean",
+          "text/json": "boolean",
+          "text/plain": "boolean"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vmusageloggingsessions/report": {
+      "operationId": "GetVmUsageReport",
+      "tags": [
+        "VmUsageLoggingSession"
+      ],
+      "parameters": [
+        "query reportEnd?: string(date-time)",
+        "query reportStart?: string(date-time)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VmUsageReport[]",
+          "text/json": "VmUsageReport[]",
+          "text/plain": "VmUsageReport[]"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "DELETE /api/vmusageloggingsessions/{id}": {
+      "operationId": "DeleteSession",
+      "tags": [
+        "VmUsageLoggingSession"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "204": null,
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vmusageloggingsessions/{id}": {
+      "operationId": "GetSession",
+      "tags": [
+        "VmUsageLoggingSession"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VmUsageLoggingSession",
+          "text/json": "VmUsageLoggingSession",
+          "text/plain": "VmUsageLoggingSession"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "PUT /api/vmusageloggingsessions/{id}": {
+      "operationId": "EditSession",
+      "tags": [
+        "VmUsageLoggingSession"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "requestBody": {
+        "required": false,
+        "content": {
+          "application/*+json": "EditVmUsageLoggingSessionCommand",
+          "application/json": "EditVmUsageLoggingSessionCommand",
+          "text/json": "EditVmUsageLoggingSessionCommand"
+        }
+      },
+      "responses": {
+        "200": {
+          "application/json": "VmUsageLoggingSession",
+          "text/json": "VmUsageLoggingSession",
+          "text/plain": "VmUsageLoggingSession"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "GET /api/vmusageloggingsessions/{id}/download": {
+      "operationId": "GetVmUsageCsvFile",
+      "tags": [
+        "VmUsageLoggingSession"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "text/csv": "any"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    },
+    "POST /api/vmusageloggingsessions/{id}/endsession": {
+      "operationId": "EndSession",
+      "tags": [
+        "VmUsageLoggingSession"
+      ],
+      "parameters": [
+        "path id: string(uuid)"
+      ],
+      "responses": {
+        "200": {
+          "application/json": "VmUsageLoggingSession",
+          "text/json": "VmUsageLoggingSession",
+          "text/plain": "VmUsageLoggingSession"
+        },
+        "default": {
+          "application/json": "ProblemDetails"
+        }
+      }
+    }
+  },
+  "schemas": {
+    "AppSystemPermission": {
+      "type": "string(ViewViews|ManageViews|EditViews|ViewNetworks|ManageNetworks|DeleteIsos)"
+    },
+    "AppTeamPermission": {
+      "type": "string(ViewTeam|ManageTeam|EditTeam|UploadTeamIsos|DeleteTeamIsos)"
+    },
+    "AppViewPermission": {
+      "type": "string(ViewView|ManageView|EditView|UploadViewIsos|DeleteViewIsos|DownloadVmFiles|UploadVmFiles|RevertVms|ViewNetworks|ManageNetworks)"
+    },
+    "BulkPowerOperation": {
+      "type": "object",
+      "properties": {
+        "ids": "string(uuid)[]?"
+      }
+    },
+    "BulkPowerOperationResponse": {
+      "type": "object",
+      "properties": {
+        "accepted": "string(uuid)[]?",
+        "errors": "object?"
+      }
+    },
+    "ChangeProxmoxVirtualMachineNetwork": {
+      "type": "object",
+      "properties": {
+        "adapter": "string?",
+        "network": "string?"
+      }
+    },
+    "ChangeVsphereVirtualMachineNetwork": {
+      "type": "object",
+      "properties": {
+        "adapter": "string?",
+        "network": "string?"
+      }
+    },
+    "ConsoleConnectionInfo": {
+      "type": "object",
+      "properties": {
+        "hostname": "string?",
+        "password": "string?",
+        "port": "string?",
+        "protocol": "string?",
+        "username": "string?"
+      }
+    },
+    "Coordinate": {
+      "type": "object",
+      "properties": {
+        "id": "string(uuid)",
+        "label": "string?",
+        "radius": "number(double)",
+        "urls": "string[]?",
+        "xPosition": "number(double)",
+        "yPosition": "number(double)"
+      }
+    },
+    "CoordinateCreateForm": {
+      "type": "object",
+      "properties": {
+        "id": "string(uuid)",
+        "label": "string?",
+        "radius": "number(double)",
+        "urls": "string[]?",
+        "xPosition": "number(double)",
+        "yPosition": "number(double)"
+      }
+    },
+    "CreateProxmoxVirtualMachineSnapshot": {
+      "type": "object",
+      "properties": {
+        "description": "string?",
+        "includeRam": "boolean",
+        "snapshotName": "string?"
+      }
+    },
+    "CreateViewNetworkForm": {
+      "type": "object",
+      "required": [
+        "name",
+        "networkId",
+        "providerInstanceId",
+        "providerType"
+      ],
+      "properties": {
+        "name": "string",
+        "networkId": "string",
+        "providerInstanceId": "string",
+        "providerType": "VmType",
+        "teamIds": "string(uuid)[]?"
+      }
+    },
+    "CreateVmUsageLoggingSessionCommand": {
+      "type": "object",
+      "properties": {
+        "sessionEnd": "string(date-time)",
+        "sessionName": "string?",
+        "sessionStart": "string(date-time)",
+        "teamIds": "string(uuid)[]?",
+        "viewId": "string(uuid)?"
+      }
+    },
+    "CreateVsphereVirtualMachineSnapshot": {
+      "type": "object",
+      "properties": {
+        "description": "string?",
+        "includeMemory": "boolean",
+        "snapshotName": "string?"
+      }
+    },
+    "EditVmUsageLoggingSessionCommand": {
+      "type": "object",
+      "properties": {
+        "id": "string(uuid)",
+        "sessionEnd": "string(date-time)",
+        "sessionName": "string?",
+        "sessionStart": "string(date-time)",
+        "teamIds": "string(uuid)[]?",
+        "viewId": "string(uuid)?"
+      }
+    },
+    "EventType": {
+      "type": "string(ViewCreated|ViewDeleted)"
+    },
+    "FileVmUrlResponse": {
+      "type": "object",
+      "properties": {
+        "fileName": "string?",
+        "url": "string?"
+      }
+    },
+    "GetFileUrlVsphereVirtualMachine": {
+      "type": "object",
+      "properties": {
+        "filePath": "string?",
+        "password": "string?",
+        "username": "string?"
+      }
+    },
+    "GuestProcessResult": {
+      "type": "object",
+      "properties": {
+        "error": "string?",
+        "exitCode": "integer(int32)",
+        "output": "string?",
+        "success": "boolean"
+      }
+    },
+    "HealthStatus": {
+      "type": "string(Unhealthy|Degraded|Healthy)"
+    },
+    "IsoUploadResult": {
+      "type": "object",
+      "properties": {
+        "failedHostCount": "integer(int32)",
+        "message": "string?",
+        "partialFailure": "boolean",
+        "totalHostCount": "integer(int32)"
+      }
+    },
+    "ManagedIsoFile": {
+      "type": "object",
+      "properties": {
+        "filename": "string?",
+        "missingProviders": "VmType[]?"
+      }
+    },
+    "ManagedIsoResult": {
+      "type": "object",
+      "properties": {
+        "isos": "ManagedIsoFile[]?",
+        "teamIsoResults": "ManagedTeamIsoResult[]?",
+        "viewId": "string(uuid)",
+        "viewName": "string?"
+      }
+    },
+    "ManagedTeamIsoResult": {
+      "type": "object",
+      "properties": {
+        "isos": "ManagedIsoFile[]?",
+        "teamId": "string(uuid)",
+        "teamName": "string?"
+      }
+    },
+    "MountProxmoxVirtualMachineIso": {
+      "type": "object",
+      "properties": {
+        "iso": "string?"
+      }
+    },
+    "MountVsphereIso": {
+      "type": "object",
+      "properties": {
+        "iso": "string?"
+      }
+    },
+    "MountableIsoFile": {
+      "type": "object",
+      "properties": {
+        "filename": "string?",
+        "mountValue": "string?"
+      }
+    },
+    "MountableIsoResult": {
+      "type": "object",
+      "properties": {
+        "isos": "MountableIsoFile[]?",
+        "teamIsoResults": "MountableTeamIsoResult[]?",
+        "viewId": "string(uuid)",
+        "viewName": "string?"
+      }
+    },
+    "MountableTeamIsoResult": {
+      "type": "object",
+      "properties": {
+        "isos": "MountableIsoFile[]?",
+        "teamId": "string(uuid)",
+        "teamName": "string?"
+      }
+    },
+    "NicOptions": {
+      "type": "object",
+      "properties": {
+        "availableNetworks": "object?",
+        "currentNetworks": "object?",
+        "readOnlyNetworks": "string[]?"
+      }
+    },
+    "PowerState": {
+      "type": "string(Unknown|On|Off|Suspended)"
+    },
+    "ProblemDetails": {
+      "type": "object",
+      "properties": {
+        "detail": "string?",
+        "instance": "string?",
+        "status": "integer(int32)?",
+        "title": "string?",
+        "type": "string?"
+      }
+    },
+    "ProxmoxConsole": {
+      "type": "object",
+      "properties": {
+        "powerState": "PowerState",
+        "ticket": "string?",
+        "url": "string?"
+      }
+    },
+    "ProxmoxSnapshot": {
+      "type": "object",
+      "properties": {
+        "description": "string?",
+        "name": "string?",
+        "parent": "string?",
+        "snapTime": "integer(int64)?",
+        "vmState": "boolean"
+      }
+    },
+    "ProxmoxVirtualMachine": {
+      "type": "object",
+      "properties": {
+        "canAccessNicConfiguration": "boolean",
+        "canMountIso": "boolean",
+        "id": "string(uuid)",
+        "name": "string?",
+        "networkCards": "NicOptions",
+        "userId": "string(uuid)?"
+      }
+    },
+    "ProxmoxVmInfo": {
+      "type": "object",
+      "properties": {
+        "id": "integer(int32)",
+        "node": "string?",
+        "type": "ProxmoxVmType"
+      }
+    },
+    "ProxmoxVmType": {
+      "type": "string(QEMU|LXC)"
+    },
+    "ReadGuestFileFromProxmoxVirtualMachine": {
+      "type": "object",
+      "properties": {
+        "guestFilePath": "string?"
+      }
+    },
+    "ReadGuestFileFromVsphereVirtualMachine": {
+      "type": "object",
+      "properties": {
+        "guestFilePath": "string?",
+        "password": "string?",
+        "username": "string?"
+      }
+    },
+    "RevertToVsphereVirtualMachineSnapshot": {
+      "type": "object",
+      "properties": {
+        "snapshotId": "string?"
+      }
+    },
+    "RunGuestProcessFastOnProxmoxVirtualMachine": {
+      "type": "object",
+      "properties": {
+        "arguments": "string?",
+        "programPath": "string?",
+        "workingDirectory": "string?"
+      }
+    },
+    "RunGuestProcessFastOnVsphereVirtualMachine": {
+      "type": "object",
+      "properties": {
+        "arguments": "string?",
+        "password": "string?",
+        "programPath": "string?",
+        "username": "string?",
+        "workingDirectory": "string?"
+      }
+    },
+    "RunGuestProcessOnProxmoxVirtualMachine": {
+      "type": "object",
+      "properties": {
+        "arguments": "string?",
+        "programPath": "string?",
+        "timeoutSeconds": "integer(int32)?",
+        "workingDirectory": "string?"
+      }
+    },
+    "RunGuestProcessOnVsphereVirtualMachine": {
+      "type": "object",
+      "properties": {
+        "arguments": "string?",
+        "password": "string?",
+        "programPath": "string?",
+        "timeoutSeconds": "integer(int32)?",
+        "username": "string?",
+        "workingDirectory": "string?"
+      }
+    },
+    "SetVsphereVirtualMachineResolution": {
+      "type": "object",
+      "properties": {
+        "height": "integer(int32)",
+        "width": "integer(int32)"
+      }
+    },
+    "SimpleTeam": {
+      "type": "object",
+      "properties": {
+        "id": "string(uuid)",
+        "name": "string?"
+      }
+    },
+    "UpdateViewNetworkForm": {
+      "type": "object",
+      "required": [
+        "name",
+        "networkId",
+        "providerInstanceId",
+        "providerType"
+      ],
+      "properties": {
+        "name": "string",
+        "networkId": "string",
+        "providerInstanceId": "string",
+        "providerType": "VmType",
+        "teamIds": "string(uuid)[]?"
+      }
+    },
+    "ValidateVsphereVirtualMachineCredentials": {
+      "type": "object",
+      "properties": {
+        "filePath": "string?",
+        "password": "string?",
+        "username": "string?"
+      }
+    },
+    "ViewNetwork": {
+      "type": "object",
+      "properties": {
+        "id": "string(uuid)",
+        "name": "string?",
+        "networkId": "string?",
+        "providerInstanceId": "string?",
+        "providerType": "VmType",
+        "teamIds": "string(uuid)[]?",
+        "viewId": "string(uuid)"
+      }
+    },
+    "VirtualMachineToolsStatus": {
+      "type": "string(toolsNotInstalled|toolsNotRunning|toolsOld|toolsOk)"
+    },
+    "Vm": {
+      "type": "object",
+      "properties": {
+        "consoleConnectionInfo": "ConsoleConnectionInfo",
+        "defaultUrl": "boolean",
+        "embeddable": "boolean",
+        "hasPendingTasks": "boolean",
+        "hasSnapshot": "boolean",
+        "id": "string(uuid)",
+        "ipAddresses": "string[]?",
+        "name": "string?",
+        "powerState": "PowerState",
+        "proxmoxVmInfo": "ProxmoxVmInfo",
+        "teamIds": "string(uuid)[]?",
+        "type": "VmType",
+        "url": "string?",
+        "userId": "string(uuid)?"
+      }
+    },
+    "VmCreateForm": {
+      "type": "object",
+      "required": [
+        "name",
+        "teamIds"
+      ],
+      "properties": {
+        "consoleConnectionInfo": "ConsoleConnectionInfo",
+        "embeddable": "boolean",
+        "id": "string(uuid)?",
+        "name": "string",
+        "proxmoxVmInfo": "ProxmoxVmInfo",
+        "teamIds": "string(uuid)[]",
+        "url": "string?",
+        "userId": "string(uuid)?"
+      }
+    },
+    "VmMap": {
+      "type": "object",
+      "properties": {
+        "coordinates": "Coordinate[]?",
+        "id": "string(uuid)",
+        "imageUrl": "string?",
+        "name": "string?",
+        "teamIds": "string(uuid)[]?",
+        "viewId": "string(uuid)"
+      }
+    },
+    "VmMapCreateForm": {
+      "type": "object",
+      "properties": {
+        "coordinates": "CoordinateCreateForm[]?",
+        "id": "string(uuid)?",
+        "imageUrl": "string?",
+        "name": "string?",
+        "teamIds": "string(uuid)[]?"
+      }
+    },
+    "VmMapUpdateForm": {
+      "type": "object",
+      "properties": {
+        "coordinates": "CoordinateCreateForm[]?",
+        "imageUrl": "string?",
+        "name": "string?",
+        "teamIds": "string(uuid)[]?"
+      }
+    },
+    "VmPermissionResult": {
+      "type": "object",
+      "properties": {
+        "teamPermissions": "AppTeamPermission[]?",
+        "viewPermissions": "AppViewPermission[]?"
+      }
+    },
+    "VmSnapshot": {
+      "type": "object",
+      "properties": {
+        "createTime": "string(date-time)",
+        "depth": "integer(int32)",
+        "description": "string?",
+        "id": "string?",
+        "isCurrent": "boolean",
+        "name": "string?",
+        "state": "string?"
+      }
+    },
+    "VmType": {
+      "type": "string(Unknown|Vsphere|Proxmox|Azure)"
+    },
+    "VmUpdateForm": {
+      "type": "object",
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "consoleConnectionInfo": "ConsoleConnectionInfo",
+        "embeddable": "boolean",
+        "name": "string",
+        "proxmoxVmInfo": "ProxmoxVmInfo",
+        "url": "string?",
+        "userId": "string(uuid)?"
+      }
+    },
+    "VmUsageLoggingSession": {
+      "type": "object",
+      "properties": {
+        "createdDt": "string(date-time)",
+        "id": "string(uuid)",
+        "sessionEnd": "string(date-time)",
+        "sessionName": "string?",
+        "sessionStart": "string(date-time)",
+        "teamIds": "string(uuid)[]?",
+        "viewId": "string(uuid)"
+      }
+    },
+    "VmUsageReport": {
+      "type": "object",
+      "properties": {
+        "ipAddress": "string?",
+        "minutesActive": "integer(int32)",
+        "sessionEnd": "string(date-time)",
+        "sessionId": "string(uuid)",
+        "sessionName": "string?",
+        "sessionStart": "string(date-time)",
+        "userId": "string(uuid)",
+        "userName": "string?",
+        "vmId": "string(uuid)",
+        "vmName": "string?"
+      }
+    },
+    "VmUser": {
+      "type": "object",
+      "properties": {
+        "activeVmId": "string(uuid)?",
+        "lastSeen": "string(date-time)?",
+        "lastVmId": "string(uuid)?",
+        "teamId": "string(uuid)",
+        "userId": "string(uuid)",
+        "username": "string?"
+      }
+    },
+    "VmUserTeam": {
+      "type": "object",
+      "properties": {
+        "id": "string(uuid)",
+        "name": "string?",
+        "users": "VmUser[]?"
+      }
+    },
+    "VsphereVirtualMachine": {
+      "type": "object",
+      "properties": {
+        "canAccessNicConfiguration": "boolean",
+        "hasSnapshot": "boolean",
+        "id": "string(uuid)",
+        "isOwner": "boolean",
+        "name": "string?",
+        "networkCards": "NicOptions",
+        "state": "string?",
+        "ticket": "string?",
+        "url": "string?",
+        "userId": "string(uuid)?",
+        "vmToolsStatus": "VirtualMachineToolsStatus"
+      }
+    },
+    "WebhookEvent": {
+      "type": "object",
+      "properties": {
+        "id": "string(uuid)",
+        "payload": "string?",
+        "timestamp": "string(date-time)",
+        "type": "EventType"
+      }
+    }
+  }
+}
