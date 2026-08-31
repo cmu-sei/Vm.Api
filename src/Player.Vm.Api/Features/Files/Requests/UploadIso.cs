@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Http;
 using Player.Vm.Api.Features.Shared.Interfaces;
+using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Infrastructure.Options;
 
@@ -19,13 +20,16 @@ namespace Player.Vm.Api.Features.Files.Requests
     {
         private readonly IIsoService _isoService;
         private readonly IsoUploadOptions _isoUploadOptions;
+        private readonly IXApiService _xApiService;
 
         public UploadIso(
             IIsoService isoService,
-            IsoUploadOptions isoUploadOptions)
+            IsoUploadOptions isoUploadOptions,
+            IXApiService xApiService)
         {
             _isoService = isoService;
             _isoUploadOptions = isoUploadOptions;
+            _xApiService = xApiService;
         }
 
         public async Task<IsoUploadResult> HandleAsync(Guid viewId, IFormFile file, string scope, long reportedSize, IReadOnlyList<Guid> teamIds, CancellationToken ct)
@@ -44,7 +48,9 @@ namespace Player.Vm.Api.Features.Files.Requests
             // selected team id - or the primary team when none were specified). Permissions enforced here.
             var scopeIds = await _isoService.ResolveUploadScopeIdsAsync(viewId, scope, teamIds, ct);
 
-            return await _isoService.UploadAsync(viewId, scopeIds, filename, file.OpenReadStream, ct);
+            var result = await _isoService.UploadAsync(viewId, scopeIds, filename, file.OpenReadStream, ct);
+            await _xApiService.TrackIsoUploadedAsync(viewId, scope, filename, ct);
+            return result;
         }
     }
 }

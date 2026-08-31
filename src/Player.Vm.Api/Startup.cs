@@ -188,6 +188,10 @@ public class Startup
             .Configure<ProxmoxOptions>(Configuration.GetSection("Proxmox"))
             .AddScoped(config => config.GetService<IOptionsSnapshot<ProxmoxOptions>>().Value);
 
+        services
+            .Configure<XApiOptions>(Configuration.GetSection("XApiOptions"))
+            .AddScoped(config => config.GetService<IOptionsMonitor<XApiOptions>>().CurrentValue);
+
         services.AddOptions()
             .Configure<HealthChecksUIOptions>(Configuration.GetSection("HealthChecksUI"))
             .AddScoped(config => config.GetService<IOptionsMonitor<HealthChecksUIOptions>>().CurrentValue);
@@ -293,6 +297,10 @@ public class Startup
         services.AddScoped<IPlayerService, PlayerService>();
         services.AddScoped<IViewService, ViewService>();
         services.AddScoped<Features.Files.IIsoService, Features.Files.IsoService>();
+        services.AddScoped<IXApiQueueService, XApiQueueService>();
+        services.AddScoped<IXApiService, XApiService>();
+        services.AddHttpClient("xapi");
+        services.AddHostedService<XApiBackgroundService>();
 
         // One ISO provider per hypervisor. Registered as a set because a single deployment can have
         // more than one enabled at once; IsoService fans out across whichever report Enabled.

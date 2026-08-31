@@ -23,6 +23,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
         private readonly IVmService _vmService;
         private readonly IViewService _viewService;
         private readonly IVmUsageLoggingService _vmUsageLoggingService;
+        private readonly IXApiService _xApiService;
         private readonly VmContext _dbContext;
         private const string UserGroupPrefix = "ActiveConsoles";
 
@@ -32,6 +33,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             IViewService viewService,
             IPlayerService playerService,
             IVmService vmService,
+            IXApiService xApiService,
             VmContext dbContext)
         {
             _activeVirtualMachineService = activeVirtualMachineService;
@@ -39,6 +41,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             _viewService = viewService;
             _playerService = playerService;
             _vmService = vmService;
+            _xApiService = xApiService;
             _dbContext = dbContext;
         }
 
@@ -163,6 +166,12 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             }
 
             var user = await _playerService.GetUserById(userId, Context.ConnectionAborted);
+            await _xApiService.TrackUserFollowedAsync(
+                userId,
+                user.Name,
+                viewId,
+                teamId,
+                Context.ConnectionAborted);
             var dbUser = await _dbContext.VmUsers
                 .Where(x => x.UserId == userId && x.TeamId == teamId)
                 .FirstOrDefaultAsync();
@@ -172,11 +181,18 @@ namespace Player.Vm.Api.Features.Vms.Hubs
 
         public async Task LeaveUser(Guid userId, Guid viewId)
         {
+            var user = await _playerService.GetUserById(userId, Context.ConnectionAborted);
             var groupIds = await _playerService.GetGroupIdsForViewAsync(viewId, Context.ConnectionAborted);
             foreach (var groupId in groupIds)
             {
                 await Groups.RemoveFromGroupAsync(Context.ConnectionId, GetGroup(groupId, userId));
             }
+
+            await _xApiService.TrackUserUnfollowedAsync(
+                userId,
+                user.Name,
+                viewId,
+                Context.ConnectionAborted);
         }
 
         public async Task JoinVm(Guid vmId)
@@ -268,6 +284,7 @@ namespace Player.Vm.Api.Features.Vms.Hubs
             }
 
             await _vmUsageLoggingService.CreateVmLogEntry(userId, vmId, teamIds, CancellationToken.None);
+            await _xApiService.TrackConsoleOpenedAsync(vmId, teamIds, CancellationToken.None);
             await UpdateVmUser(userId, vmId, teamIds);
         }
 
@@ -313,6 +330,10 @@ namespace Player.Vm.Api.Features.Vms.Hubs
                 }
 
                 await _vmUsageLoggingService.CloseVmLogEntry(userId, activeVirtualMachine.VmId, cancellationToken);
+                await _xApiService.TrackConsoleClosedAsync(
+                    activeVirtualMachine.VmId,
+                    activeVirtualMachine.TeamIds,
+                    cancellationToken);
             }
         }
 

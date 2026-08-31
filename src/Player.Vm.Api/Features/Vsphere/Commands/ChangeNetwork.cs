@@ -37,6 +37,7 @@ namespace Player.Vm.Api.Features.Vsphere
             private readonly IVmService _vmService;
             private readonly IMapper _mapper;
             private readonly IViewService _viewService;
+            private readonly IXApiService _xApiService;
 
             public Handler(
                 IVsphereService vsphereService,
@@ -44,13 +45,15 @@ namespace Player.Vm.Api.Features.Vsphere
                 IMapper mapper,
                 IPlayerService playerService,
                 IViewService viewService,
-                IPrincipal principal) :
+                IPrincipal principal,
+                IXApiService xApiService) :
                 base(mapper, vsphereService, playerService, principal, vmService, viewService)
             {
                 _vsphereService = vsphereService;
                 _vmService = vmService;
                 _mapper = mapper;
                 _viewService = viewService;
+                _xApiService = xApiService;
             }
 
             public async Task<VsphereVirtualMachine> Handle(Command request, CancellationToken cancellationToken)
@@ -92,6 +95,11 @@ namespace Player.Vm.Api.Features.Vsphere
                 }
 
                 await _vsphereService.ReconfigureVm(request.Id, Feature.net, request.Adapter, request.Network);
+                await _xApiService.TrackNetworkChangedAsync(
+                    vm.Id,
+                    request.Adapter,
+                    request.Network,
+                    cancellationToken);
 
                 return await base.GetVsphereVirtualMachine(vm, cancellationToken);
             }

@@ -39,6 +39,7 @@ public class MountIso
         private readonly IProxmoxVmNetworkService _networkService;
         private readonly IProxmoxService _proxmoxService;
         private readonly IIsoService _isoService;
+        private readonly IXApiService _xApiService;
 
         public Handler(
             VmContext db,
@@ -46,12 +47,14 @@ public class MountIso
             IVmService vmService,
             IProxmoxVmNetworkService networkService,
             IProxmoxService proxmoxService,
-            IIsoService isoService)
+            IIsoService isoService,
+            IXApiService xApiService)
             : base(db, playerService, vmService)
         {
             _networkService = networkService;
             _proxmoxService = proxmoxService;
             _isoService = isoService;
+            _xApiService = xApiService;
         }
 
         public async Task<ProxmoxVirtualMachine> Handle(Command request, CancellationToken cancellationToken)
@@ -70,6 +73,7 @@ public class MountIso
                 vm.Id, VmType.Proxmox, vm.VmTeams.Select(x => x.TeamId), request.Iso, cancellationToken);
 
             await _proxmoxService.MountIso(vm.ProxmoxVmInfo, iso, cancellationToken);
+            await _xApiService.TrackIsoMountedAsync(vm.Id, iso, cancellationToken);
 
             var permissions = await _networkService.GetPermissions(vm, cancellationToken);
             return await _networkService.ToResponse(vm, permissions, cancellationToken);
