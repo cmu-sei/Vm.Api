@@ -8,15 +8,42 @@
     <OutputType>Exe</OutputType>
     <GenerateProgramFile>false</GenerateProgramFile>
   </PropertyGroup>
+  <!-- Versions live in Directory.Packages.props. -->
   <ItemGroup>
     <!-- IVsphereService has ~32 members and only one of them matters to these tests, so a substitute
          beats hand-writing a stub that would need editing every time the interface grows. -->
-    <PackageReference Include="NSubstitute" Version="5.3.0" />
-    <PackageReference Include="xunit.v3" Version="3.2.2" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.5" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="18.0.1" />
+    <PackageReference Include="NSubstitute" />
+    <!-- Hosts the real Startup in-process so tests can exercise routing, model binding,
+         authorization, MediatR behaviors and the EF pipeline without a hypervisor or a network. -->
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
+    <!-- Connects to the hosted hubs over the real SignalR protocol, so the group names the hubs join
+         and the ones the application broadcasts to are proved to agree on a live connection. -->
+    <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" />
+    <PackageReference Include="xunit.v3" />
+    <!-- Coverage, opt-in. Nothing here changes what a normal run does: the collector is only loaded
+         when `dotnet test` is asked for XPlat Code Coverage, which only `scripts/coverage.sh` and the
+         manually triggered coverage workflow do. Settings and exclusions live in coverlet.runsettings
+         at the repository root. -->
+    <PackageReference Include="coverlet.collector">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <!-- PostgreSQL is the only database the tests run against, and this starts and disposes it. There
+         is deliberately no in-memory or SQLite fallback: a fallback that quietly replaces the
+         production provider reports a green run that never touched what production uses. -->
+    <PackageReference Include="Testcontainers.PostgreSql" />
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\Player.Vm.Api\Player.Vm.Api.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Where contracts/ is, baked into the assembly so ContractTests can read the checked-in files
+         rather than a copy of them. A copy in the output directory would let a regeneration write
+         somewhere git never sees, and a path walked up from the test binary at runtime guesses at a
+         directory layout this knows. Forward slashes on purpose: MSBuild accepts them on every platform,
+         and a backslash here is a literal filename character to Path.GetFullPath on Linux. -->
+    <AssemblyMetadata Include="ContractsDirectory" Value="$(MSBuildThisFileDirectory)../../contracts" />
   </ItemGroup>
 </Project>

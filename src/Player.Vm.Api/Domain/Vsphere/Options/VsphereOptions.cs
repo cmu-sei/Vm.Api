@@ -21,6 +21,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
         public string GuestProcessTempPath { get; set; }
         public int GuestProcessDefaultTimeoutSeconds { get; set; } = 300;
 
+        // How long to wait between polls while a synchronously-awaited vCenter task or guest process
+        // runs (VsphereService.WaitForVimTask, RunGuestProcess). Distinct from
+        // CheckTaskProgressIntervalMilliseconds, which paces the background TaskService poller.
+        // Exists mainly so tests can set it to 0 and exercise those loops without real waits.
+        public int TaskPollIntervalMilliseconds { get; set; } = 1000;
+
         // True to push ISOs to every connected vCenter's datastore through its HTTP file API; null or
         // false (default) to write them into IsoRoot. Required by VMware Cloud on AWS SDDCs, which
         // have no NFS datastore. The Proxmox equivalent is Proxmox:IsoUploadViaApi.

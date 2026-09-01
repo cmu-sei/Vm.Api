@@ -105,6 +105,12 @@ public class Startup
             case "InMemory":
                 services.AddEventPublishingDbContextFactory<VmContext>((serviceProvider, optionsBuilder) => optionsBuilder
                     .UseInMemoryDatabase("vm"));
+
+                // The usage log has no in-memory equivalent worth wiring to Postgres, but its request
+                // handlers are registered unconditionally by MediatR - leaving the context out makes
+                // the container fail validation, so InMemory could not host the app at all.
+                services.AddDbContextPool<VmLoggingContext>(
+                    options => options.UseInMemoryDatabase("vmLogging"));
                 break;
             case "Sqlite":
             case "SqlServer":
@@ -120,16 +126,18 @@ public class Startup
                 services.AddDbContextPool<VmLoggingContext>(
                     options => options.UseNpgsql(vmLoggingConnectionString));
 
-                if (vmLoggingEnabled)
-                {
-                    services.AddScoped<IVmUsageLoggingService, VmUsageLoggingService>();
-                }
-                else
-                {
-                    services.AddSingleton<IVmUsageLoggingService, DisabledVmUsageLoggingService>();
-                }
-
                 break;
+        }
+
+        // Outside the switch because VmHub takes an IVmUsageLoggingService, and a provider that did not
+        // register one left every hub connection failing to resolve its own constructor.
+        if (vmLoggingEnabled)
+        {
+            services.AddScoped<IVmUsageLoggingService, VmUsageLoggingService>();
+        }
+        else
+        {
+            services.AddSingleton<IVmUsageLoggingService, DisabledVmUsageLoggingService>();
         }
 
         var connectionString = Configuration.GetConnectionString(Configuration.GetValue<string>("Database:Provider", "Sqlite").Trim());

@@ -157,7 +157,8 @@ namespace Player.Vm.Api.Features.Vms
                     }
                     else
                     {
-                        await _vsphereService.BulkPowerOperation(vsphereAccepted.ToArray(), request.Operation);
+                        errorsDict = MergeErrors(errorsDict,
+                            await _vsphereService.BulkPowerOperation(vsphereAccepted.ToArray(), request.Operation));
                     }
                 }
 

@@ -1,0 +1,39 @@
+<!--
+  Settings every project in the repository shares. Imported before each project file, so a project
+  that needs something different can still override it - Player.Vm.Api.Client pins LangVersion 8.0
+  for its netstandard2.0 target, and that wins over the value here.
+-->
+<Project>
+
+  <PropertyGroup>
+    <LangVersion>latest</LangVersion>
+
+    <!--
+      A warning that nobody has to act on is a warning nobody reads, and the compiler and the xUnit
+      analyzers report real defects: an unawaited task, a [Theory] with no data, an assertion that
+      cannot fail, an awaited call that does not take the test's cancellation token. The build is
+      clean today - one xUnit1051 was fixed when this was introduced, and there was nothing else - so
+      this keeps it that way rather than paying off a backlog.
+    -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!--
+      Restore-time warnings stay warnings. NU1901-NU1904 are the NuGet audit, and it has findings
+      here that a build failure would only make invisible by blocking every build:
+
+      - AutoMapper 13 is the one direct hit. It is pinned deliberately, because version 15+ requires
+        a commercial license. MediatR 12 is pinned for the same reason.
+      - Everything else is transitive and cannot be fixed in a project file here: KubernetesClient
+        and the OpenTelemetry packages arrive through Crucible.Common.ServiceDefaults,
+        Microsoft.OpenApi through Swashbuckle, SQLitePCLRaw through the EF SQLite provider,
+        Microsoft.NETCore.App 2.1.0 through VimClient, and System.Drawing.Common and
+        System.Security.Cryptography.Xml through the health-check UI packages.
+
+      This is a real backlog rather than a set of findings that can never be acted on. Check it with
+      `dotnet list package` and its vulnerable and transitive switches when bumping a dependency;
+      docs/Testing.md spells out the command.
+    -->
+    <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+  </PropertyGroup>
+
+</Project>

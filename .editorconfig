@@ -1,0 +1,16 @@
+# Analyzer configuration. Code style is deliberately not legislated here: the API was written with
+# block-scoped namespaces and the test project with file-scoped ones, and encoding one of them would
+# turn every file into a diff without making anything more correct.
+#
+# What this file does is raise the analyzer rules that ship as suggestions and that the test suite's
+# own conventions depend on. Directory.Build.props turns warnings into errors, so anything named here
+# fails the build.
+root = true
+
+[*.cs]
+
+# A skipped test is a test that reports nothing. The convention in docs/Testing.md is the opposite: a
+# bug found while testing is characterized by a test that asserts the current behaviour and turns red
+# when it is fixed - VsphereServiceCommandTests is the worked example. Conditional skips are
+# unaffected, because SkipWhen and SkipUnless do not match this rule.
+dotnet_diagnostic.xUnit1004.severity = warning
