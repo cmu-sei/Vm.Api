@@ -335,7 +335,14 @@ public class IsoWriteAuthTests
         file.Name.Returns("file");
         file.FileName.Returns("ubuntu.iso");
 
-        var handler = new UploadIso(isoService, new IsoUploadOptions { MaxFileSize = 1024 });
+        var xApiService = Substitute.For<IXApiService>();
+        xApiService.TrackIsoUploadedAsync(
+                Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(Task.CompletedTask);
+        var handler = new UploadIso(
+            isoService,
+            new IsoUploadOptions { MaxFileSize = 1024 },
+            xApiService);
 
         await handler.HandleAsync(ViewId, file, "view", 1, [], CancellationToken.None);
 

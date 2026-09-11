@@ -49,19 +49,22 @@ namespace Player.Vm.Api.Features.Vms
             private readonly IPlayerService _playerService;
             private readonly VmContext _dbContext;
             private readonly IVmService _vmService;
+            private readonly IXApiService _xApiService;
 
             public Handler(
                 IVsphereService vsphereService,
                 IProxmoxService proxmoxService,
                 IPlayerService playerService,
                 VmContext dbContext,
-                IVmService vmService)
+                IVmService vmService,
+                IXApiService xApiService)
             {
                 _vsphereService = vsphereService;
                 _proxmoxService = proxmoxService;
                 _playerService = playerService;
                 _dbContext = dbContext;
                 _vmService = vmService;
+                _xApiService = xApiService;
             }
 
             public async Task<Response> Handle(Command request, CancellationToken cancellationToken)
@@ -165,6 +168,13 @@ namespace Player.Vm.Api.Features.Vms
                 {
                     errorsDict = MergeErrors(errorsDict,
                         await _proxmoxService.BulkPowerOperation(proxmoxAccepted.ToArray(), request.Operation));
+                }
+
+                foreach (var vmId in acceptedList.Where(id =>
+                             !errorsDict.TryGetValue(id, out var error) ||
+                             string.IsNullOrWhiteSpace(error)))
+                {
+                    await _xApiService.TrackPowerOperationAsync(vmId, request.Operation, cancellationToken);
                 }
 
                 return new Response
