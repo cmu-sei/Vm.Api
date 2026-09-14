@@ -36,6 +36,10 @@
     <PackageReference Include="AspNetCore.HealthChecks.UI.Client" />
     <PackageReference Include="Crucible.Common.EntityEvents" />
     <PackageReference Include="Crucible.Common.ServiceDefaults" />
+    <!-- Targets .NET Framework only, so restore reports NU1701 for it in every project that ends up
+         with it in its graph. Suppressed here rather than repo-wide: the warning is worth keeping for
+         the next package that turns out not to target net10.0. -->
+    <PackageReference Include="TinCan" NoWarn="NU1701" />
   </ItemGroup>
   <ItemGroup>
     <!-- Lets the test project reach the internal helpers that have no public entry point worth

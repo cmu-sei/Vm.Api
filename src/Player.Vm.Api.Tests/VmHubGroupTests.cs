@@ -55,10 +55,11 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
     private readonly IVmService _vms = Substitute.For<IVmService>();
     private readonly IViewService _views = Substitute.For<IViewService>();
     private readonly IVmUsageLoggingService _usageLog = Substitute.For<IVmUsageLoggingService>();
+    private readonly IXApiService _xApi = Substitute.For<IXApiService>();
     private readonly HubHarness _harness = new(Guid.NewGuid());
 
     private VmHub Hub => _harness.Attach(
-        new VmHub(_active, _usageLog, _views, _player, _vms, Db));
+        new VmHub(_active, _usageLog, _views, _player, _vms, _xApi, Db));
 
     #region JoinView and LeaveView
 
@@ -533,6 +534,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
         var userId = Guid.NewGuid();
         Guid[] groupIds = [Guid.NewGuid(), Guid.NewGuid()];
         GroupIds(viewId, groupIds);
+        _player.GetUserById(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
 
         await Hub.LeaveUser(userId, viewId);
 

@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using Player.Vm.Api.Data;
+using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Shared.Interfaces;
@@ -27,17 +28,26 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
         public class Handler : BaseHandler, IRequestHandler<Command, string>
         {
             private readonly IProxmoxService _proxmoxService;
+            private readonly IXApiService _xApiService;
 
-            public Handler(VmContext db, IPlayerService playerService, IVmService vmService, IProxmoxService proxmoxService)
+            public Handler(
+                VmContext db,
+                IPlayerService playerService,
+                IVmService vmService,
+                IProxmoxService proxmoxService,
+                IXApiService xApiService)
                 : base(db, playerService, vmService)
             {
                 _proxmoxService = proxmoxService;
+                _xApiService = xApiService;
             }
 
             public async Task<string> Handle(Command request, CancellationToken cancellationToken)
             {
                 var vm = await GetVmForEditing(request.Id, cancellationToken);
-                return await _proxmoxService.PowerOnVm(vm.ProxmoxVmInfo);
+                var result = await _proxmoxService.PowerOnVm(vm.ProxmoxVmInfo);
+                await _xApiService.TrackPowerOperationAsync(vm.Id, PowerOperation.PowerOn, cancellationToken);
+                return result;
             }
         }
     }

@@ -28,6 +28,9 @@
     <PackageVersion Include="Nito.AsyncEx" Version="5.1.2" />
     <PackageVersion Include="Player.Api.Client" Version="3.5.1" />
     <PackageVersion Include="Polly" Version="8.6.5" />
+    <!-- The xAPI statement model, for the learning-record-store queue. Targets .NET Framework only;
+         the NU1701 that comes with that is suppressed on the PackageReference itself. -->
+    <PackageVersion Include="TinCan" Version="1.3.0" />
   </ItemGroup>
 
   <!-- The hypervisors. -->

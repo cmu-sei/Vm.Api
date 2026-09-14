@@ -32,17 +32,20 @@ public class ChangeNetwork
     {
         private readonly IProxmoxVmNetworkService _networkService;
         private readonly IProxmoxService _proxmoxService;
+        private readonly IXApiService _xApiService;
 
         public Handler(
             VmContext db,
             IPlayerService playerService,
             IVmService vmService,
             IProxmoxVmNetworkService networkService,
-            IProxmoxService proxmoxService)
+            IProxmoxService proxmoxService,
+            IXApiService xApiService)
             : base(db, playerService, vmService)
         {
             _networkService = networkService;
             _proxmoxService = proxmoxService;
+            _xApiService = xApiService;
         }
 
         public async Task<ProxmoxVirtualMachine> Handle(
@@ -64,6 +67,11 @@ public class ChangeNetwork
 
             await _proxmoxService.ChangeNetwork(
                 vm.ProxmoxVmInfo,
+                request.Adapter,
+                request.Network,
+                cancellationToken);
+            await _xApiService.TrackNetworkChangedAsync(
+                vm.Id,
                 request.Adapter,
                 request.Network,
                 cancellationToken);

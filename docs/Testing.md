@@ -4,12 +4,12 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 1,449 tests across 51 test classes. All of them run today; nothing is skipped.
+The suite contains 1,451 tests across 52 test classes. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
-Docker: no network, no vCenter and no Proxmox cluster. The 560 unit tests need not even that.
+Docker: no network, no vCenter and no Proxmox cluster. The 562 unit tests need not even that.
 
-Twenty-four of the fifty-one classes are isolated unit tests. They construct the thing under test
+Twenty-five of the fifty-two classes are isolated unit tests. They construct the thing under test
 directly and substitute its collaborators. `VsphereIsoProviderTests` and `VsphereServiceCommandTests`
 are the largest and most important of them: they drive `VsphereService` and its ISO provider through a
 substituted `IVimClient`, which is the only seam between those and a live vCenter.
@@ -107,7 +107,7 @@ happens in SQL, but they construct the service directly rather than going over H
 below are built the same way - `VmHubGroupTests`, `VmHubPresenceTests`, `VmUsageLoggingServiceTests`, the
 three entity-event handler classes, `CallbackBackgroundServiceTests` and `ProxmoxServiceVmLookupTests` - as
 are the four poller classes and `PollLoopSmokeTests`, which makes fifteen in the suite that need a
-database without needing a host, against twelve that need a host and twenty-four that need neither.
+database without needing a host, against twelve that need a host and twenty-five that need neither.
 The pollers need one because writing `HasPendingTasks` and `PowerState` is most of what they do, and a
 pass writes through a context of its own: a value read any other way could be one the pass never saved.
 
@@ -289,7 +289,7 @@ dotnet test
 **Docker must be running.** PostgreSQL is the only database these tests use, and there is deliberately
 no in-memory or SQLite fallback - a fallback that quietly swaps the provider reports a green run that
 never touched what production uses. Without Docker the 889 database tests fail, each naming the reason;
-the other 560 still pass, because the container is started by the first test that asks for a database
+the other 562 still pass, because the container is started by the first test that asks for a database
 rather than at assembly load.
 
 A single class or a single test can be run with a filter:

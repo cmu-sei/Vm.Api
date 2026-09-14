@@ -43,6 +43,7 @@ public class VmHubPresenceTests : DatabaseTestBase
     private readonly IVmService _vms = Substitute.For<IVmService>();
     private readonly IViewService _views = Substitute.For<IViewService>();
     private readonly IVmUsageLoggingService _usageLog = Substitute.For<IVmUsageLoggingService>();
+    private readonly IXApiService _xApi = Substitute.For<IXApiService>();
     private readonly HubHarness _harness = new(Guid.NewGuid(), "alice");
 
     private readonly ServiceProvider _provider;
@@ -83,7 +84,7 @@ public class VmHubPresenceTests : DatabaseTestBase
             var context = NewContext();
             _contexts.Add(context);
 
-            return _harness.Attach(new VmHub(_active, _usageLog, _views, _player, _vms, context));
+            return _harness.Attach(new VmHub(_active, _usageLog, _views, _player, _vms, _xApi, context));
         }
     }
 
@@ -430,7 +431,7 @@ public class VmHubPresenceTests : DatabaseTestBase
         await Hub.SetActiveVirtualMachine(vm.Id);
 
         var otherTab = new HubHarness(_harness.UserId, "alice", "another-tab");
-        await otherTab.Attach(new VmHub(_active, _usageLog, _views, _player, _vms, Db))
+        await otherTab.Attach(new VmHub(_active, _usageLog, _views, _player, _vms, _xApi, Db))
             .OnDisconnectedAsync(null);
 
         Assert.Empty(otherTab.Sends);
