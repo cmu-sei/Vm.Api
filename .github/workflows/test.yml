@@ -23,8 +23,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Unit tests plus the in-process API tests, which host Startup with the hypervisor and
-  # player.api clients substituted. Neither needs a network, a database or a hypervisor.
+  # Unit tests plus the in-process API tests, which host Startup with the hypervisor and player.api
+  # clients substituted - so no hypervisor and no external Crucible service is involved.
+  #
+  # The database is real, though: DatabaseFixture starts PostgreSQL in Docker via Testcontainers and
+  # migrates it, deliberately with no in-memory or SQLite fallback. This job therefore needs a working
+  # Docker daemon and a reachable image registry, and most of the suite fails without them.
   tests:
     name: Tests
     runs-on: ubuntu-latest
@@ -56,6 +60,48 @@ jobs:
 
       - name: Build
         run: dotnet build --no-restore --configuration Release
+
+      # Testcontainers pulls this image itself, from inside the test host, on the first test that asks
+      # for a database. Pulling it here instead changes where a registry failure surfaces, which is the
+      # whole point: DatabaseFixture caches its start in a Lazy<Task>, so one Docker Hub blip faults
+      # that single task and every database-backed test inherits it - 889 of 1451 tests, all reporting
+      # the same "Could not start postgres:16-alpine" error, when this last happened. A transient
+      # `connection reset by peer` from auth.docker.io ends up buried in some 19,000 lines of repeated
+      # stack traces, and the run reads like a mass regression in the tests. Failing in this step says
+      # what actually went wrong, and the retries mean it usually does not fail at all.
+      #
+      # Testcontainers' default pull policy is `Missing`, so finding the image already present is
+      # exactly what makes it skip its own pull.
+      #
+      # The tag is read out of DatabaseFixture rather than written a second time here - two copies could
+      # drift into pulling one server and testing against another, which would defeat the pre-pull
+      # silently. A fixture this cannot be parsed out of fails the step instead.
+      - name: Pull the PostgreSQL image
+        run: |
+          fixture=src/Player.Vm.Api.Tests/Infrastructure/DatabaseFixture.cs
+          # `|| true` because the step's shell is `bash -e`: a no-match grep would otherwise abort here,
+          # silently and with no message, instead of reaching the explanation below.
+          image=$(grep -oP 'PostgresImage\s*=\s*"\K[^"]+' "$fixture" || true)
+
+          if [ -z "$image" ]; then
+            echo "::error file=$fixture::Could not read PostgresImage from $fixture, so there is no image to pull. Has the constant been renamed?"
+            exit 1
+          fi
+
+          for attempt in 1 2 3; do
+            if docker pull "$image"; then
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              delay=$((attempt * 10))
+              echo "Pulling $image failed (attempt $attempt of 3); retrying in ${delay}s"
+              sleep "$delay"
+            fi
+          done
+
+          echo "::error::Could not pull $image after 3 attempts. This is the registry, not the tests - re-run the job."
+          exit 1
 
       - name: Test
         id: test
