@@ -9,9 +9,10 @@
     <IncludeGeneratorSharedCode>true</IncludeGeneratorSharedCode>
   </PropertyGroup>
 
+  <!-- Versions live in Directory.Packages.props. -->
   <ItemGroup>
-    <PackageReference Include="System.Text.Json" Version="10.0.0" />
-    <PackageReference Include="System.ComponentModel.Annotations" Version="5.0.0" />
+    <PackageReference Include="System.Text.Json" />
+    <PackageReference Include="System.ComponentModel.Annotations" />
   </ItemGroup>
 
 </Project>

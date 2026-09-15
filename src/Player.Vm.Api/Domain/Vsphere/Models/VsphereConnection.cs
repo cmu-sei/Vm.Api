@@ -16,7 +16,20 @@ namespace Player.Vm.Api.Domain.Vsphere.Models;
 
 public class VsphereConnection
 {
-    public VimPortTypeClient Client;
+    /// <summary>
+    /// The vSphere SOAP operations, typed as <see cref="IVimClient"/> rather than the concrete
+    /// generated client so tests can substitute it. See <see cref="IVimClient"/> for why the
+    /// generated VimPortType interface cannot be used here directly.
+    /// </summary>
+    public IVimClient Client;
+
+    /// <summary>
+    /// The same object as <see cref="Client"/>, kept concretely typed because connection lifecycle -
+    /// CommunicationState, CloseAsync, Dispose - lives on ClientBase and not on the interface. Set and
+    /// cleared together with Client; null exactly when Client is null.
+    /// </summary>
+    private VimPortClient _clientBase;
+
     public ServiceContent Sic;
     public UserSession Session;
     public ManagedObjectReference Props;
@@ -112,13 +125,14 @@ public class VsphereConnection
             _logger.LogInformation($"Connect():  renewing connection to {Host.Address}...[{Host.Username}]");
             try
             {
-                var client = new VimPortTypeClient(VimPortTypeClient.EndpointConfiguration.VimPort, $"https://{Host.Address}/sdk");
+                var client = new VimPortClient(VimPortTypeClient.EndpointConfiguration.VimPort, $"https://{Host.Address}/sdk");
                 var sic = await client.RetrieveServiceContentAsync(new ManagedObjectReference { type = "ServiceInstance", Value = "ServiceInstance" });
                 var props = sic.propertyCollector;
                 var session = await client.LoginAsync(sic.sessionManager, Host.Username, Host.Password, null);
 
-                var oldClient = Client;
+                var oldClient = _clientBase;
                 Client = client;
+                _clientBase = client;
                 Sic = sic;
                 Props = props;
                 Session = session;
@@ -135,7 +149,7 @@ public class VsphereConnection
             }
         }
 
-        if (Client != null && Client.State == CommunicationState.Opened)
+        if (_clientBase != null && _clientBase.State == CommunicationState.Opened)
         {
             _logger.LogDebug("Connect():  CommunicationState.Opened");
             ServiceContent sic = Sic;
@@ -173,7 +187,7 @@ public class VsphereConnection
             }
         }
 
-        if (Client != null && Client.State == CommunicationState.Faulted)
+        if (_clientBase != null && _clientBase.State == CommunicationState.Faulted)
         {
             _logger.LogDebug($"Connect():  https://{Host.Address}/sdk CommunicationState is Faulted.");
             Disconnect();
@@ -184,7 +198,7 @@ public class VsphereConnection
             try
             {
                 _logger.LogDebug($"Connect():  Instantiating client https://{Host.Address}/sdk");
-                var client = new VimPortTypeClient(VimPortTypeClient.EndpointConfiguration.VimPort, $"https://{Host.Address}/sdk");
+                var client = new VimPortClient(VimPortTypeClient.EndpointConfiguration.VimPort, $"https://{Host.Address}/sdk");
                 _logger.LogDebug($"Connect():  client: [{Client}]");
 
                 var sic = await ConnectToHost(client);
@@ -194,6 +208,7 @@ public class VsphereConnection
                 Props = sic.propertyCollector;
                 Sic = sic;
                 Client = client;
+                _clientBase = client;
             }
             catch (Exception ex)
             {
@@ -204,14 +219,14 @@ public class VsphereConnection
         return Client != null;
     }
 
-    private async Task<ServiceContent> ConnectToHost(VimPortTypeClient client)
+    private async Task<ServiceContent> ConnectToHost(IVimClient client)
     {
         _logger.LogInformation($"Connect():  Connecting to {Host.Address}...");
         var sic = await client.RetrieveServiceContentAsync(new ManagedObjectReference { type = "ServiceInstance", Value = "ServiceInstance" });
         return sic;
     }
 
-    private async Task<UserSession> ConnectToSession(VimPortTypeClient client, ServiceContent sic)
+    private async Task<UserSession> ConnectToSession(IVimClient client, ServiceContent sic)
     {
         _logger.LogInformation($"Connect():  logging into {Host.Address}...[{Host.Username}]");
         var session = await client.LoginAsync(sic.sessionManager, Host.Username, Host.Password, null);
@@ -222,7 +237,8 @@ public class VsphereConnection
     public void Disconnect()
     {
         _logger.LogInformation($"Disconnect()");
-        Client.Dispose();
+        _clientBase.Dispose();
+        _clientBase = null;
         Client = null;
         Sic = null;
         Session = null;

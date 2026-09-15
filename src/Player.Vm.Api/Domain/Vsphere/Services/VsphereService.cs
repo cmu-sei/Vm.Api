@@ -24,6 +24,7 @@ using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Features.Files;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Infrastructure.Exceptions;
+using Player.Vm.Api.Infrastructure.Extensions;
 using System.Web;
 
 namespace Player.Vm.Api.Domain.Vsphere.Services
@@ -50,7 +51,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename);
         int GetEnabledConnectionCount();
         Task<string> SetResolution(Guid id, int width, int height);
-        Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation);
+        Task<Dictionary<Guid, string>> BulkPowerOperation(Guid[] ids, PowerOperation operation);
         Task<Dictionary<Guid, string>> BulkShutdown(Guid[] ids);
         Task<Dictionary<Guid, string>> BulkReboot(Guid[] ids);
         Task<Dictionary<Guid, PowerState>> GetPowerState(IEnumerable<Guid> machineIds);
@@ -69,8 +70,10 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
     {
         private RewriteHostOptions _rewriteHostOptions;
 
+        private const int DefaultPollIntervalMilliseconds = 1000;
+
         private readonly ILogger<VsphereService> _logger;
-        int _pollInterval = 1000;
+        private readonly int _pollInterval;
 
         private readonly IConfiguration _configuration;
         private readonly IConnectionService _connectionService;
@@ -95,6 +98,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _mapper = mapper;
             _httpClientFactory = httpClientFactory;
             _vsphereOptions = vsphereOptions;
+
+            // A negative interval would throw out of Task.Delay, so treat it as unset rather than
+            // letting a typo in configuration take down every operation that waits on a task.
+            _pollInterval = vsphereOptions.TaskPollIntervalMilliseconds >= 0
+                ? vsphereOptions.TaskPollIntervalMilliseconds
+                : DefaultPollIntervalMilliseconds;
         }
 
         public async Task<string> GetConsoleUrl(VsphereVirtualMachine machine)
@@ -293,9 +302,19 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return state;
         }
 
-        public async Task<ManagedObjectReference[]> BulkPowerOperation(Guid[] ids, PowerOperation operation)
+        /// <summary>
+        /// Submits a power operation for each Vm and returns as soon as vCenter accepts them, without
+        /// waiting for the resulting tasks to finish - completion is observed by TaskService.
+        ///
+        /// Reports per Vm, keyed the same way as <see cref="BulkShutdown"/> and
+        /// <c>ProxmoxService.BulkPowerOperation</c>: empty string for accepted, otherwise the
+        /// reason. One Vm that vCenter rejects - an already-running machine somewhere in a multi-select
+        /// power on, most often - must not cost the rest of the selection its command or its result.
+        /// </summary>
+        public async Task<Dictionary<Guid, string>> BulkPowerOperation(Guid[] ids, PowerOperation operation)
         {
-            List<Task<ManagedObjectReference>> taskList = new List<Task<ManagedObjectReference>>();
+            var results = new Dictionary<Guid, string>();
+            var taskDict = new Dictionary<Guid, Task<ManagedObjectReference>>();
 
             foreach (var id in ids)
             {
@@ -304,7 +323,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                 if (vmReference == null)
                 {
-                    _logger.LogDebug($"Error getting vmReference for {id}");
+                    _logger.LogDebug($"Could not get vm reference for {id}");
+                    results.Add(id, "Virtual machine not found");
                     continue;
                 }
 
@@ -323,19 +343,46 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                         case PowerOperation.Revert:
                             taskReference = aggregate.Connection.Client.RevertToCurrentSnapshot_TaskAsync(vmReference, null, false);
                             break;
+                        default:
+                            _logger.LogDebug($"Unsupported bulk power operation {operation} for {id}");
+                            results.Add(id, "Unsupported Operation");
+                            continue;
                     }
 
-                    taskList.Add(taskReference);
+                    taskDict.Add(id, taskReference);
                 }
                 catch (Exception ex)
                 {
+                    // A client that throws synchronously rather than returning a faulted task.
                     _logger.LogError(ex, $"Failed to create power task for {id}");
+                    results.Add(id, ex.Message);
                 }
             }
 
-            await Task.WhenAll(taskList);
+            try
+            {
+                await Task.WhenAll(taskDict.Values).ConfigureAwait(false);
+            }
+            catch (Exception)
+            {
+                // WhenAll rethrows only the first fault. Each task is inspected individually below.
+            }
 
-            return taskList.Select(x => x.Result).ToArray();
+            foreach (var kvp in taskDict)
+            {
+                if (kvp.Value.Exception == null)
+                {
+                    results.Add(kvp.Key, string.Empty);
+                }
+                else
+                {
+                    var ex = kvp.Value.Exception.InnerException ?? kvp.Value.Exception;
+                    _logger.LogError(ex, $"Failed to submit {operation} for {kvp.Key}");
+                    results.Add(kvp.Key, ex.Message);
+                }
+            }
+
+            return results;
         }
 
         public async Task<string> RebootVm(Guid id)
@@ -514,7 +561,18 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             VmPowerState State = VmPowerState.off;
             string state = null;
 
-            VimClient.ObjectContent[] oc = propertiesResponse.returnval;
+            VimClient.ObjectContent[] oc = propertiesResponse?.returnval;
+
+            // No objects means the Vm is not there to report on - destroyed between the connection
+            // cache read and this query, or a transient empty read. "error" is how the callers spell
+            // "state unknown"; indexing oc[0] here used to throw straight out of PowerOnVm and friends,
+            // which is the one outcome their catch blocks exist to prevent.
+            if (oc == null || oc.Length == 0 || oc[0].propSet == null)
+            {
+                _logger.LogDebug("Power state query returned no properties.");
+                return "error";
+            }
+
             VimClient.ObjectContent obj = oc[0];
 
             foreach (DynamicProperty dp in obj.propSet)
@@ -580,12 +638,22 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 return "error";
             }
 
-            //retrieve the properties specified
-            RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
-                aggregate.Connection.Props,
-                VmFilter(vmReference, "summary.runtime.powerState"));
+            // Every caller uses this as a precheck before submitting a power operation and treats
+            // "error" as "state unknown, go ahead and try". A throw here would escape those callers
+            // instead, failing a whole multi-select on one unreachable host, so the fault stops here.
+            try
+            {
+                RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
+                    aggregate.Connection.Props,
+                    VmFilter(vmReference, "summary.runtime.powerState"));
 
-            return GetPowerState(response);
+                return GetPowerState(response);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, $"Failed to get power state for vm {id}");
+                return "error";
+            }
         }
 
         public async Task<Dictionary<Guid, PowerState>> GetPowerState(IEnumerable<Guid> machineIds)
@@ -769,20 +837,15 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                         fileTransferUrl = "https://" + hostName + fileTransferUrl.Substring(s);
                     }
 
-                    using (var httpClientHandler = CreateGuestFileHttpClientHandler())
+                    var httpClient = _httpClientFactory.CreateClient(ServiceCollectionExtensions.GuestFileClientName);
+                    httpClient.DefaultRequestHeaders.Accept.Clear();
+
+                    using (MemoryStream ms = new MemoryStream())
                     {
-                        using (var httpClient = new HttpClient(httpClientHandler))
-                        {
-                            httpClient.DefaultRequestHeaders.Accept.Clear();
-                            using (MemoryStream ms = new MemoryStream())
-                            {
-                                httpClient.Timeout = GetGuestFileTransferTimeout();
-                                fileStream.CopyTo(ms);
-                                var fileContent = new ByteArrayContent(ms.ToArray());
-                                _logger.LogDebug("UploadFileToVm Upload URL:  " + fileTransferUrl);
-                                var uploadResponse = await httpClient.PutAsync(fileTransferUrl, fileContent);
-                            }
-                        }
+                        fileStream.CopyTo(ms);
+                        var fileContent = new ByteArrayContent(ms.ToArray());
+                        _logger.LogDebug("UploadFileToVm Upload URL:  " + fileTransferUrl);
+                        var uploadResponse = await httpClient.PutAsync(fileTransferUrl, fileContent);
                     }
                 }
             }
@@ -892,7 +955,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             int missingTaskInfoTimeoutSeconds = _vsphereOptions.TaskInfoUnavailableTimeoutSeconds > 0
                 ? _vsphereOptions.TaskInfoUnavailableTimeoutSeconds
                 : 30;
-            int maxMissingTaskInfoPolls = Math.Max(1, (int)Math.Ceiling(TimeSpan.FromSeconds(missingTaskInfoTimeoutSeconds).TotalMilliseconds / _pollInterval));
+            // Max(1, _pollInterval) because a zero interval - which tests use - would divide by zero.
+            // With no delay between polls the count stops approximating the timeout, so the loop below
+            // also checks the wall-clock deadline.
+            int maxMissingTaskInfoPolls = Math.Max(1, (int)Math.Ceiling(
+                TimeSpan.FromSeconds(missingTaskInfoTimeoutSeconds).TotalMilliseconds / Math.Max(1, _pollInterval)));
 
             //poll until the task reaches a terminal state or we hit the deadline
             do
@@ -1998,27 +2065,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 url = "https://" + hostName + url.Substring(s);
             }
 
-            using var handler = CreateGuestFileHttpClientHandler();
-            using var client = new HttpClient(handler);
-            client.Timeout = GetGuestFileTransferTimeout();
+            // Timeout and certificate validation are configured on the named client
+            // (ServiceCollectionExtensions.AddGuestFileClient) rather than set here per call.
+            var client = _httpClientFactory.CreateClient(ServiceCollectionExtensions.GuestFileClientName);
 
             return await client.GetStringAsync(url);
-        }
-
-        private HttpClientHandler CreateGuestFileHttpClientHandler()
-        {
-            var handler = new HttpClientHandler();
-            if (_vsphereOptions.SkipGuestFileCertificateValidation)
-                handler.ServerCertificateCustomValidationCallback = (_, _, _, _) => true;
-
-            return handler;
-        }
-
-        private TimeSpan GetGuestFileTransferTimeout()
-        {
-            return _vsphereOptions.GuestFileTransferTimeoutMinutes > 0
-                ? TimeSpan.FromMinutes(_vsphereOptions.GuestFileTransferTimeoutMinutes)
-                : Timeout.InfiniteTimeSpan;
         }
 
         private string CombineGuestTempPath(string fileName)

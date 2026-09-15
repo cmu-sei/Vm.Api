@@ -1,12 +1,12 @@
 // Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
-using System;
 using System.Collections.Generic;
 using System.Linq;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging;
 using Player.Vm.Api.Features.Files;
+using Player.Vm.Api.Tests.Infrastructure;
 using Xunit;
 
 namespace Player.Vm.Api.Tests;
@@ -17,25 +17,6 @@ namespace Player.Vm.Api.Tests;
 // naming the key the operator has to set.
 public class IsoOptionsCheckTests
 {
-    // Three members, so a hand-written recorder beats a substitute - and unlike NullLogger it can be
-    // asserted on. Records the formatted message, which is what an operator actually reads.
-    private class RecordingLogger : ILogger
-    {
-        public List<(LogLevel Level, string Message)> Entries { get; } = [];
-
-        public IDisposable BeginScope<TState>(TState state) => null;
-
-        public bool IsEnabled(LogLevel logLevel) => true;
-
-        public void Log<TState>(
-            LogLevel logLevel,
-            EventId eventId,
-            TState state,
-            Exception exception,
-            Func<TState, Exception, string> formatter) =>
-            Entries.Add((logLevel, formatter(state, exception)));
-    }
-
     private static RecordingLogger Run(params (string Key, string Value)[] settings)
     {
         var configuration = new ConfigurationBuilder()

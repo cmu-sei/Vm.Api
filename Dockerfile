@@ -6,7 +6,10 @@ ARG TARGETARCH
 ARG VERSION
 WORKDIR /source
 
-# Copy project files and restore as distinct layers
+# Copy project files and restore as distinct layers. The repository-root props files come along
+# because the project file relies on them: Directory.Packages.props carries every package version
+# (central package management), and without it restore fails with NU1015.
+COPY --link Directory.Build.props Directory.Packages.props ./
 COPY --link src/Player.Vm.Api/*.csproj ./Player.Vm.Api/
 WORKDIR /source/Player.Vm.Api
 RUN dotnet restore -a $TARGETARCH
