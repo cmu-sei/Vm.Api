@@ -4,6 +4,7 @@
 using System;
 using System.Threading;
 using System.Threading.Tasks;
+using Docker.DotNet;
 using MediatR;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
@@ -134,19 +135,7 @@ public sealed class DatabaseFixture : IAsyncLifetime
     /// </remarks>
     private async Task StartAsync()
     {
-        try
-        {
-            await _container.StartAsync();
-        }
-        catch (Exception ex)
-        {
-            throw new InvalidOperationException(
-                $"Could not start {PostgresImage} in Docker, which these tests require. There is " +
-                "deliberately no in-memory or SQLite fallback - one would report a green run that " +
-                "never touched the database production uses. Start Docker and run again; see " +
-                "docs/Testing.md.",
-                ex);
-        }
+        await StartContainerAsync();
 
         var (services, _) = VmContextFactory.CreateServices();
 
@@ -177,6 +166,42 @@ public sealed class DatabaseFixture : IAsyncLifetime
         TestContext.Current.SendDiagnosticMessage(
             $"[Player.Vm.Api.Tests] {PostgresImage} started; templates '{TemplateDatabase}' and " +
             $"'{LoggingTemplateDatabase}' migrated");
+    }
+
+    /// <summary>
+    /// Starts the container, retrying an attempt that the Docker daemon itself rejects for a failed pull.
+    /// </summary>
+    private async Task StartContainerAsync()
+    {
+        const int attempts = 3;
+
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                await _container.StartAsync();
+                return;
+            }
+            catch (DockerApiException ex) when (attempt < attempts)
+            {
+                TestContext.Current.SendDiagnosticMessage(
+                    $"[Player.Vm.Api.Tests] Could not start {PostgresImage} (attempt {attempt} of " +
+                    $"{attempts}); retrying. Docker said: {ex.Message}");
+
+                await Task.Delay(TimeSpan.FromSeconds(attempt * 5));
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"Could not start {PostgresImage} in Docker, which these tests require. There is " +
+                    "deliberately no in-memory or SQLite fallback - one would report a green run that " +
+                    "never touched the database production uses. Start Docker and run again. This was " +
+                    $"attempt {attempt} of {attempts}; if Docker is running, the inner exception is " +
+                    "most likely the registry rather than anything in this repository. See " +
+                    "docs/Testing.md.",
+                    ex);
+            }
+        }
     }
 
     internal string ConnectionStringFor(string databaseName) =>
