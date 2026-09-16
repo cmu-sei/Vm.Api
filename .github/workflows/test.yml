@@ -7,19 +7,12 @@ on:
   push:
   pull_request:
 
-# Supersede a run that a later push to the same branch has already made stale. Which trigger fires for
-# a given commit is settled by the job's `if` below, not here.
+# Supersede a run that a later push to the same branch has already made stale.
 #
-# Keyed on the branch name, because no single ref context identifies a branch across both triggers:
-# github.ref is refs/heads/<branch> on push but refs/pull/<n>/merge on pull_request, and github.ref_name
-# is <branch> then <n>/merge. Taking the pull request's head ref first and falling back to
-# github.ref_name gives <branch> in both cases, so a fork's pull request and a same-repo branch are
-# grouped the way a person would expect.
+# The event name is part of the key, and has to be.  The branch is the rest of the key.  Each trigger only ever supersedes its own earlier runs.
 #
-# The one thing this conflates is a fork's pull request with a local branch of the same name. Cancelling
-# a stale run for that name is the wanted behaviour anyway, so it is not worth disambiguating.
 concurrency:
-  group: test-${{ github.event.pull_request.head.ref || github.ref_name }}
+  group: test-${{ github.event_name }}-${{ github.event.pull_request.head.ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
@@ -34,15 +27,12 @@ jobs:
     runs-on: ubuntu-latest
 
     # One commit on a same-repo branch with an open pull request fires both triggers above, for the same
-    # SHA. Deduplicating that by grouping the two runs together and cancelling the loser worked, but left
-    # a cancelled run sitting on the commit - and a cancelled `dotnet test` truncates its output right
-    # after "A total of 1 test files matched the specified pattern", which reads like the suite died
-    # rather than like a duplicate being tidied away.
+    # SHA. Rather than run the suite twice, the two triggers divide the work: the push run covers anything
+    # pushed to this repo, and the pull_request run covers forks, which produce no push event here. Every
+    # branch is still tested on push, with or without a pull request, and a fork is still tested.
     #
-    # So the two triggers divide the work instead of racing for it: the push run covers anything pushed
-    # to this repo, and the pull_request run covers forks, which produce no push event here. Every branch
-    # still gets tested on push, with or without a pull request, and no run is ever cancelled by its own
-    # twin.
+    # This deduplicates the work. It does not stop the runs cancelling each other - see the concurrency
+    # key above, which is what does that, and which this is useless without.
     if: >-
       github.event_name == 'push' ||
       github.event.pull_request.head.repo.full_name != github.repository
