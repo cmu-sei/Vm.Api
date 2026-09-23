@@ -321,7 +321,6 @@ namespace Player.Vm.Api.Features.Files
                 }
             }));
 
-            ct.ThrowIfCancellationRequested();
             return SummarizeFanOut(outcomes, operationName, pastTense);
         }
 

@@ -131,6 +131,17 @@ public class VsphereIsoStorageGroupTests
             send(request, ct);
     }
 
+    // Response disposal happens after the HTTP operation has finished successfully.
+    private sealed class CancelOnDisposeContent(CancellationTokenSource cancellation) : ByteArrayContent([])
+    {
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                cancellation.Cancel();
+            base.Dispose(disposing);
+        }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -365,5 +376,51 @@ public class VsphereIsoStorageGroupTests
         await Assert.ThrowsAnyAsync<OperationCanceledException>(
             () => storage.Write(ct: new CancellationToken(true)));
         Assert.Empty(storage.Requests);
+    }
+
+    [Fact]
+    public async Task CancellationAfterInventoryLookup_DoesNotCreateDirectoryOrTryAnotherMember()
+    {
+        using var storage = new Storage(Host("a.test", "shared"), Host("b.test", "shared"));
+        using var cancellation = new CancellationTokenSource();
+        var client = storage.Members["a.test"].Client;
+        var inventory = await client.RetrievePropertiesAsync(null, Array.Empty<PropertyFilterSpec>());
+        client.RetrievePropertiesAsync(Arg.Any<ManagedObjectReference>(), Arg.Any<PropertyFilterSpec[]>())
+            .Returns(_ =>
+            {
+                // A completed lookup can be returned even though cancellation has just arrived.
+                // The next SOAP operation must check before starting directory creation.
+                cancellation.Cancel();
+                return inventory;
+            });
+        storage.Connections.ClearReceivedCalls();
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => storage.Write(ct: cancellation.Token));
+
+        await client.DidNotReceive().MakeDirectoryAsync(
+            Arg.Any<ManagedObjectReference>(), Arg.Any<string>(), Arg.Any<ManagedObjectReference>(), Arg.Any<bool>());
+        storage.Connections.DidNotReceive().GetConnection("b.test");
+        Assert.Empty(storage.Requests);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CancellationAfterSuccessfulOperation_PreservesItsOutcome(bool upload)
+    {
+        using var storage = new Storage(Host("a.test", "shared"), Host("b.test", "shared"));
+        using var cancellation = new CancellationTokenSource();
+        storage.Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new CancelOnDisposeContent(cancellation)
+        });
+
+        var outcome = await storage.Write(upload, cancellation.Token);
+
+        Assert.True(cancellation.IsCancellationRequested);
+        Assert.Equal(1, outcome.TotalHostCount);
+        Assert.Equal(0, outcome.FailedHostCount);
+        Assert.Single(storage.Requests);
     }
 }

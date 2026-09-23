@@ -1273,7 +1273,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath, CancellationToken ct = default)
         {
-            return WriteIsoToGroups("upload", filename,
+            return ExecuteIsoOperationOnGroups(IsoOperation.Upload, filename,
                 connection => UploadIsoToConnection(connection, viewId, scopeId, filename, localFilePath, ct), ct);
         }
 
@@ -1285,14 +1285,15 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         }
 
         private enum IsoGroupKind { Shared, Named, Individual }
+        private enum IsoOperation { Upload, Delete }
 
         // Build groups from configuration, not the live connection cache: an offline destination
         // remains a required write. LINQ grouping preserves configuration order within each group.
         // The kind keeps explicit names from colliding with implicit groups or host addresses.
-        private async Task<IsoOperationOutcome> WriteIsoToGroups(
-            string operation, string filename, Func<VsphereConnection, Task> write, CancellationToken ct)
+        // For example, (Named, "vcenter-a") and (Individual, "vcenter-a") are separate destinations.
+        private async Task<IsoOperationOutcome> ExecuteIsoOperationOnGroups(
+            IsoOperation operation, string filename, Func<VsphereConnection, Task> execute, CancellationToken ct)
         {
-            ct.ThrowIfCancellationRequested();
             var groups = (_vsphereOptions.Hosts ?? Array.Empty<VsphereHost>())
                 .Where(h => h.Enabled && !string.IsNullOrWhiteSpace(h.Address))
                 .GroupBy(h => !string.IsNullOrWhiteSpace(h.IsoStorageGroup)
@@ -1316,8 +1317,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                     try
                     {
-                        await write(connection);
-                        ct.ThrowIfCancellationRequested();
+                        await execute(connection);
                         return true;
                     }
                     catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -1334,7 +1334,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 return false;
             }));
 
-            ct.ThrowIfCancellationRequested();
             // Return failures as counts, even when all groups failed. The provider aggregates scopes,
             // then IsoService decides whether any destination on any provider succeeded.
             return new IsoOperationOutcome
@@ -1378,7 +1377,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             // datastore-relative folder (no "[ds]" prefix; that form is only used for search/mount/MakeDirectory paths)
             var folderPath = BuildIsoFolderRelative(connection.Host.BaseFolder, viewId, scopeId);
 
-            ct.ThrowIfCancellationRequested();
             var datacenter = await GetDatacenterForDatastore(dsName, connection).WaitAsync(ct);
             if (datacenter == null)
             {
@@ -1387,7 +1385,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             if (ensureDirectory)
             {
-                // ensure the destination directory exists (ignore "already exists")
+                // The SOAP call cannot take a token; check before starting it after the inventory await.
+                // Ensure the destination directory exists (ignore "already exists").
+                ct.ThrowIfCancellationRequested();
                 await EnsureDatastoreDirectory(connection, datacenter, dsName, folderPath).WaitAsync(ct);
             }
 
@@ -1414,7 +1414,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         public Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename, CancellationToken ct = default)
         {
-            return WriteIsoToGroups("delete", filename,
+            return ExecuteIsoOperationOnGroups(IsoOperation.Delete, filename,
                 connection => DeleteIsoFromConnection(connection, viewId, scopeId, filename, ct), ct);
         }
 
