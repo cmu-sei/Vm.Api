@@ -9,6 +9,7 @@ using NSubstitute;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Services;
+using Player.Vm.Api.Features.Files;
 using Player.Vm.Api.Features.Files.Models;
 using Player.Vm.Api.Features.Files.Providers;
 using Xunit;
@@ -294,7 +295,7 @@ public class VsphereIsoProviderTests
     {
         var otherScope = Guid.NewGuid();
         var vsphere = Substitute.For<IVsphereService>();
-        vsphere.UploadIso(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
+        vsphere.UploadIso(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), CancellationToken.None)
             .Returns(new IsoOperationOutcome { FailedHostCount = 1, TotalHostCount = 3 });
 
         var provider = Provider(ApiOptions(), vsphere);
@@ -304,9 +305,9 @@ public class VsphereIsoProviderTests
             CancellationToken.None);
 
         await vsphere.Received(1).UploadIso(
-            ViewId.ToString(), ScopeId.ToString(), "tools.iso", "/tmp/staged.iso");
+            ViewId.ToString(), ScopeId.ToString(), "tools.iso", "/tmp/staged.iso", CancellationToken.None);
         await vsphere.Received(1).UploadIso(
-            ViewId.ToString(), otherScope.ToString(), "tools.iso", "/tmp/staged.iso");
+            ViewId.ToString(), otherScope.ToString(), "tools.iso", "/tmp/staged.iso", CancellationToken.None);
 
         Assert.Equal(2, result.FailedHostCount);
         Assert.Equal(6, result.TotalHostCount);
@@ -323,7 +324,7 @@ public class VsphereIsoProviderTests
             () => provider.UploadAsync(Request(null), CancellationToken.None));
 
         await vsphere.DidNotReceive().UploadIso(
-            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>());
+            Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), CancellationToken.None);
     }
 
     // The legacy-name case, and the reason IsoService stopped folding filenames on delete: this
@@ -391,7 +392,7 @@ public class VsphereIsoProviderTests
     public async Task Delete_InDatastoreMode_PassesTheNameThroughVerbatimAndReportsItsHostCounts()
     {
         var vsphere = Substitute.For<IVsphereService>();
-        vsphere.DeleteIso(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
+        vsphere.DeleteIso(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), CancellationToken.None)
             .Returns(new IsoOperationOutcome { FailedHostCount = 1, TotalHostCount = 2 });
 
         var provider = Provider(ApiOptions(), vsphere);
@@ -400,9 +401,45 @@ public class VsphereIsoProviderTests
             ViewId, ScopeId.ToString(), "Win 10 (x64).iso", CancellationToken.None);
 
         await vsphere.Received(1).DeleteIso(
-            ViewId.ToString(), ScopeId.ToString(), "Win 10 (x64).iso");
+            ViewId.ToString(), ScopeId.ToString(), "Win 10 (x64).iso", CancellationToken.None);
 
         Assert.Equal(1, result.FailedHostCount);
         Assert.Equal(2, result.TotalHostCount);
+    }
+
+    [Fact]
+    public async Task Upload_AFailedScopeDoesNotHideASuccessfulScope_AndForwardsCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var ct = cancellation.Token;
+        var otherScope = Guid.NewGuid().ToString();
+        var vsphere = Substitute.For<IVsphereService>();
+        vsphere.UploadIso(ViewId.ToString(), ScopeId.ToString(), "tools.iso", "/tmp/staged.iso", ct)
+            .Returns(new IsoOperationOutcome { FailedHostCount = 2, TotalHostCount = 2 });
+        vsphere.UploadIso(ViewId.ToString(), otherScope, "tools.iso", "/tmp/staged.iso", ct)
+            .Returns(new IsoOperationOutcome { TotalHostCount = 2 });
+
+        var result = await Provider(ApiOptions(), vsphere).UploadAsync(
+            Request("/tmp/staged.iso", "tools.iso", ScopeId.ToString(), otherScope), ct);
+
+        Assert.Equal(2, result.FailedHostCount);
+        Assert.Equal(4, result.TotalHostCount);
+        var summary = IsoService.SummarizeFanOut(
+            [new IsoService.ProviderOutcome(VmType.Vsphere, false, result.FailedHostCount, result.TotalHostCount)],
+            "upload", "uploaded");
+        Assert.True(summary.PartialFailure);
+    }
+
+    [Fact]
+    public async Task Delete_ForwardsCancellation()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var vsphere = Substitute.For<IVsphereService>();
+        vsphere.DeleteIso(ViewId.ToString(), ScopeId.ToString(), "tools.iso", cancellation.Token)
+            .Returns(new IsoOperationOutcome { TotalHostCount = 1 });
+        var result = await Provider(ApiOptions(), vsphere).DeleteAsync(
+            ViewId, ScopeId.ToString(), "tools.iso", cancellation.Token);
+        Assert.Equal(1, result.TotalHostCount);
+        await vsphere.Received(1).DeleteIso(ViewId.ToString(), ScopeId.ToString(), "tools.iso", cancellation.Token);
     }
 }

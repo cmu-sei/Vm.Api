@@ -14,15 +14,16 @@ namespace Player.Vm.Api.Features.Files
         // the underlying reason stay in the server logs.
         public string Message { get; set; }
 
-        // Number of hosts the ISO failed to upload to (0 when fully successful). Counts only -
-        // which hosts failed is recorded in server logs for admins, not exposed to app users.
+        // Number of failed ISO destinations (one per vSphere storage group per scope). The legacy
+        // HostCount field names are retained for compatibility. Counts only -
+        // which destinations failed is recorded in server logs for admins, not exposed to app users.
         public int FailedHostCount { get; set; }
 
-        // Total number of hosts targeted by the upload.
+        // Total ISO destinations targeted; fallback attempts do not increase this count.
         public int TotalHostCount { get; set; }
 
         // True when the operation did not fully succeed everywhere: a hypervisor it failed on outright,
-        // or some of a hypervisor's hosts. One flag rather than several counts, because that is the only
+        // or some of a hypervisor's destinations. One flag rather than several counts, because that is the only
         // question a client has: the Files tab shows which hypervisors are missing a file, and Message
         // names them. The host counts above are kept for admin-facing detail.
         //

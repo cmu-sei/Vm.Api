@@ -81,7 +81,7 @@ public class IsoServiceFanOutTests
     {
         var result = Upload(PartiallyFailed(VmType.Vsphere, 1, 3), Succeeded(VmType.Proxmox));
 
-        Assert.Equal($"ISO uploaded, but failed on Vsphere (1 of 3 hosts). {Suffix}", result.Message);
+        Assert.Equal($"ISO uploaded, but failed on Vsphere (1 of 3 destinations). {Suffix}", result.Message);
         Assert.Equal(1, result.FailedHostCount);
         Assert.Equal(4, result.TotalHostCount);
 
@@ -95,7 +95,7 @@ public class IsoServiceFanOutTests
     {
         var result = Upload(PartiallyFailed(VmType.Vsphere, 2, 3), Threw(VmType.Proxmox));
 
-        Assert.Equal($"ISO uploaded, but failed on Vsphere (2 of 3 hosts) and Proxmox. {Suffix}", result.Message);
+        Assert.Equal($"ISO uploaded, but failed on Vsphere (2 of 3 destinations) and Proxmox. {Suffix}", result.Message);
         Assert.True(result.PartialFailure);
     }
 
@@ -127,7 +127,7 @@ public class IsoServiceFanOutTests
 
         Assert.True(result.PartialFailure);
         Assert.Contains("Proxmox", result.Message);
-        Assert.Contains("Vsphere (1 of 3 hosts)", result.Message);
+        Assert.Contains("Vsphere (1 of 3 destinations)", result.Message);
     }
 
     // Delete borrows the same reduction, so only the verb changes.
@@ -154,5 +154,28 @@ public class IsoServiceFanOutTests
         Assert.Equal("ISO was uploaded", result.Message);
         Assert.Equal(0, result.TotalHostCount);
         Assert.False(result.PartialFailure);
+    }
+
+    [Fact]
+    public void AllDestinationsFailedWithoutThrowing_IsACompleteFailure()
+    {
+        var ex = Assert.Throws<Exception>(() => Upload(PartiallyFailed(VmType.Vsphere, 2, 2)));
+        Assert.Equal($"ISO upload failed on Vsphere (2 of 2 destinations). {Suffix}", ex.Message);
+    }
+
+    [Fact]
+    public void CompletelyFailedVsphere_PreservesCountsWhenProxmoxSucceeds()
+    {
+        var result = Upload(PartiallyFailed(VmType.Vsphere, 2, 2), Succeeded(VmType.Proxmox, 0));
+        Assert.True(result.PartialFailure);
+        Assert.Equal(2, result.FailedHostCount);
+        Assert.Equal(2, result.TotalHostCount);
+        Assert.Equal($"ISO uploaded, but failed on Vsphere (2 of 2 destinations). {Suffix}", result.Message);
+    }
+
+    [Fact]
+    public void ReturnedCompleteFailureAndThrownFailure_TogetherThrow()
+    {
+        Assert.Throws<Exception>(() => Upload(PartiallyFailed(VmType.Vsphere, 2, 2), Threw(VmType.Proxmox)));
     }
 }

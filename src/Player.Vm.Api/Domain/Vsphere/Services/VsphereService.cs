@@ -47,8 +47,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath);
         Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListIsos(Guid? viewId = null);
         Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListIsosForVm(Guid vmId, Guid? viewId = null);
-        Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath);
-        Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename);
+        Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath, CancellationToken ct = default);
+        Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename, CancellationToken ct = default);
         int GetEnabledConnectionCount();
         Task<string> SetResolution(Guid id, int width, int height);
         Task<Dictionary<Guid, string>> BulkPowerOperation(Guid[] ids, PowerOperation operation);
@@ -1271,101 +1271,97 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return byScope;
         }
 
-        public async Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath)
+        public Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath, CancellationToken ct = default)
         {
-            // Upload to all enabled/connected hosts so the ISO is available wherever the VM runs
-            // (mirrors the shared-storage semantics of the NFS path).
-            var connections = GetEnabledConnections();
+            return WriteIsoToGroups("upload", filename,
+                connection => UploadIsoToConnection(connection, viewId, scopeId, filename, localFilePath, ct), ct);
+        }
 
-            if (!connections.Any())
-            {
-                throw new InvalidOperationException("No connected vSphere hosts available for ISO upload.");
-            }
+        // Listing still requires a live connection, independently of ISO write grouping.
+        public int GetEnabledConnectionCount()
+        {
+            return _connectionService.GetAllConnections()
+                .Count(c => c.Enabled && c.Connected && c.Client != null);
+        }
 
-            // Upload to every host concurrently; each host streams its own FileStream off the staged
-            // file, so the PUTs are independent. Per-host failures are captured (never faulting the
-            // whole batch) so wall-clock is ~the slowest host rather than the sum.
-            // Idempotent re-upload heals any missed host (deterministic path + PUT overwrite), so we
-            // report partial failures rather than aborting; AggregateHostResults throws only if all fail.
-            var results = await Task.WhenAll(connections.Select(async connection =>
+        private enum IsoGroupKind { Shared, Named, Individual }
+
+        // Build groups from configuration, not the live connection cache: an offline destination
+        // remains a required write. LINQ grouping preserves configuration order within each group.
+        // The kind keeps explicit names from colliding with implicit groups or host addresses.
+        private async Task<IsoOperationOutcome> WriteIsoToGroups(
+            string operation, string filename, Func<VsphereConnection, Task> write, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            var groups = (_vsphereOptions.Hosts ?? Array.Empty<VsphereHost>())
+                .Where(h => h.Enabled && !string.IsNullOrWhiteSpace(h.Address))
+                .GroupBy(h => !string.IsNullOrWhiteSpace(h.IsoStorageGroup)
+                    ? (Kind: IsoGroupKind.Named, Name: h.IsoStorageGroup.Trim())
+                    : _vsphereOptions.IsoStorageShared == true
+                        ? (Kind: IsoGroupKind.Shared, Name: "")
+                        : (Kind: IsoGroupKind.Individual, Name: h.Address))
+                .ToArray();
+
+            if (groups.Length == 0)
+                throw new InvalidOperationException("No vSphere ISO destinations are configured.");
+
+            var results = await Task.WhenAll(groups.Select(async group =>
             {
-                try
+                foreach (var host in group)
                 {
-                    await UploadIsoToConnection(connection, viewId, scopeId, filename, localFilePath);
-                    return (string)null;
+                    ct.ThrowIfCancellationRequested();
+                    var connection = _connectionService.GetConnection(host.Address);
+                    if (connection == null || !connection.Enabled || !connection.Connected || connection.Client == null)
+                        continue;
+
+                    try
+                    {
+                        await write(connection);
+                        ct.ThrowIfCancellationRequested();
+                        return true;
+                    }
+                    catch (Exception ex) when (!ct.IsCancellationRequested)
+                    {
+                        // A failed attempt (including its timeout) permits fallback. Caller cancellation
+                        // propagates instead. Each upload attempt opens a fresh stream on the staged ISO.
+                        _logger.LogWarning(ex, "ISO {File} {Operation} attempt failed on {Host}; trying another member of {Kind} group {Group}",
+                            filename, operation, host.Address, group.Key.Kind, group.Key.Name);
+                    }
                 }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to upload ISO {File} to {Host}", filename, connection.Address);
-                    return $"{connection.Address}: {ex.Message}";
-                }
+
+                _logger.LogError("ISO {File} failed to {Operation} on {Kind} group {Group}: no member succeeded",
+                    filename, operation, group.Key.Kind, group.Key.Name);
+                return false;
             }));
 
-            var (failedHostCount, totalHostCount) = AggregateHostResults(results, connections.Count, "upload", filename);
-
+            ct.ThrowIfCancellationRequested();
+            // Return failures as counts, even when all groups failed. The provider aggregates scopes,
+            // then IsoService decides whether any destination on any provider succeeded.
             return new IsoOperationOutcome
             {
-                FailedHostCount = failedHostCount,
-                TotalHostCount = totalHostCount
+                FailedHostCount = results.Count(succeeded => !succeeded),
+                TotalHostCount = groups.Length
             };
         }
 
-        // How many hosts an ISO write would currently fan out to. Reported by VsphereIsoProvider as its
-        // target count so a wholly-failed provider can still be tallied honestly in the response.
-        public int GetEnabledConnectionCount()
-        {
-            return GetEnabledConnections().Count;
-        }
-
-        // Enabled, connected hosts with a live client - the set ISO uploads/deletes fan out across.
-        private List<VsphereConnection> GetEnabledConnections()
-        {
-            return _connectionService.GetAllConnections()
-                .Where(c => c.Enabled && c.Connected && c.Client != null)
-                .ToList();
-        }
-
-        // Tally per-host outcomes from a fan-out (a null entry is success; a non-null entry is a
-        // server-side failure detail). Host addresses/reasons stay in the logs and are never returned
-        // to the caller, so they can't leak to app users - callers receive counts only. Throws when
-        // every host failed; logs a warning on partial failure.
-        private (int failedHostCount, int totalHostCount) AggregateHostResults(
-            IReadOnlyList<string> results, int totalHostCount, string operation, string filename)
-        {
-            var failures = results.Where(r => r != null).ToList();
-
-            if (failures.Count == totalHostCount)
-            {
-                _logger.LogError("ISO {File} failed to {Operation} on all {Count} hosts: {Failures}", filename, operation, totalHostCount, string.Join("; ", failures));
-                throw new Exception($"ISO {operation} failed on all hosts. Contact an administrator.");
-            }
-
-            if (failures.Any())
-            {
-                _logger.LogWarning("ISO {File} {Operation} completed with partial failures: {Failures}", filename, operation, string.Join("; ", failures));
-            }
-
-            return (failures.Count, totalHostCount);
-        }
-
-        private async Task UploadIsoToConnection(VsphereConnection connection, string viewId, string scopeId, string filename, string localFilePath)
+        private async Task UploadIsoToConnection(VsphereConnection connection, string viewId, string scopeId, string filename, string localFilePath, CancellationToken ct)
         {
             // Resolve the datastore HTTP file API target (and create the destination directory).
-            var client = await BuildDatastoreFileClient(connection, viewId, scopeId, filename, ensureDirectory: true);
+            using var client = await BuildDatastoreFileClient(connection, viewId, scopeId, filename, ensureDirectory: true, ct);
 
             using (var fileStream = System.IO.File.OpenRead(localFilePath))
             {
-                var content = new StreamContent(fileStream);
+                using var content = new StreamContent(fileStream);
                 content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
                 content.Headers.ContentLength = fileStream.Length;
 
                 _logger.LogDebug("Uploading ISO to datastore: {Url}", client.BaseAddress);
 
                 // Empty relative URI resolves to BaseAddress (the full /folder/...?dcPath=&dsName= URL).
-                var response = await client.PutAsync("", content);
+                using var response = await client.PutAsync("", content, ct);
                 if (!response.IsSuccessStatusCode)
                 {
-                    var body = await response.Content.ReadAsStringAsync();
+                    var body = await response.Content.ReadAsStringAsync(ct);
                     throw new Exception($"Datastore PUT failed ({(int)response.StatusCode}): {body}");
                 }
             }
@@ -1375,14 +1371,15 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         // destination directory (upload only), builds the datastore HTTP file API URL, and returns a
         // "vSphereDatastore" HttpClient with that URL as BaseAddress and the per-host Basic-auth header
         // set. Shared by ISO upload (PUT) and delete (DELETE) so the path/auth setup never diverges.
-        private async Task<HttpClient> BuildDatastoreFileClient(VsphereConnection connection, string viewId, string scopeId, string filename, bool ensureDirectory)
+        private async Task<HttpClient> BuildDatastoreFileClient(VsphereConnection connection, string viewId, string scopeId, string filename, bool ensureDirectory, CancellationToken ct)
         {
             var dsName = connection.Host.DsName;
 
             // datastore-relative folder (no "[ds]" prefix; that form is only used for search/mount/MakeDirectory paths)
             var folderPath = BuildIsoFolderRelative(connection.Host.BaseFolder, viewId, scopeId);
 
-            var datacenter = await GetDatacenterForDatastore(dsName, connection);
+            ct.ThrowIfCancellationRequested();
+            var datacenter = await GetDatacenterForDatastore(dsName, connection).WaitAsync(ct);
             if (datacenter == null)
             {
                 throw new InvalidOperationException($"Could not resolve datacenter for datastore {dsName} on {connection.Address}");
@@ -1391,7 +1388,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             if (ensureDirectory)
             {
                 // ensure the destination directory exists (ignore "already exists")
-                await EnsureDatastoreDirectory(connection, datacenter, dsName, folderPath);
+                await EnsureDatastoreDirectory(connection, datacenter, dsName, folderPath).WaitAsync(ct);
             }
 
             var url = BuildDatastoreUploadUrl(connection.Address, folderPath, filename, datacenter.Name, dsName);
@@ -1415,52 +1412,22 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                  + $"?dcPath={Uri.EscapeDataString(dcName)}&dsName={Uri.EscapeDataString(dsName)}";
         }
 
-        public async Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename)
+        public Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename, CancellationToken ct = default)
         {
-            // Delete from all enabled/connected hosts so the ISO is removed wherever it was uploaded
-            // (mirrors UploadIso, which writes to every host).
-            var connections = GetEnabledConnections();
-
-            if (!connections.Any())
-            {
-                throw new InvalidOperationException("No connected vSphere hosts available for ISO delete.");
-            }
-
-            // Delete on every host concurrently; per-host failures are captured (never faulting the
-            // whole batch). A missing file is treated as success inside DeleteIsoFromConnection.
-            var results = await Task.WhenAll(connections.Select(async connection =>
-            {
-                try
-                {
-                    await DeleteIsoFromConnection(connection, viewId, scopeId, filename);
-                    return (string)null;
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Failed to delete ISO {File} from {Host}", filename, connection.Address);
-                    return $"{connection.Address}: {ex.Message}";
-                }
-            }));
-
-            var (failedHostCount, totalHostCount) = AggregateHostResults(results, connections.Count, "delete", filename);
-
-            return new IsoOperationOutcome
-            {
-                FailedHostCount = failedHostCount,
-                TotalHostCount = totalHostCount
-            };
+            return WriteIsoToGroups("delete", filename,
+                connection => DeleteIsoFromConnection(connection, viewId, scopeId, filename, ct), ct);
         }
 
-        private async Task DeleteIsoFromConnection(VsphereConnection connection, string viewId, string scopeId, string filename)
+        private async Task DeleteIsoFromConnection(VsphereConnection connection, string viewId, string scopeId, string filename, CancellationToken ct)
         {
             // Same /folder/...?dcPath=&dsName= URL as the PUT upload; the datastore HTTP file API
             // accepts DELETE on it. No directory creation needed for a delete.
-            var client = await BuildDatastoreFileClient(connection, viewId, scopeId, filename, ensureDirectory: false);
+            using var client = await BuildDatastoreFileClient(connection, viewId, scopeId, filename, ensureDirectory: false, ct);
 
             _logger.LogDebug("Deleting ISO from datastore: {Url}", client.BaseAddress);
 
             // Empty relative URI resolves to BaseAddress (the full /folder/...?dcPath=&dsName= URL).
-            var response = await client.DeleteAsync("");
+            using var response = await client.DeleteAsync("", ct);
 
             // Already gone => idempotent success (lets a re-delete or partially-uploaded ISO clear cleanly).
             if (response.StatusCode == HttpStatusCode.NotFound)
@@ -1470,7 +1437,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             if (!response.IsSuccessStatusCode)
             {
-                var body = await response.Content.ReadAsStringAsync();
+                var body = await response.Content.ReadAsStringAsync(ct);
                 throw new Exception($"Datastore DELETE failed ({(int)response.StatusCode}): {body}");
             }
         }
