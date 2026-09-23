@@ -7,7 +7,6 @@ public enum AppSystemPermission
 {
     ViewViews,
     ManageViews,
-    EditViews,
     ViewNetworks,
     ManageNetworks,
 
@@ -15,14 +14,25 @@ public enum AppSystemPermission
     /// System-wide authority to delete any ISO in any View/team, including ones the caller is not a
     /// member of. Used by the "all views" ISO management mode.
     /// </summary>
-    DeleteIsos
+    DeleteIsos,
+
+    /// <summary>View every Vm console in the system without being able to interact with them.</summary>
+    ViewVms,
+
+    /// <summary>Interact with and control every Vm in the system.</summary>
+    ControlVms,
+
+    /// <summary>View every Map in the system without being able to change them.</summary>
+    ViewMaps,
+
+    /// <summary>View, create, edit, and delete every Map in the system.</summary>
+    ManageMaps
 }
 
 public enum AppViewPermission
 {
     ViewView,
     ManageView,
-    EditView,
 
     /// <summary>Upload ISOs view-wide (public) and to any team in the View.</summary>
     UploadViewIsos,
@@ -33,18 +43,41 @@ public enum AppViewPermission
     UploadVmFiles,
     RevertVms,
     ViewNetworks,
-    ManageNetworks
+    ManageNetworks,
+
+    /// <summary>View every Vm console in the View without being able to interact with them.</summary>
+    ViewViewVms,
+
+    /// <summary>Interact with and control every Vm in the View.</summary>
+    ControlViewVms,
+
+    /// <summary>View every Map in the View without being able to change them.</summary>
+    ViewViewMaps,
+
+    /// <summary>View, create, edit, and delete every Map in the View.</summary>
+    ManageViewMaps
 }
 
 public enum AppTeamPermission
 {
     ViewTeam,
     ManageTeam,
-    EditTeam,
 
     /// <summary>Upload ISOs to this specific team.</summary>
     UploadTeamIsos,
 
     /// <summary>Delete ISOs belonging to this specific team.</summary>
-    DeleteTeamIsos
+    DeleteTeamIsos,
+
+    /// <summary>View the team's Vm consoles without being able to interact with them.</summary>
+    ViewTeamVms,
+
+    /// <summary>Interact with and control the team's Vms.</summary>
+    ControlTeamVms,
+
+    /// <summary>View the team's Maps without being able to change them.</summary>
+    ViewTeamMaps,
+
+    /// <summary>View, create, edit, and delete the team's Maps.</summary>
+    ManageTeamMaps
 }

@@ -1,4 +1,4 @@
-// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
+﻿// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
@@ -60,33 +60,34 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
             () => Service.CanAccessVm(null, Ct));
     }
 
+    // Seeing a team is no longer enough: reaching its Vms takes one of the Vm permissions.
     [Fact]
-    public async Task CanAccessVm_WithoutViewAccessToItsTeams_IsForbidden()
+    public async Task CanAccessVm_WithoutVmAccessToItsTeams_IsForbidden()
     {
         var vm = Vm(teamIds: [Guid.NewGuid()]);
-        CanViewTeams(false);
+        CanViewVms(false);
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.CanAccessVm(vm, Ct));
     }
 
     [Fact]
-    public async Task CanAccessVm_ForASharedVmInAVisibleTeam_IsAllowed()
+    public async Task CanAccessVm_ForASharedVmInATeamWhoseVmsAreVisible_IsAllowed()
     {
         var vm = Vm(teamIds: [Guid.NewGuid()]);
-        CanViewTeams(true);
+        CanViewVms(true);
 
         Assert.True(await Service.CanAccessVm(vm, Ct));
     }
 
     /// <summary>
-    /// A personal VM belongs to one user. Team-level view access is not enough to reach someone else's,
-    /// which is what keeps one student out of another's workstation.
+    /// A personal VM belongs to one user. A team-scoped Vm permission is not enough to reach someone
+    /// else's, which is what keeps one student out of another's workstation.
     /// </summary>
     [Fact]
     public async Task CanAccessVm_ForAnotherUsersPersonalVm_IsForbidden()
     {
         var vm = Vm(teamIds: [Guid.NewGuid()], userId: OtherUser);
-        CanViewTeams(true);
+        CanViewVms(true);
         Can(false);
 
         var ex = await Assert.ThrowsAsync<ForbiddenException>(() => Service.CanAccessVm(vm, Ct));
@@ -94,13 +95,13 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         Assert.Contains("belongs to another user", ex.Message);
     }
 
-    // The caller's own personal VM needs nothing beyond team view access - no elevated permission is
-    // consulted at all, which is what the DidNotReceive pins.
+    // The caller's own personal VM needs nothing beyond the team-scoped Vm permission - no elevated
+    // permission is consulted at all, which is what the DidNotReceive pins.
     [Fact]
     public async Task CanAccessVm_ForTheCallersOwnPersonalVm_IsAllowedWithoutEscalation()
     {
         var vm = Vm(teamIds: [Guid.NewGuid()], userId: Caller);
-        CanViewTeams(true);
+        CanViewVms(true);
 
         Assert.True(await Service.CanAccessVm(vm, Ct));
 
@@ -118,7 +119,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task CanAccessVm_ForAnotherUsersPersonalVm_IsAllowedWithViewPermission()
     {
         var vm = Vm(teamIds: [Guid.NewGuid()], userId: OtherUser);
-        CanViewTeams(true);
+        CanViewVms(true);
         Can(true);
 
         Assert.True(await Service.CanAccessVm(vm, Ct));
@@ -139,6 +140,23 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
             () => Service.GetByTeamIdAsync(teamId, null, false, false, Ct));
     }
 
+    /// <summary>
+    /// The second gate, and the one team visibility does not answer: the team is visible, but nothing
+    /// grants the caller sight of its Vms. Refused rather than answered with an empty list, so the two
+    /// are told apart in the same way as an invisible team.
+    /// </summary>
+    [Fact]
+    public async Task GetByTeamId_WithoutVmAccessToTheTeam_IsForbidden()
+    {
+        var teamId = Guid.NewGuid();
+        await Seed(Vm(teamIds: [teamId]));
+        Visibility(teamId, VisibilityFor(teamId));
+        CanViewVms(false);
+
+        await Assert.ThrowsAsync<ForbiddenException>(
+            () => Service.GetByTeamIdAsync(teamId, null, false, false, Ct));
+    }
+
     // Personal VMs are opt-in. The default list is the shared machines, which is what the VM list in a
     // view shows before anyone asks for personal ones.
     [Fact]
@@ -149,6 +167,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var mine = Vm(teamIds: [teamId], name: "mine", userId: Caller);
         await Seed(shared, mine);
         Visibility(teamId, VisibilityFor(teamId));
+        CanViewVms(true);
 
         var vms = await Service.GetByTeamIdAsync(teamId, null, includePersonal: false, onlyMine: false, Ct);
 
@@ -164,6 +183,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var theirs = Vm(teamIds: [teamId], name: "theirs", userId: OtherUser);
         await Seed(shared, mine, theirs);
         Visibility(teamId, VisibilityFor(teamId));
+        CanViewVms(true);
 
         var vms = await Service.GetByTeamIdAsync(teamId, null, includePersonal: false, onlyMine: true, Ct);
 
@@ -184,6 +204,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var theirs = Vm(teamIds: [teamId], name: "theirs", userId: OtherUser);
         await Seed(shared, mine, theirs);
         Visibility(teamId, VisibilityFor(teamId, canViewAllTeams: false));
+        CanViewVms(true);
 
         var vms = await Service.GetByTeamIdAsync(teamId, null, includePersonal: true, onlyMine: false, Ct);
 
@@ -199,6 +220,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var theirs = Vm(teamIds: [teamId], name: "theirs", userId: OtherUser);
         await Seed(mine, theirs);
         Visibility(teamId, VisibilityFor(teamId, canViewAllTeams: true));
+        CanViewVms(true);
 
         var vms = await Service.GetByTeamIdAsync(teamId, null, includePersonal: true, onlyMine: false, Ct);
 
@@ -218,6 +240,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var vm = Vm(teamIds: [visibleTeam, hiddenTeam], name: "shared");
         await Seed(vm);
         Visibility(visibleTeam, VisibilityFor(visibleTeam));
+        CanViewVms(true);
 
         var vms = await Service.GetByTeamIdAsync(visibleTeam, null, false, false, Ct);
 
@@ -232,6 +255,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var other = Vm(teamIds: [teamId], name: "other");
         await Seed(wanted, other);
         Visibility(teamId, VisibilityFor(teamId));
+        CanViewVms(true);
 
         var vms = await Service.GetByTeamIdAsync(teamId, "wanted", false, false, Ct);
 
@@ -265,6 +289,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var mine = Vm(teamIds: [teamId], name: "mine", userId: Caller);
         await Seed(shared, mine);
         View(viewId, VisibilityFor(teamId), teamId);
+        CanViewVms(true);
 
         var vms = await Service.GetByViewIdAsync(viewId, null, includePersonal: false, onlyMine: false, Ct);
 
@@ -280,6 +305,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var theirs = Vm(teamIds: [teamId], name: "theirs", userId: OtherUser);
         await Seed(mine, theirs);
         View(viewId, VisibilityFor(teamId, canViewAllTeams: false), teamId);
+        CanViewVms(true);
 
         var vms = await Service.GetByViewIdAsync(viewId, null, includePersonal: true, onlyMine: false, Ct);
 
@@ -295,6 +321,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var theirs = Vm(teamIds: [teamId], name: "theirs", userId: OtherUser);
         await Seed(mine, theirs);
         View(viewId, VisibilityFor(teamId, canViewAllTeams: true), teamId);
+        CanViewVms(true);
 
         var vms = await Service.GetByViewIdAsync(viewId, null, includePersonal: true, onlyMine: false, Ct);
 
@@ -315,6 +342,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var shared = Vm(teamIds: [teamId], name: "shared");
         await Seed(mine, theirs, shared);
         View(viewId, VisibilityFor(teamId), teamId);
+        CanViewVms(true);
 
         var vms = await Service.GetByViewIdAsync(viewId, null, includePersonal: false, onlyMine: true, Ct);
 
@@ -353,10 +381,50 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
             viewId,
             VisibilityFor(primaryTeam, secondaryTeam),
             teams: [Team(secondaryTeam), Team(primaryTeam, isPrimary: true)]);
+        CanViewVms(true);
 
         var vms = await Service.GetByViewIdAsync(viewId, null, false, onlyMine: true, Ct);
 
         Assert.Equal(onPrimary.Id, vms.First().Id);
+    }
+
+    /// <summary>
+    /// A View-wide list is an empty list rather than a refusal, because a View the caller has no Vm
+    /// access in is indistinguishable from one with no Vms - the same choice the no-teams case makes.
+    /// </summary>
+    [Fact]
+    public async Task GetByViewId_WithoutVmAccessToAnyTeam_IsEmpty()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+        await Seed(Vm(teamIds: [teamId], name: "shared"));
+        View(viewId, VisibilityFor(teamId), teamId);
+        CanViewVms(false);
+
+        Assert.Empty(await Service.GetByViewIdAsync(viewId, null, false, false, Ct));
+    }
+
+    /// <summary>
+    /// Vm access is per team, so a caller scoped onto one team's Vms sees that team's machines and not
+    /// the rest of the View's - even though every team here is visible to them.
+    /// </summary>
+    [Fact]
+    public async Task GetByViewId_ExcludesTheVmsOfTeamsTheCallerHasNoVmAccessTo()
+    {
+        var viewId = Guid.NewGuid();
+        var allowedTeam = Guid.NewGuid();
+        var deniedTeam = Guid.NewGuid();
+
+        var allowed = Vm(teamIds: [allowedTeam], name: "allowed");
+        var denied = Vm(teamIds: [deniedTeam], name: "denied");
+        await Seed(allowed, denied);
+
+        View(viewId, VisibilityFor(false, [allowedTeam, deniedTeam]), teams: [Team(allowedTeam), Team(deniedTeam)]);
+        CanViewVmsOnly(allowedTeam);
+
+        var vms = await Service.GetByViewIdAsync(viewId, null, false, false, Ct);
+
+        Assert.Equal<Guid>([allowed.Id], vms.Select(x => x.Id).ToArray());
     }
 
     [Fact]
@@ -370,6 +438,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
         // Both teams are in the View, so both reach the query - only visibility narrows the result.
         View(viewId, VisibilityFor(visibleTeam), teams: [Team(visibleTeam), Team(hiddenTeam)]);
+        CanViewVms(true);
 
         var vms = await Service.GetByViewIdAsync(viewId, null, false, false, Ct);
 
@@ -411,54 +480,103 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
     #region Maps
 
+    /// <summary>
+    /// A Map assigned to teams takes a Map permission, and belonging to the View is not a substitute -
+    /// the membership fallback below is for teamless Maps only, so it is stubbed true here to prove it
+    /// does not reach this one.
+    /// </summary>
     [Fact]
-    public async Task GetMap_WithoutAccessToItsTeams_IsForbidden()
+    public async Task GetMap_WithoutMapAccessToItsTeams_IsForbidden()
     {
         var map = Map(teamIds: [Guid.NewGuid()]);
         await Seed(map);
-        CanViewTeams(false);
+        CanViewMaps(false);
+        IsInView(true);
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetMapAsync(map.Id, Ct));
     }
 
     /// <summary>
-    /// A map assigned to no team is readable by anyone authenticated: the permission check is guarded on
-    /// <c>TeamIds.Count > 0</c>. That is deliberate - an unassigned map has nothing to protect - but it
-    /// means creating a map with no teams makes it world-readable, so the check is pinned rather than
-    /// left to be rediscovered.
+    /// A Map assigned to no team belongs to the View as a whole, so everyone in the View may read it
+    /// without holding any Map permission. That is a deliberate exception, not the old hole: the old
+    /// behaviour skipped the check for anyone authenticated, including callers with no claim on the View
+    /// at all, which the next test pins as refused.
     /// </summary>
     [Fact]
-    public async Task GetMap_WithNoTeams_SkipsThePermissionCheck()
+    public async Task GetMap_WithNoTeams_IsReadableByAnyoneInTheView()
     {
         var map = Map(teamIds: []);
         await Seed(map);
-        CanViewTeams(false);
+        CanViewMaps(false);
+        IsInView(true);
 
         Assert.NotNull(await Service.GetMapAsync(map.Id, Ct));
-        await _player.DidNotReceive().CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>());
+
+        await _player.Received().IsInViewAsync(map.ViewId, Arg.Any<CancellationToken>());
     }
 
     [Fact]
-    public async Task GetTeamMap_ForAnInvisibleTeam_IsForbidden()
+    public async Task GetMap_WithNoTeams_IsForbiddenForACallerOutsideTheView()
     {
-        _player.IsTeamVisibleAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(false);
+        var map = Map(teamIds: []);
+        await Seed(map);
+        CanViewMaps(false);
+        IsInView(false);
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetMapAsync(map.Id, Ct));
+    }
+
+    // The other way in: a Map permission held at the View or system level reaches a teamless Map even
+    // without membership of the View, which is how an administrative UI lists it.
+    [Fact]
+    public async Task GetMap_WithNoTeams_IsAllowedByAViewLevelMapPermission()
+    {
+        var map = Map(teamIds: []);
+        await Seed(map);
+        CanViewMaps(true);
+        IsInView(false);
+
+        Assert.NotNull(await Service.GetMapAsync(map.Id, Ct));
+
+        await _player.Received().CanViewMaps(
+            Arg.Any<IEnumerable<Guid>>(),
+            Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(map.ViewId)),
+            Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task GetTeamMap_WithoutMapAccessToTheTeam_IsForbidden()
+    {
+        CanViewMaps(false);
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetTeamMapAsync(Guid.NewGuid(), Ct));
     }
 
     [Fact]
-    public async Task DeleteMap_WithoutManageOnItsTeams_IsForbidden()
+    public async Task DeleteMap_WithoutMapManagementOnItsTeams_IsForbidden()
     {
         var map = Map(teamIds: [Guid.NewGuid()]);
         await Seed(map);
-        CanManageTeams(false);
+        CanManageMaps(false);
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.DeleteMapAsync(map.Id, Ct));
+    }
+
+    // The counterpart of the teamless-read case: a Map belonging to the View as a whole takes a
+    // View-level grant to delete, where before it took nothing at all.
+    [Fact]
+    public async Task DeleteMap_WithNoTeams_IsForbiddenWithoutAViewLevelMapPermission()
+    {
+        var map = Map(teamIds: []);
+        await Seed(map);
+        CanManageMaps(false);
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.DeleteMapAsync(map.Id, Ct));
     }
 
     /// <summary>
     /// null, so the controller answers 404. An unknown View must not read as a View with no maps, which
-    /// is why GetViewMapsAsync probes the teams endpoint even though it filters on visibility.TeamIds.
+    /// is why GetViewMapsAsync probes the teams endpoint even though it filters on the Map permissions.
     /// </summary>
     [Fact]
     public async Task GetViewMaps_ForAnUnknownView_IsNull()
@@ -471,21 +589,47 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     }
 
     [Fact]
-    public async Task GetViewMaps_ReturnsOnlyMapsWithAVisibleTeam()
+    public async Task GetViewMaps_ReturnsOnlyTheMapsTheCallerCanView()
     {
         var viewId = Guid.NewGuid();
-        var visibleTeam = Guid.NewGuid();
-        var hiddenTeam = Guid.NewGuid();
+        var allowedTeam = Guid.NewGuid();
+        var deniedTeam = Guid.NewGuid();
 
-        var visible = Map(teamIds: [visibleTeam], viewId: viewId);
-        var hidden = Map(teamIds: [hiddenTeam], viewId: viewId);
-        await Seed(visible, hidden);
+        var allowed = Map(teamIds: [allowedTeam], viewId: viewId);
+        var denied = Map(teamIds: [deniedTeam], viewId: viewId);
+        await Seed(allowed, denied);
 
-        View(viewId, VisibilityFor(visibleTeam), teams: [Team(visibleTeam), Team(hiddenTeam)]);
+        View(viewId, VisibilityFor(false, [allowedTeam, deniedTeam]), teams: [Team(allowedTeam), Team(deniedTeam)]);
+        CanViewMapsOnly(allowedTeam);
+        IsInView(true);
 
         var maps = await Service.GetViewMapsAsync(viewId, Ct);
 
-        Assert.Equal<Guid>([visible.Id], maps.Select(x => x.Id).ToArray());
+        Assert.Equal<Guid>([allowed.Id], maps.Select(x => x.Id).ToArray());
+    }
+
+    /// <summary>
+    /// The listing counterpart of <see cref="GetMap_WithNoTeams_IsReadableByAnyoneInTheView"/>. A View
+    /// member with no Map permission at all still sees the View's teamless Maps, and still does not see
+    /// the ones scoped to a team.
+    /// </summary>
+    [Fact]
+    public async Task GetViewMaps_IncludesTheTeamlessMapsForAnyViewMember()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+
+        var teamless = Map(teamIds: [], viewId: viewId);
+        var teamScoped = Map(teamIds: [teamId], viewId: viewId);
+        await Seed(teamless, teamScoped);
+
+        View(viewId, VisibilityFor(teamId), teams: [Team(teamId)]);
+        CanViewMaps(false);
+        IsInView(true);
+
+        var maps = await Service.GetViewMapsAsync(viewId, Ct);
+
+        Assert.Equal<Guid>([teamless.Id], maps.Select(x => x.Id).ToArray());
     }
 
     // A map can only be assigned to teams the caller manages, and the view must exist. Both failures are
@@ -518,17 +662,50 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     }
 
     [Fact]
-    public async Task CreateMap_WithoutManageOnTheTeams_IsForbidden()
+    public async Task CreateMap_WithoutMapManagementOnTheTeams_IsForbidden()
     {
         var viewId = Guid.NewGuid();
         var teamId = Guid.NewGuid();
 
         _player.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(new Player.Api.Client.View());
         _player.GetTeamById(teamId).Returns(new Player.Api.Client.Team { Id = teamId, ViewId = viewId });
-        CanManageTeams(false);
+        CanManageMaps(false);
 
         await Assert.ThrowsAsync<ForbiddenException>(
             () => Service.CreateMapAsync(new VmMapCreateForm { Name = "m", TeamIds = [teamId] }, viewId, Ct));
+    }
+
+    /// <summary>
+    /// Creating a Map with no teams used to be the one write validateViewAndTeams waved through with no
+    /// permission check at all - and the resulting Map was then readable View-wide. It now takes the
+    /// View-level Map permission, asked for with the View id and no teams.
+    /// </summary>
+    [Fact]
+    public async Task CreateMap_WithNoTeams_IsForbiddenWithoutAViewLevelMapPermission()
+    {
+        var viewId = Guid.NewGuid();
+        _player.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(new Player.Api.Client.View());
+        CanManageMaps(false);
+
+        await Assert.ThrowsAsync<ForbiddenException>(
+            () => Service.CreateMapAsync(new VmMapCreateForm { Name = "m", TeamIds = [] }, viewId, Ct));
+    }
+
+    [Fact]
+    public async Task CreateMap_WithNoTeams_IsAllowedByAViewLevelMapPermission()
+    {
+        var viewId = Guid.NewGuid();
+        _player.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(new Player.Api.Client.View());
+        CanManageMaps(true);
+
+        var map = await Service.CreateMapAsync(new VmMapCreateForm { Name = "m", TeamIds = [] }, viewId, Ct);
+
+        Assert.Equal(viewId, map.ViewId);
+
+        await _player.Received().CanManageMaps(
+            Arg.Is<IEnumerable<Guid>>(ids => !ids.Any()),
+            Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(viewId)),
+            Arg.Any<CancellationToken>());
     }
 
     #endregion
@@ -646,6 +823,53 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
     private void CanViewTeams(bool allowed) =>
         _player.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns(allowed);
+
+    private void CanViewVms(bool allowed) =>
+        _player.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns(allowed);
+
+    private void CanViewMaps(bool allowed) =>
+        _player.CanViewMaps(
+            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
+            Arg.Any<CancellationToken>()).Returns(allowed);
+
+    private void CanManageMaps(bool allowed) =>
+        _player.CanManageMaps(
+            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
+            Arg.Any<CancellationToken>()).Returns(allowed);
+
+    /// <summary>Whether the caller belongs to the View - membership, not a permission.</summary>
+    private void IsInView(bool inView) =>
+        _player.IsInViewAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(inView);
+
+    /// <summary>
+    /// Grants Vm access to exactly these teams and refuses it for every other, which is what a
+    /// team-scoped grant looks like from VmService's side.
+    /// </summary>
+    private void CanViewVmsOnly(params Guid[] teamIds)
+    {
+        CanViewVms(false);
+
+        foreach (var teamId in teamIds)
+        {
+            _player.CanViewVms(
+                Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)),
+                Arg.Any<CancellationToken>()).Returns(true);
+        }
+    }
+
+    /// <summary>The Map counterpart of <see cref="CanViewVmsOnly"/>.</summary>
+    private void CanViewMapsOnly(params Guid[] teamIds)
+    {
+        CanViewMaps(false);
+
+        foreach (var teamId in teamIds)
+        {
+            _player.CanViewMaps(
+                Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>()).Returns(true);
+        }
+    }
 
     private void CanManageTeams(bool allowed) =>
         _player.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns(allowed);

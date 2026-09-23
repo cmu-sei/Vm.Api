@@ -70,7 +70,13 @@ namespace Player.Vm.Api.Features.Vms
 
         public async Task<Vm[]> GetAllAsync(CancellationToken ct)
         {
-            if (!await _playerService.Can(null, null, [AppSystemPermission.ViewViews], [], [], ct))
+            if (!await _playerService.Can(
+                null,
+                null,
+                [AppSystemPermission.ViewVms, AppSystemPermission.ControlVms],
+                [],
+                [],
+                ct))
                 throw new ForbiddenException();
 
             var vms = await _context.Vms
@@ -99,15 +105,17 @@ namespace Player.Vm.Api.Features.Vms
 
             var teamIds = vm.VmTeams.Select(x => x.TeamId);
 
-            if (!await _playerService.CanViewTeams(teamIds, ct))
+            if (!await _playerService.CanViewVms(teamIds, ct))
                 throw new ForbiddenException();
 
+            // Someone else's personal Vm is only reachable with a Vm permission that reaches beyond a
+            // single team - a team-scoped grant covers the team's shared Vms, not its members' own.
             if (vm.UserId.HasValue && vm.UserId != _user.GetId() &&
                 !await _playerService.Can(
                     teamIds,
                     [],
-                    [AppSystemPermission.ViewViews, AppSystemPermission.ManageViews],
-                    [AppViewPermission.ViewView, AppViewPermission.ManageView],
+                    [AppSystemPermission.ViewVms, AppSystemPermission.ControlVms],
+                    [AppViewPermission.ViewViewVms, AppViewPermission.ControlViewVms],
                     [],
                     ct))
                 throw new ForbiddenException("This machine belongs to another user");
@@ -119,6 +127,10 @@ namespace Player.Vm.Api.Features.Vms
         {
             var visibility = await _playerService.GetVisibilityContextForTeamAsync(teamId, ct);
             if (!visibility.TeamIds.Contains(teamId))
+                throw new ForbiddenException();
+
+            // Seeing a team is not the same as seeing its Vms; the caller needs a Vm permission too.
+            if (!await _playerService.CanViewVms([teamId], ct))
                 throw new ForbiddenException();
 
             IQueryable<Domain.Models.Vm> vmQuery = _context.VmTeams
@@ -172,7 +184,14 @@ namespace Player.Vm.Api.Features.Vms
             if (teams == null)
                 return [];
 
-            var teamIds = teams.Select(t => t.Id);
+            // Team visibility alone no longer implies Vm access, so everything below is scoped to the
+            // teams whose Vms the caller may actually see rather than to every team in the View.
+            var vmVisibleTeamIds = await GetVmVisibleTeamIdsAsync(visibility.TeamIds, ct);
+
+            if (vmVisibleTeamIds.Count == 0)
+                return [];
+
+            var teamIds = teams.Select(t => t.Id).Where(vmVisibleTeamIds.Contains).ToArray();
 
             if (onlyMine)
             {
@@ -230,6 +249,8 @@ namespace Player.Vm.Api.Features.Vms
                 }
             }
 
+            // Team labels still follow team visibility - a shared Vm keeps naming a team the caller can
+            // see even where it holds no Vm permission on that team.
             return MapVisibleCollection(vmList, visibility.TeamIds);
         }
 
@@ -392,7 +413,13 @@ namespace Player.Vm.Api.Features.Vms
 
         public async Task<VmMap[]> GetAllMapsAsync(CancellationToken ct)
         {
-            if (!await _playerService.Can(null, null, [AppSystemPermission.ViewViews], [], [], ct))
+            if (!await _playerService.Can(
+                null,
+                null,
+                [AppSystemPermission.ViewMaps, AppSystemPermission.ManageMaps],
+                [],
+                [],
+                ct))
                 throw new ForbiddenException();
 
             var maps = await _context.Maps
@@ -412,18 +439,20 @@ namespace Player.Vm.Api.Features.Vms
             if (maps == null)
                 return null;
 
-            var visibility = await _playerService.GetVisibilityContextAsync(viewId, ct);
-
             // This call is the View-existence probe, not a source of team data - the accessible-map
-            // filter below uses visibility.TeamIds. A null result means the View is absent from
-            // Player API, which must surface as 404 rather than an empty map list. Do not remove.
+            // filter below asks the permission checks directly. A null result means the View is absent
+            // from Player API, which must surface as 404 rather than an empty map list. Do not remove.
             var teams = await _playerService.GetTeamsByViewIdAsync(viewId, ct);
 
             if (teams == null)
                 return null;
 
-            var accessibleMaps = maps
-                .Where(x => x.TeamIds.Any(visibility.TeamIds.Contains))
+            var accessible = await Task.WhenAll(maps.Select(async map =>
+                (map, canView: await CanViewMapAsync(map, ct))));
+
+            var accessibleMaps = accessible
+                .Where(x => x.canView)
+                .Select(x => x.map)
                 .ToArray();
 
             return _mapper.Map<VmMap[]>(accessibleMaps);
@@ -439,15 +468,29 @@ namespace Player.Vm.Api.Features.Vms
             if (vmMap == null)
                 return null;
 
-            if (vmMap.TeamIds.Count > 0 && !await _playerService.CanViewTeams(vmMap.TeamIds, ct))
+            if (!await CanViewMapAsync(vmMap, ct))
                 throw new ForbiddenException("You do not have access to this map");
 
             return _mapper.Map<VmMap>(vmMap);
         }
 
+        /// <summary>
+        /// A Map assigned to teams is readable with a Map permission on one of them, or at the View or
+        /// system level. A Map assigned to no teams belongs to the View as a whole and is readable by
+        /// everyone in that View - no Map permission at all. Managing one still takes ManageViewMaps or
+        /// ManageMaps, so the open read does not make it editable.
+        /// </summary>
+        private async Task<bool> CanViewMapAsync(Domain.Models.VmMap map, CancellationToken ct)
+        {
+            if (await _playerService.CanViewMaps(map.TeamIds, [map.ViewId], ct))
+                return true;
+
+            return map.TeamIds.Count == 0 && await _playerService.IsInViewAsync(map.ViewId, ct);
+        }
+
         public async Task<VmMap> GetTeamMapAsync(Guid teamId, CancellationToken ct)
         {
-            if (!await _playerService.IsTeamVisibleAsync(teamId, ct))
+            if (!await _playerService.CanViewMaps([teamId], null, ct))
                 throw new ForbiddenException();
 
             var maps = await _context.Maps
@@ -507,7 +550,8 @@ namespace Player.Vm.Api.Features.Vms
             if (vmMapEntity == null)
                 throw new EntityNotFoundException<VmMap>();
 
-            if (vmMapEntity.TeamIds.Count > 0 && !await _playerService.CanManageTeams(vmMapEntity.TeamIds, ct))
+            // A teamless Map has no team to check, so it falls through to the View-level Map permissions.
+            if (!await _playerService.CanManageMaps(vmMapEntity.TeamIds, [vmMapEntity.ViewId], ct))
                 throw new ForbiddenException();
 
             _context.Maps.Remove(vmMapEntity);
@@ -553,6 +597,23 @@ namespace Player.Vm.Api.Features.Vms
                 .ToList();
         }
 
+        /// <summary>
+        /// Narrows a set of visible teams to the ones whose Vms the caller may actually see. Team
+        /// visibility is a Player-level concept; Vm access is a separate grant, so the two can differ.
+        /// </summary>
+        private async Task<HashSet<Guid>> GetVmVisibleTeamIdsAsync(IEnumerable<Guid> teamIds, CancellationToken ct)
+        {
+            var candidates = teamIds.Distinct().ToArray();
+
+            var results = await Task.WhenAll(candidates.Select(async teamId =>
+                (teamId, canView: await _playerService.CanViewVms([teamId], ct))));
+
+            return results
+                .Where(x => x.canView)
+                .Select(x => x.teamId)
+                .ToHashSet();
+        }
+
         private async Task validateViewAndTeams(List<Guid> teamIDs, Guid viewId, CancellationToken ct)
         {
             // Ensure view exists
@@ -580,18 +641,25 @@ namespace Player.Vm.Api.Features.Vms
                         throw new ForbiddenException("Team with id " + teamId + " is not a member of the specified view");
                 }
 
-                // Check user can manage the teams
+                // Check the user can manage each team's Maps
                 List<Task<bool>> tasks = [];
 
                 foreach (var teamId in teamIDs)
                 {
-                    tasks.Add(_playerService.CanManageTeams([teamId], ct));
+                    tasks.Add(_playerService.CanManageMaps([teamId], null, ct));
                 }
 
                 await Task.WhenAll(tasks);
 
                 if (tasks.Any(x => !x.Result))
                     throw new ForbiddenException();
+            }
+            else if (!await _playerService.CanManageMaps([], [viewId], ct))
+            {
+                // A Map with no teams belongs to the View as a whole, so writing it takes a View-level
+                // (or system-level) grant. Previously this branch checked nothing at all. Reading such
+                // a Map is deliberately open to every View member - see CanViewMapAsync.
+                throw new ForbiddenException();
             }
         }
 

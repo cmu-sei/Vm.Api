@@ -31,6 +31,13 @@ namespace Player.Vm.Api.Domain.Services
         Task<VisibilityContext> GetVisibilityContextForTeamAsync(Guid teamId, CancellationToken ct);
         Task<bool> IsTeamInViewAsync(Guid teamId, Guid viewId, CancellationToken ct);
         Task<bool> IsTeamVisibleAsync(Guid teamId, CancellationToken ct);
+
+        /// <summary>
+        /// Whether the caller belongs to this View at all - whether player.api answers with a primary
+        /// team claim there. This is membership rather than a permission, and it is deliberately the
+        /// only thing standing between a View member and a Map that belongs to the View as a whole.
+        /// </summary>
+        Task<bool> IsInViewAsync(Guid viewId, CancellationToken ct);
         Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct);
         Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct);
 
@@ -46,7 +53,10 @@ namespace Player.Vm.Api.Domain.Services
         Task<IEnumerable<Guid>> GetGroupIdsForViewAsync(Guid viewId, CancellationToken ct);
         Task<bool> CanManageTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<bool> CanViewTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
-        Task<bool> CanEditTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<bool> CanViewVms(IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<bool> CanControlVms(IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<bool> CanViewMaps(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct);
+        Task<bool> CanManageMaps(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct);
         Task<bool> HasViewNetworkAccess(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<bool> HasManageNetworkAccess(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<IEnumerable<Guid>> GetUserTeamIds(IEnumerable<Guid> teamIds, CancellationToken ct);
@@ -105,9 +115,64 @@ namespace Player.Vm.Api.Domain.Services
                 ct);
         }
 
-        public async Task<bool> CanEditTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
+        /// <summary>
+        /// Whether the caller may see the Vms of these teams. Control implies view — a caller who can
+        /// interact with a Vm can obviously look at it — so either permission satisfies this.
+        /// </summary>
+        public async Task<bool> CanViewVms(IEnumerable<Guid> teamIds, CancellationToken ct)
         {
-            return await Can(teamIds, null, [AppSystemPermission.EditViews], [AppViewPermission.EditView], [AppTeamPermission.EditTeam], ct);
+            return await Can(
+                teamIds,
+                null,
+                [AppSystemPermission.ViewVms, AppSystemPermission.ControlVms],
+                [AppViewPermission.ViewViewVms, AppViewPermission.ControlViewVms],
+                [AppTeamPermission.ViewTeamVms, AppTeamPermission.ControlTeamVms],
+                ct);
+        }
+
+        /// <summary>
+        /// Whether the caller may interact with the Vms of these teams — console input, power
+        /// operations, mounting ISOs, and anything else that changes a Vm's state.
+        /// </summary>
+        public async Task<bool> CanControlVms(IEnumerable<Guid> teamIds, CancellationToken ct)
+        {
+            return await Can(
+                teamIds,
+                null,
+                [AppSystemPermission.ControlVms],
+                [AppViewPermission.ControlViewVms],
+                [AppTeamPermission.ControlTeamVms],
+                ct);
+        }
+
+        /// <summary>
+        /// Whether the caller may see these teams' Maps, or — for a Map with no teams — any Map in
+        /// these Views. Manage implies view.
+        /// </summary>
+        public async Task<bool> CanViewMaps(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct)
+        {
+            return await Can(
+                teamIds,
+                viewIds,
+                [AppSystemPermission.ViewMaps, AppSystemPermission.ManageMaps],
+                [AppViewPermission.ViewViewMaps, AppViewPermission.ManageViewMaps],
+                [AppTeamPermission.ViewTeamMaps, AppTeamPermission.ManageTeamMaps],
+                ct);
+        }
+
+        /// <summary>
+        /// Whether the caller may create, edit, or delete these teams' Maps, or — for a Map with no
+        /// teams — Maps in these Views.
+        /// </summary>
+        public async Task<bool> CanManageMaps(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct)
+        {
+            return await Can(
+                teamIds,
+                viewIds,
+                [AppSystemPermission.ManageMaps],
+                [AppViewPermission.ManageViewMaps],
+                [AppTeamPermission.ManageTeamMaps],
+                ct);
         }
 
         public async Task<bool> HasViewNetworkAccess(IEnumerable<Guid> teamIds, CancellationToken ct)
@@ -362,6 +427,12 @@ namespace Player.Vm.Api.Domain.Services
         {
             var visibility = await GetVisibilityContextForTeamAsync(teamId, ct);
             return visibility.TeamIds.Contains(teamId);
+        }
+
+        public async Task<bool> IsInViewAsync(Guid viewId, CancellationToken ct)
+        {
+            var visibility = await GetVisibilityContextAsync(viewId, ct);
+            return visibility.PrimaryTeamId.HasValue;
         }
 
         public async Task<VisibilityContext> GetVisibilityContextForTeamAsync(Guid teamId, CancellationToken ct)

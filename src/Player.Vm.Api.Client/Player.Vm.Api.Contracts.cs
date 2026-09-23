@@ -1347,14 +1347,26 @@ namespace Player.Vm.Api
         [System.Runtime.Serialization.EnumMember(Value = @"ManageViews")]
         ManageViews = 1,
 
-        [System.Runtime.Serialization.EnumMember(Value = @"EditViews")]
-        EditViews = 2,
-
         [System.Runtime.Serialization.EnumMember(Value = @"ViewNetworks")]
-        ViewNetworks = 3,
+        ViewNetworks = 2,
 
         [System.Runtime.Serialization.EnumMember(Value = @"ManageNetworks")]
-        ManageNetworks = 4,
+        ManageNetworks = 3,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"DeleteIsos")]
+        DeleteIsos = 4,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ViewVms")]
+        ViewVms = 5,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ControlVms")]
+        ControlVms = 6,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ViewMaps")]
+        ViewMaps = 7,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ManageMaps")]
+        ManageMaps = 8,
 
     }
 
@@ -1368,11 +1380,23 @@ namespace Player.Vm.Api
         [System.Runtime.Serialization.EnumMember(Value = @"ManageTeam")]
         ManageTeam = 1,
 
-        [System.Runtime.Serialization.EnumMember(Value = @"EditTeam")]
-        EditTeam = 2,
-
         [System.Runtime.Serialization.EnumMember(Value = @"UploadTeamIsos")]
-        UploadTeamIsos = 3,
+        UploadTeamIsos = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"DeleteTeamIsos")]
+        DeleteTeamIsos = 3,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ViewTeamVms")]
+        ViewTeamVms = 4,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ControlTeamVms")]
+        ControlTeamVms = 5,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ViewTeamMaps")]
+        ViewTeamMaps = 6,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ManageTeamMaps")]
+        ManageTeamMaps = 7,
 
     }
 
@@ -1386,11 +1410,11 @@ namespace Player.Vm.Api
         [System.Runtime.Serialization.EnumMember(Value = @"ManageView")]
         ManageView = 1,
 
-        [System.Runtime.Serialization.EnumMember(Value = @"EditView")]
-        EditView = 2,
-
         [System.Runtime.Serialization.EnumMember(Value = @"UploadViewIsos")]
-        UploadViewIsos = 3,
+        UploadViewIsos = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"DeleteViewIsos")]
+        DeleteViewIsos = 3,
 
         [System.Runtime.Serialization.EnumMember(Value = @"DownloadVmFiles")]
         DownloadVmFiles = 4,
@@ -1406,6 +1430,18 @@ namespace Player.Vm.Api
 
         [System.Runtime.Serialization.EnumMember(Value = @"ManageNetworks")]
         ManageNetworks = 8,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ViewViewVms")]
+        ViewViewVms = 9,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ControlViewVms")]
+        ControlViewVms = 10,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ViewViewMaps")]
+        ViewViewMaps = 11,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"ManageViewMaps")]
+        ManageViewMaps = 12,
 
     }
 
@@ -2338,6 +2374,10 @@ namespace Player.Vm.Api
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.7.1.0 (NJsonSchema v11.6.1.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class VmPermissionResult
     {
+
+        [System.Text.Json.Serialization.JsonPropertyName("systemPermissions")]
+        // TODO(system.text.json): Add ItemConverterType with enum converter when supported
+        public System.Collections.Generic.ICollection<AppSystemPermission> SystemPermissions { get; set; }
 
         [System.Text.Json.Serialization.JsonPropertyName("viewPermissions")]
         // TODO(system.text.json): Add ItemConverterType with enum converter when supported

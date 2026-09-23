@@ -83,9 +83,9 @@ namespace Player.Vm.Api.Features.Vsphere
         protected async Task<Vms.Vm> GetVmForEditing(Guid id, CancellationToken cancellationToken)
         {
             return await this.GetVm(id,
-                                    [AppSystemPermission.EditViews],
-                                    [AppViewPermission.EditView],
-                                    [AppTeamPermission.EditTeam],
+                                    [AppSystemPermission.ControlVms],
+                                    [AppViewPermission.ControlViewVms],
+                                    [AppTeamPermission.ControlTeamVms],
                                     cancellationToken,
                                     "You do not have permission to edit this Vm");
         }

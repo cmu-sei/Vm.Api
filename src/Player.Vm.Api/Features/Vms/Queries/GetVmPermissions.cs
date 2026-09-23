@@ -1,4 +1,4 @@
-// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
+﻿// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
@@ -63,8 +63,15 @@ public class GetVmPermissions
                 .Select(p => p.Value)
                 .Distinct();
 
+            var appSystemPermissions = (await playerApiClient.GetMyPermissionsAsync(cancellationToken) ?? [])
+                .Select(x => Enum.TryParse<AppSystemPermission>(x, out var p) ? p : (AppSystemPermission?)null)
+                .Where(p => p.HasValue)
+                .Select(p => p.Value)
+                .Distinct();
+
             return new VmPermissionResult
             {
+                SystemPermissions = appSystemPermissions.ToArray(),
                 TeamPermissions = appTeamPermissions.ToArray(),
                 ViewPermissions = appViewPermissions.ToArray()
             };

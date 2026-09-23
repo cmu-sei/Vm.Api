@@ -1,4 +1,4 @@
-// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
+﻿// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
@@ -277,6 +277,97 @@ public class PlayerServiceAuthorizationTests
         Assert.False(await _service.CanManageTeams([Guid.NewGuid()], Ct));
     }
 
+    /// <summary>
+    /// Vm and Map access are their own grants: the permissions that decide who can see a team say
+    /// nothing about who can see its Vms or its Maps. This is the breaking half of the rename, so it is
+    /// pinned on the widest of the four wrappers - if <c>ManageViews</c> satisfied any of them, the
+    /// separation would be decorative.
+    /// </summary>
+    [Fact]
+    public async Task VmAndMapWrappers_AreNotSatisfiedByTheTeamVisibilityPermissions()
+    {
+        SystemPermissions(nameof(AppSystemPermission.ManageViews));
+
+        var teamId = Guid.NewGuid();
+
+        Assert.False(await _service.CanViewVms([teamId], Ct));
+        Assert.False(await _service.CanControlVms([teamId], Ct));
+        Assert.False(await _service.CanViewMaps([teamId], null, Ct));
+        Assert.False(await _service.CanManageMaps([teamId], null, Ct));
+    }
+
+    // Control implies view, the same way manage implies view for teams - so a caller granted only
+    // control never has to be granted the read permission alongside it.
+    [Fact]
+    public async Task CanViewVms_AcceptsTheControlPermissionInPlaceOfView()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+        TeamInView(teamId, viewId);
+        TeamPermissions(viewId, TeamClaim(teamId, direct: nameof(AppTeamPermission.ControlTeamVms)));
+
+        Assert.True(await _service.CanViewVms([teamId], Ct));
+    }
+
+    [Fact]
+    public async Task CanControlVms_DoesNotAcceptTheViewOnlyVmPermission()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+        TeamInView(teamId, viewId);
+        TeamPermissions(viewId, TeamClaim(teamId, direct: nameof(AppTeamPermission.ViewTeamVms)));
+
+        Assert.True(await _service.CanViewVms([teamId], Ct));
+        Assert.False(await _service.CanControlVms([teamId], Ct));
+    }
+
+    [Fact]
+    public async Task CanViewMaps_AcceptsTheManagePermissionInPlaceOfView()
+    {
+        SystemPermissions(nameof(AppSystemPermission.ManageMaps));
+
+        Assert.True(await _service.CanViewMaps([Guid.NewGuid()], null, Ct));
+    }
+
+    [Fact]
+    public async Task CanManageMaps_DoesNotAcceptTheViewOnlyMapPermission()
+    {
+        SystemPermissions(nameof(AppSystemPermission.ViewMaps));
+
+        Assert.True(await _service.CanViewMaps([Guid.NewGuid()], null, Ct));
+        Assert.False(await _service.CanManageMaps([Guid.NewGuid()], null, Ct));
+    }
+
+    /// <summary>
+    /// A Map with no teams is checked by View id alone - the only place the Map wrappers are handed a
+    /// View rather than a team. A View-level grant reaches it; a team-scoped one must not, which is the
+    /// pair of cases below. Two tests rather than one because team permissions are cached per View, so a
+    /// re-stub inside a single test would never be read.
+    /// </summary>
+    [Fact]
+    public async Task CanManageMaps_ForAMapWithNoTeams_AcceptsAViewLevelPermission()
+    {
+        var viewId = Guid.NewGuid();
+        var ownTeam = Guid.NewGuid();
+
+        UserViewTeams(viewId, ViewTeam(ownTeam, isMember: true));
+        TeamPermissions(viewId, TeamClaim(ownTeam, isPrimary: true, direct: nameof(AppViewPermission.ManageViewMaps)));
+
+        Assert.True(await _service.CanManageMaps([], [viewId], Ct));
+    }
+
+    [Fact]
+    public async Task CanManageMaps_ForAMapWithNoTeams_RefusesATeamScopedPermission()
+    {
+        var viewId = Guid.NewGuid();
+        var ownTeam = Guid.NewGuid();
+
+        UserViewTeams(viewId, ViewTeam(ownTeam, isMember: true));
+        TeamPermissions(viewId, TeamClaim(ownTeam, isPrimary: true, direct: nameof(AppTeamPermission.ManageTeamMaps)));
+
+        Assert.False(await _service.CanManageMaps([], [viewId], Ct));
+    }
+
     #endregion
 
     #region Caching
@@ -334,6 +425,34 @@ public class PlayerServiceAuthorizationTests
     #endregion
 
     #region Visibility
+
+    /// <summary>
+    /// Membership of a View, as opposed to any permission within it. A primary team claim is what
+    /// player.api hands back for someone who is actually in the View, and it is all that a teamless Map
+    /// needs to be readable - so getting this wrong opens those Maps to callers with no claim at all.
+    /// </summary>
+    [Fact]
+    public async Task IsInView_WithAPrimaryTeamClaim_IsTrue()
+    {
+        var viewId = Guid.NewGuid();
+        var ownTeam = Guid.NewGuid();
+
+        UserViewTeams(viewId, ViewTeam(ownTeam, isMember: true, isPrimary: true));
+        TeamPermissions(viewId, TeamClaim(ownTeam, isPrimary: true));
+
+        Assert.True(await _service.IsInViewAsync(viewId, Ct));
+    }
+
+    // A claim on some other team in the View is not membership: without a primary team the caller has no
+    // foothold there.
+    [Fact]
+    public async Task IsInView_WithoutAPrimaryTeamClaim_IsFalse()
+    {
+        var viewId = Guid.NewGuid();
+        TeamPermissions(viewId, TeamClaim(Guid.NewGuid(), direct: nameof(AppViewPermission.ManageView)));
+
+        Assert.False(await _service.IsInViewAsync(viewId, Ct));
+    }
 
     // No primary team means no foothold in the View, and so nothing visible.
     [Fact]

@@ -1,4 +1,4 @@
-// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
+﻿// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
@@ -18,6 +18,7 @@ using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Tests.Infrastructure;
 using Xunit;
+using AppSystemPermission = Player.Vm.Api.Infrastructure.Authorization.AppSystemPermission;
 using AppTeamPermission = Player.Vm.Api.Infrastructure.Authorization.AppTeamPermission;
 using AppViewPermission = Player.Vm.Api.Infrastructure.Authorization.AppViewPermission;
 using PlayerApiTeam = Player.Api.Client.Team;
@@ -201,7 +202,8 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     /// The endpoint the UI reads to decide which controls to render. It translates player.api's
     /// permission strings into this application's enums, dropping any it does not recognize, and keeps
     /// only the claims belonging to teams the Vm is actually on - so a caller's rights over a team
-    /// beside it do not turn into rights over this Vm.
+    /// beside it do not turn into rights over this Vm. System permissions are reported alongside them
+    /// because a system-wide grant such as ControlVms reaches every Vm without any team claim.
     /// </summary>
     [Fact]
     public async Task GetVmPermissions_KeepsOnlyTheVmsOwnTeamsAndOnlyKnownPermissions()
@@ -222,11 +224,15 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
                 Claim(teamId, nameof(AppTeamPermission.ViewTeam), nameof(AppViewPermission.ViewView), "NotAPermission"),
                 Claim(otherTeamId, nameof(AppTeamPermission.ManageTeam), nameof(AppViewPermission.ManageView))
             ]);
+        Factory.PlayerApiClient
+            .GetMyPermissionsAsync(Arg.Any<CancellationToken>())
+            .Returns([nameof(AppSystemPermission.ControlVms), "NotAPermission"]);
 
         var permissions = await Get<VmPermissionResult>($"/api/vms/{vm.Id}/permissions");
 
         Assert.Equal([AppTeamPermission.ViewTeam], permissions.TeamPermissions);
         Assert.Equal([AppViewPermission.ViewView], permissions.ViewPermissions);
+        Assert.Equal([AppSystemPermission.ControlVms], permissions.SystemPermissions);
     }
 
     [Fact]
@@ -554,12 +560,16 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
-    // Unstubbed IsTeamVisibleAsync answers false, which is the denial this asserts.
     [Fact]
-    public async Task GetTeamMap_ForATeamTheCallerCannotSee_Is403()
+    public async Task GetTeamMap_WithoutMapAccessToTheTeam_Is403()
     {
         var teamId = Guid.NewGuid();
         await Seed(Map([teamId]));
+        Factory.PlayerApi.CanViewMaps(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
 
         var response = await Client.GetAsync($"/api/teams/{teamId}/map", Ct);
 
@@ -634,11 +644,14 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     }
 
     [Fact]
-    public async Task DeleteMap_WithoutManageOnItsTeams_Is403AndLeavesTheRow()
+    public async Task DeleteMap_WithoutMapManagementOnItsTeams_Is403AndLeavesTheRow()
     {
         var map = Map([Guid.NewGuid()]);
         await Seed(map);
-        Factory.PlayerApi.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanManageMaps(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
             .Returns(false);
 
         var response = await Client.DeleteAsync($"/api/views/maps/{map.Id}", Ct);
@@ -751,7 +764,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
 
-        Factory.PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns<bool>(_ => throw new ApiException(
                 "Team not found", (int)HttpStatusCode.NotFound, null, null, null));
 
@@ -768,7 +781,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
 
-        Factory.PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns<bool>(_ => throw new ApiException(
                 "Service Unavailable", (int)HttpStatusCode.ServiceUnavailable, null, null, null));
 
@@ -796,9 +809,23 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     {
         Factory.PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(false);
-        Factory.PlayerApi.CanEditTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(false);
         Factory.PlayerApi.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.CanViewMaps(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.CanManageMaps(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.IsInViewAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(false);
         Factory.PlayerApi
             .Can(default, default, default, default, default, Ct)

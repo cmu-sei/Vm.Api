@@ -1,4 +1,4 @@
-// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
+﻿// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
@@ -162,7 +162,7 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmApiFacto
         await Seed(denied, allowed);
 
         Factory.PlayerApi
-            .CanViewTeams(Arg.Is<IEnumerable<Guid>>(teams => teams.Contains(deniedTeam)), Arg.Any<CancellationToken>())
+            .CanViewVms(Arg.Is<IEnumerable<Guid>>(teams => teams.Contains(deniedTeam)), Arg.Any<CancellationToken>())
             .Returns(false);
 
         VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [allowed.Id] = string.Empty });
@@ -471,20 +471,20 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmApiFacto
 
     /// <summary>
     /// The second permission gate, and the one no bulk test had reached: seeing a Vm is not being allowed
-    /// to power it. A caller with team visibility but no edit permission gets
+    /// to power it. A caller who may view a Vm but not control it gets
     /// <c>"Insufficient Permissions"</c> rather than the <c>"Unauthorized"</c>
     /// <see cref="PowerOn_ReportsAnInaccessibleVmWithoutFailingTheRequest"/> covers, and the two are
     /// different answers to different questions asked of player.api.
     /// </summary>
     [Fact]
-    public async Task PowerOn_ReportsInsufficientPermissionsWhenTheCallerCannotEditTheTeam()
+    public async Task PowerOn_ReportsInsufficientPermissionsWhenTheCallerCannotControlTheVm()
     {
         var denied = VmApiFactory.VsphereVm();
         var allowed = VmApiFactory.VsphereVm();
         await Seed(denied, allowed);
 
         Factory.PlayerApi
-            .CanEditTeams(
+            .CanControlVms(
                 Arg.Is<IEnumerable<Guid>>(teams => teams.Contains(denied.VmTeams.Single().TeamId)),
                 Arg.Any<CancellationToken>())
             .Returns(false);
