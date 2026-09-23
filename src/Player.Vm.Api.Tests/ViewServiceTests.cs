@@ -276,8 +276,10 @@ public class ViewServiceTests
     #region The view's teams
 
     /// <summary>
-    /// The other direction, and a different route: the view's teams in one call. Cached under the view's id
-    /// in the same cache the team lookups use.
+    /// The other direction, and a different route: the view's teams in one call. Shares its cache entry
+    /// with <see cref="GetTeamDetailsForView_ReturnsTheNamesAndSharesTheCacheWithTheIdLookup"/>, under a
+    /// prefixed string key rather than the bare view id - the team and view lookups in this same cache are
+    /// keyed by bare Guids of their own.
     /// </summary>
     [Fact]
     public async Task GetTeamsForView_ReturnsTheTeamIdsAndAsksOnce()
@@ -317,9 +319,10 @@ public class ViewServiceTests
     }
 
     /// <summary>
-    /// Not found is not forgiven on this route, unlike the team lookup: the caller gets the exception. Its
-    /// one caller is inside the telemetry path, whose exceptions are swallowed by the hub's caller, so this
-    /// asymmetry has never been visible.
+    /// Not found is not forgiven on this route, unlike the team lookup: the caller gets the exception. One
+    /// caller is inside the telemetry path, whose exceptions are swallowed by the hub's caller; the other is
+    /// PlayerService widening a system operator's visibility, which catches the 404 itself so that a bad
+    /// view id stays a 404 rather than becoming a 500.
     /// </summary>
     [Fact]
     public async Task GetTeamsForView_ForAViewPlayerDoesNotHave_Throws()
@@ -328,6 +331,28 @@ public class ViewServiceTests
         _http.Answers($"api/views/{viewId}/teams", HttpStatusCode.NotFound);
 
         await Assert.ThrowsAsync<ApiException>(() => _service.GetTeamsForView(viewId, Ct));
+    }
+
+    /// <summary>
+    /// Names as well as ids, because the callers that need the roster - the view's team list and the hub's
+    /// per-team user list - render team names. Asking for both shapes must not cost two round trips: they
+    /// are one fetch behind one cache entry.
+    /// </summary>
+    [Fact]
+    public async Task GetTeamDetailsForView_ReturnsTheNamesAndSharesTheCacheWithTheIdLookup()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+        _http.Answers(
+            $"api/views/{viewId}/teams",
+            new[] { new Team { Id = teamId, Name = "Red Team", ViewId = viewId } });
+
+        var teams = await _service.GetTeamDetailsForView(viewId, Ct);
+        var ids = await _service.GetTeamsForView(viewId, Ct);
+
+        Assert.Equal<string>(["Red Team"], teams.Select(x => x.Name).ToArray());
+        Assert.Equal<Guid>([teamId], ids);
+        Assert.Single(_http.Sent);
     }
 
     #endregion

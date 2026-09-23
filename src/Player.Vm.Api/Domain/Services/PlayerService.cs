@@ -220,18 +220,7 @@ namespace Player.Vm.Api.Domain.Services
             requiredViewPermissions ??= [];
             requiredTeamPermissions ??= [];
 
-            ICollection<string> systemPermissions;
-
-            if (!_cache.TryGetValue(_userId, out systemPermissions))
-            {
-                systemPermissions = await _playerApiClient.GetMyPermissionsAsync(ct);
-                _cache.Set(_userId, systemPermissions, new MemoryCacheEntryOptions().SetAbsoluteExpiration(TimeSpan.FromMinutes(1)));
-            }
-
-            var appSystemPermissions = (systemPermissions ?? [])
-                .Select(x => Enum.TryParse<AppSystemPermission>(x, out var p) ? p : (AppSystemPermission?)null)
-                .Where(p => p.HasValue)
-                .Select(p => p.Value);
+            var appSystemPermissions = await GetSystemPermissionsAsync(ct);
 
             if (requiredSystemPermissions.Any() && appSystemPermissions.Intersect(requiredSystemPermissions).Any())
                 return true;
@@ -299,6 +288,16 @@ namespace Player.Vm.Api.Domain.Services
                 // reversing these two lines would turn "view not found" into "no visible teams".
                 var teams = await GetUserViewTeamsByViewIdAsync(viewId, ct);
                 var visibility = await GetVisibilityContextAsync(viewId, ct);
+
+                // A caller with system-wide Vm or Map access has visibility over teams they are not a
+                // member of, and player.api's "my teams in this View" endpoint narrows to the caller's
+                // own primary context before we ever see it - so for them the caller's team list is not
+                // a superset of what they may see, and intersecting with it would drop everything.
+                // Ask for the View's whole roster instead. The probe above still ran, so an unknown
+                // View is still a 404 rather than an empty list.
+                if (!visibility.PrimaryTeamId.HasValue && visibility.CanViewAllTeams)
+                    return await _viewService.GetTeamDetailsForView(viewId, ct);
+
                 return teams.Where(x => visibility.TeamIds.Contains(x.Id));
             }
             catch (Player.Api.Client.ApiException ex) when (ex.StatusCode == 404)
@@ -383,7 +382,7 @@ namespace Player.Vm.Api.Domain.Services
             var primaryPermission = permissions.FirstOrDefault(x => x.IsPrimary);
 
             if (primaryPermission == null)
-                return VisibilityContext.Empty;
+                return await GetSystemWideVisibilityContextAsync(viewId, ct);
 
             // This intentionally mirrors player.api's
             // AuthorizationService.GetPrimaryVisibilityContext, which decides visibility from the
@@ -493,6 +492,64 @@ namespace Player.Vm.Api.Domain.Services
             }
 
             return teams ?? [];
+        }
+
+        private async Task<IEnumerable<AppSystemPermission>> GetSystemPermissionsAsync(CancellationToken ct)
+        {
+            if (!_cache.TryGetValue(_userId, out ICollection<string> systemPermissions))
+            {
+                systemPermissions = await _playerApiClient.GetMyPermissionsAsync(ct);
+                _cache.Set(_userId, systemPermissions, new MemoryCacheEntryOptions().SetAbsoluteExpiration(TimeSpan.FromMinutes(1)));
+            }
+
+            return ParsePermissions<AppSystemPermission>(systemPermissions);
+        }
+
+        /// <summary>
+        /// System permissions that reach every Vm or Map in the system, and so cannot be satisfied by
+        /// team membership. Holding one is what lets the caller below see a View they are not a member
+        /// of. The View permissions ViewViews/ManageViews are deliberately absent: being able to look at
+        /// any View says nothing about its Vms, and widening on them would hand a read-only View
+        /// operator the Vm consoles too.
+        /// </summary>
+        private static readonly AppSystemPermission[] SystemWideVmAndMapPermissions =
+        [
+            AppSystemPermission.ViewVms,
+            AppSystemPermission.ControlVms,
+            AppSystemPermission.ViewMaps,
+            AppSystemPermission.ManageMaps,
+        ];
+
+        /// <summary>
+        /// The visibility a caller with no team claim in this View still has. Team claims come only from
+        /// membership (and from scopes onto a team the caller is a member of), so a system operator who
+        /// was never added to a team had no visibility at all and every View-scoped read returned an
+        /// empty list - the whole View looked like a View with no Vms.
+        ///
+        /// PrimaryTeamId stays null on purpose. It is what the presence and Map-membership paths read,
+        /// and a system permission should widen what the caller can SEE without making them appear to
+        /// be in the View: <see cref="IsInViewAsync"/> stays false, and VmHub does not announce them to
+        /// a team they are not on.
+        /// </summary>
+        private async Task<VisibilityContext> GetSystemWideVisibilityContextAsync(Guid viewId, CancellationToken ct)
+        {
+            var systemPermissions = await GetSystemPermissionsAsync(ct);
+
+            if (!systemPermissions.Intersect(SystemWideVmAndMapPermissions).Any())
+                return VisibilityContext.Empty;
+
+            try
+            {
+                var teamIds = await _viewService.GetTeamsForView(viewId, ct);
+                return new VisibilityContext(null, true, [.. teamIds.Where(x => x != Guid.Empty)]);
+            }
+            catch (Player.Api.Client.ApiException ex) when (ex.StatusCode == 404)
+            {
+                // The team-permissions endpoint answers an unknown View with an empty list rather than a
+                // 404, so this is the first call that can notice. Same contract as the caller's catch:
+                // no visibility, and the separate teams probe is what turns it into a 404.
+                return VisibilityContext.Empty;
+            }
         }
 
         // The caller's own teams in the View - membership or primary only, excluding teams reachable

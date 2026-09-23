@@ -548,6 +548,117 @@ public class PlayerServiceAuthorizationTests
         Assert.Same(VisibilityContext.Empty, visibility);
     }
 
+    /// <summary>
+    /// The system-operator case. Team claims come only from membership, so an operator who was never
+    /// added to a team had no visibility anywhere and every View-scoped read came back empty - a View
+    /// full of VMs was indistinguishable from an empty one. A system-wide VM or Map permission cannot be
+    /// satisfied by joining a team, so it has to widen visibility on its own.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(AppSystemPermission.ViewVms))]
+    [InlineData(nameof(AppSystemPermission.ControlVms))]
+    [InlineData(nameof(AppSystemPermission.ViewMaps))]
+    [InlineData(nameof(AppSystemPermission.ManageMaps))]
+    public async Task Visibility_WithASystemVmOrMapPermission_SeesEveryTeamWithoutMembership(string permission)
+    {
+        var viewId = Guid.NewGuid();
+        var teamA = Guid.NewGuid();
+        var teamB = Guid.NewGuid();
+
+        SystemPermissions(permission);
+        TeamPermissions(viewId);
+        ViewRoster(viewId, teamA, teamB);
+
+        var visibility = await _service.GetVisibilityContextAsync(viewId, Ct);
+
+        Assert.True(visibility.CanViewAllTeams);
+        Assert.Equal<Guid>([teamA, teamB], visibility.TeamIds.OrderBy(x => x == teamB).ToArray());
+    }
+
+    /// <summary>
+    /// PrimaryTeamId stays null for an operator who is not a member. It is read as "is in this View" by
+    /// the presence path and by the teamless-Map rule, so filling it in with a borrowed team id would
+    /// announce a non-member to that team and hand them Maps that membership alone is meant to gate.
+    /// </summary>
+    [Fact]
+    public async Task Visibility_WithASystemVmPermission_LeavesTheCallerOutsideTheView()
+    {
+        var viewId = Guid.NewGuid();
+
+        SystemPermissions(nameof(AppSystemPermission.ControlVms));
+        TeamPermissions(viewId);
+        ViewRoster(viewId, Guid.NewGuid());
+
+        var visibility = await _service.GetVisibilityContextAsync(viewId, Ct);
+
+        Assert.Null(visibility.PrimaryTeamId);
+        Assert.False(await _service.IsInViewAsync(viewId, Ct));
+    }
+
+    /// <summary>
+    /// Seeing every View is not seeing every VM. ViewViews and ManageViews are deliberately excluded from
+    /// the widening, so a read-only View operator does not collect the VM consoles along the way.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(AppSystemPermission.ViewViews))]
+    [InlineData(nameof(AppSystemPermission.ManageViews))]
+    [InlineData(nameof(AppSystemPermission.ManageNetworks))]
+    public async Task Visibility_WithAnUnrelatedSystemPermission_IsStillEmpty(string permission)
+    {
+        var viewId = Guid.NewGuid();
+
+        SystemPermissions(permission);
+        TeamPermissions(viewId);
+        ViewRoster(viewId, Guid.NewGuid());
+
+        var visibility = await _service.GetVisibilityContextAsync(viewId, Ct);
+
+        Assert.False(visibility.CanViewAllTeams);
+        Assert.Empty(visibility.TeamIds);
+    }
+
+    /// <summary>
+    /// A member's visibility is decided by their claims, not by what else they hold system-wide. Letting
+    /// the system permission win here would quietly promote any operator who is also an ordinary member
+    /// of one team to seeing the whole View through that membership.
+    /// </summary>
+    [Fact]
+    public async Task Visibility_WithAPrimaryTeamClaim_IgnoresSystemPermissions()
+    {
+        var viewId = Guid.NewGuid();
+        var primary = Guid.NewGuid();
+        var other = Guid.NewGuid();
+
+        SystemPermissions(nameof(AppSystemPermission.ControlVms));
+        UserViewTeams(viewId, ViewTeam(primary, isMember: true, isPrimary: true));
+        TeamPermissions(viewId, TeamClaim(primary, isPrimary: true, direct: nameof(AppTeamPermission.ViewTeam)));
+        ViewRoster(viewId, primary, other);
+
+        var visibility = await _service.GetVisibilityContextAsync(viewId, Ct);
+
+        Assert.False(visibility.CanViewAllTeams);
+        Assert.Equal<Guid>([primary], visibility.TeamIds.ToArray());
+    }
+
+    /// <summary>
+    /// The team-permissions endpoint answers an unknown View with an empty list rather than a 404, so the
+    /// roster lookup is the first call that can notice - and it must not turn a bad View id into a 500.
+    /// </summary>
+    [Fact]
+    public async Task Visibility_WithASystemVmPermission_ForAnUnknownView_IsEmpty()
+    {
+        var viewId = Guid.NewGuid();
+
+        SystemPermissions(nameof(AppSystemPermission.ViewVms));
+        TeamPermissions(viewId);
+        _viewService.GetTeamsForView(viewId, Arg.Any<CancellationToken>()).ThrowsAsync(NotFound());
+
+        var visibility = await _service.GetVisibilityContextAsync(viewId, Ct);
+
+        Assert.False(visibility.CanViewAllTeams);
+        Assert.Empty(visibility.TeamIds);
+    }
+
     #endregion
 
     #region View and team lookups
@@ -579,6 +690,58 @@ public class PlayerServiceAuthorizationTests
         var teams = await _service.GetTeamsByViewIdAsync(viewId, Ct);
 
         Assert.Equal<Guid>([primary], teams.Select(x => x.Id).ToArray());
+    }
+
+    /// <summary>
+    /// For a system operator the caller's own team list is not a superset of what they may see - it is
+    /// empty, because player.api narrows "my teams in this View" by the same primary-team rule before
+    /// vm.api ever sees it. Intersecting with it would throw away the widened visibility, so the whole
+    /// roster has to come from this service's own credentials instead.
+    /// </summary>
+    [Fact]
+    public async Task GetTeamsByViewId_WithASystemVmPermission_ReturnsTheWholeRoster()
+    {
+        var viewId = Guid.NewGuid();
+        var teamA = Guid.NewGuid();
+        var teamB = Guid.NewGuid();
+
+        SystemPermissions(nameof(AppSystemPermission.ViewVms));
+        UserViewTeams(viewId);
+        TeamPermissions(viewId);
+        ViewRoster(viewId, teamA, teamB);
+
+        var teams = await _service.GetTeamsByViewIdAsync(viewId, Ct);
+
+        Assert.Equal<Guid>([teamA, teamB], teams.Select(x => x.Id).OrderBy(x => x == teamB).ToArray());
+    }
+
+    // Still null, not an empty roster: the probe runs before the widening, so a bad View id is a 404 for
+    // an operator exactly as it is for a member.
+    [Fact]
+    public async Task GetTeamsByViewId_WithASystemVmPermission_ForAnUnknownView_IsNull()
+    {
+        var viewId = Guid.NewGuid();
+
+        SystemPermissions(nameof(AppSystemPermission.ViewVms));
+        _client.GetUserViewTeamsAsync(viewId, UserId, Arg.Any<CancellationToken>()).ThrowsAsync(NotFound());
+
+        Assert.Null(await _service.GetTeamsByViewIdAsync(viewId, Ct));
+    }
+
+    /// <summary>
+    /// The hub group an operator joins. Without this they would get the VM list from the REST endpoint and
+    /// then never hear about a power state change, because broadcasts go to the View or team groups.
+    /// </summary>
+    [Fact]
+    public async Task GetGroupIdsForView_WithASystemVmPermission_IsTheViewGroup()
+    {
+        var viewId = Guid.NewGuid();
+
+        SystemPermissions(nameof(AppSystemPermission.ViewVms));
+        TeamPermissions(viewId);
+        ViewRoster(viewId, Guid.NewGuid());
+
+        Assert.Equal<Guid>([viewId], (await _service.GetGroupIdsForViewAsync(viewId, Ct)).ToArray());
     }
 
     // A team nobody can place in a View is not visible, and must not throw on the way to that answer.
@@ -647,6 +810,18 @@ public class PlayerServiceAuthorizationTests
 
     private void UserViewTeams(Guid viewId, params Team[] teams) =>
         _client.GetUserViewTeamsAsync(viewId, UserId, Arg.Any<CancellationToken>()).Returns(teams.ToList());
+
+    /// <summary>
+    /// Every Team in the View as this service's own credentials see it - the roster a system operator is
+    /// widened to. Stubs both shapes together so a test cannot accidentally describe a View whose id list
+    /// and team list disagree.
+    /// </summary>
+    private void ViewRoster(Guid viewId, params Guid[] teamIds)
+    {
+        _viewService.GetTeamsForView(viewId, Arg.Any<CancellationToken>()).Returns(teamIds.ToList());
+        _viewService.GetTeamDetailsForView(viewId, Arg.Any<CancellationToken>())
+            .Returns(teamIds.Select(x => ViewTeam(x)).ToArray());
+    }
 
     private void TeamInView(Guid teamId, Guid viewId) =>
         _viewService.GetViewIdForTeam(teamId, Arg.Any<CancellationToken>()).Returns(viewId);

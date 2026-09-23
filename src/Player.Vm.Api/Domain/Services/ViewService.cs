@@ -20,6 +20,14 @@ namespace Player.Vm.Api.Domain.Services
         Task<Guid[]> GetViewIdsForTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<TeamInfo[]> GetInfoForTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<List<Guid>> GetTeamsForView(Guid viewId, CancellationToken ct);
+
+        /// <summary>
+        /// Every Team in the View, with names, fetched with this service's own Player credentials
+        /// rather than the caller's. Use it where the caller is authorized by something other than
+        /// membership - the caller's own "my teams in this View" list is narrowed by player.api before
+        /// vm.api sees it, so it is not a usable source there.
+        /// </summary>
+        Task<Team[]> GetTeamDetailsForView(Guid viewId, CancellationToken ct);
     }
 
     public class ViewService : IViewService
@@ -86,14 +94,22 @@ namespace Player.Vm.Api.Domain.Services
 
         public async Task<List<Guid>> GetTeamsForView(Guid viewId, CancellationToken ct)
         {
-            var teamIds = new List<Guid>();
-            if (!_cache.TryGetValue(viewId, out teamIds))
+            return (await GetTeamDetailsForView(viewId, ct)).Select(x => x.Id).ToList();
+        }
+
+        public async Task<Team[]> GetTeamDetailsForView(Guid viewId, CancellationToken ct)
+        {
+            // Keyed by a prefixed string rather than the bare Guid: this cache is shared with the
+            // per-team and per-user entries, which are keyed by bare Guids of their own.
+            var key = $"view-teams-{viewId}";
+
+            if (!_cache.TryGetValue(key, out Team[] teams))
             {
-                teamIds = (await _playerApiClient.GetViewTeamsAsync(viewId, ct)).Select(x => x.Id).ToList();
-                _cache.Set(viewId, teamIds, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromMinutes(15)));
+                teams = (await _playerApiClient.GetViewTeamsAsync(viewId, ct)).ToArray();
+                _cache.Set(key, teams, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromMinutes(15)));
             }
 
-            return teamIds;
+            return teams;
         }
 
         private async Task<TeamInfo> GetInfoForTeam(Guid teamId, CancellationToken ct)
