@@ -9,7 +9,6 @@ using NSubstitute;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Services;
-using Player.Vm.Api.Features.Files;
 using Player.Vm.Api.Features.Files.Models;
 using Player.Vm.Api.Features.Files.Providers;
 using Xunit;
@@ -408,26 +407,19 @@ public class VsphereIsoProviderTests
     }
 
     [Fact]
-    public async Task Upload_AFailedScopeDoesNotHideASuccessfulScope_AndForwardsCancellation()
+    public async Task Upload_ForwardsCancellation()
     {
         using var cancellation = new CancellationTokenSource();
-        var ct = cancellation.Token;
-        var otherScope = Guid.NewGuid().ToString();
         var vsphere = Substitute.For<IVsphereService>();
-        vsphere.UploadIso(ViewId.ToString(), ScopeId.ToString(), "tools.iso", "/tmp/staged.iso", ct)
-            .Returns(new IsoOperationOutcome { FailedHostCount = 2, TotalHostCount = 2 });
-        vsphere.UploadIso(ViewId.ToString(), otherScope, "tools.iso", "/tmp/staged.iso", ct)
-            .Returns(new IsoOperationOutcome { TotalHostCount = 2 });
+        vsphere.UploadIso(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new IsoOperationOutcome { TotalHostCount = 1 });
 
-        var result = await Provider(ApiOptions(), vsphere).UploadAsync(
-            Request("/tmp/staged.iso", "tools.iso", ScopeId.ToString(), otherScope), ct);
+        await Provider(ApiOptions(), vsphere).UploadAsync(
+            Request("/tmp/staged.iso"), cancellation.Token);
 
-        Assert.Equal(2, result.FailedHostCount);
-        Assert.Equal(4, result.TotalHostCount);
-        var summary = IsoService.SummarizeFanOut(
-            [new IsoService.ProviderOutcome(VmType.Vsphere, false, result.FailedHostCount, result.TotalHostCount)],
-            "upload", "uploaded");
-        Assert.True(summary.PartialFailure);
+        await vsphere.Received(1).UploadIso(
+            ViewId.ToString(), ScopeId.ToString(), "tools.iso", "/tmp/staged.iso", cancellation.Token);
     }
 
     [Fact]

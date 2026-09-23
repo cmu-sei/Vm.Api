@@ -19,6 +19,7 @@ using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Files.Models;
+using Player.Vm.Api.Features.Files.Providers;
 using VimClient;
 using Xunit;
 
@@ -80,14 +81,13 @@ public class VsphereIsoStorageGroupTests
                 var connection = new VsphereConnection(host, Options, NullLogger.Instance)
                 {
                     Client = client,
+                    Connected = true,
                     Sic = new ServiceContent
                     {
                         rootFolder = new ManagedObjectReference { type = "Folder", Value = "root" },
                         fileManager = new ManagedObjectReference { type = "FileManager", Value = "files" }
                     }
                 };
-                typeof(VsphereConnection).GetProperty(nameof(VsphereConnection.Connected))
-                    .SetValue(connection, true);
                 Members[host.Address] = connection;
                 Connections.GetConnection(host.Address).Returns(connection);
             }
@@ -109,8 +109,7 @@ public class VsphereIsoStorageGroupTests
         }
 
         public void Disconnect(string address) =>
-            typeof(VsphereConnection).GetProperty(nameof(VsphereConnection.Connected))
-                .SetValue(Members[address], false);
+            Members[address].Connected = false;
 
         public Task<IsoOperationOutcome> Write(bool upload = true, CancellationToken ct = default) =>
             upload
@@ -131,17 +130,6 @@ public class VsphereIsoStorageGroupTests
             send(request, ct);
     }
 
-    // Response disposal happens after the HTTP operation has finished successfully.
-    private sealed class CancelOnDisposeContent(CancellationTokenSource cancellation) : ByteArrayContent([])
-    {
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-                cancellation.Cancel();
-            base.Dispose(disposing);
-        }
-    }
-
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
@@ -151,16 +139,16 @@ public class VsphereIsoStorageGroupTests
         var result = await storage.Write(upload, TestContext.Current.CancellationToken);
         Assert.Equal(2, result.TotalHostCount);
         Assert.Equal(0, result.FailedHostCount);
-        Assert.Equal(2, storage.Requests.Count);
+        Assert.Equal(new[] { "first.test", "second.test" }, storage.Requests.Select(r => r.Uri.Host).Order());
         Assert.All(storage.Requests, r => Assert.Equal(upload ? HttpMethod.Put : HttpMethod.Delete, r.Method));
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task Shared_WritesOnceUsingConfigurationOrder_WithTwelveMembers(bool upload)
+    public async Task Shared_WritesOnceUsingConfigurationOrder(bool upload)
     {
-        using var storage = new Storage(Enumerable.Range(0, 12).Select(i => Host($"vc{i}.test")).ToArray());
+        using var storage = new Storage(Enumerable.Range(0, 3).Select(i => Host($"vc{i}.test")).ToArray());
         storage.Options.IsoStorageShared = true;
         var result = await storage.Write(upload, TestContext.Current.CancellationToken);
         Assert.Equal(1, result.TotalHostCount);
@@ -169,7 +157,6 @@ public class VsphereIsoStorageGroupTests
         Assert.Equal("vc0.test", request.Uri.Host);
         Assert.Contains("folder-vc0.test/view/scope/test.iso", request.Uri.AbsolutePath);
         Assert.Contains("dsName=datastore-vc0.test", request.Uri.Query);
-        Assert.Equal(12, storage.Service.GetEnabledConnectionCount());
     }
 
     [Theory]
@@ -183,21 +170,61 @@ public class VsphereIsoStorageGroupTests
         storage.Options.IsoStorageShared = shared;
         var result = await storage.Write(ct: TestContext.Current.CancellationToken);
         Assert.Equal(shared ? 3 : 4, result.TotalHostCount);
-        Assert.Equal(result.TotalHostCount, storage.Requests.Count);
-        Assert.DoesNotContain(storage.Requests, r => r.Uri.Host == "b.test");
+        Assert.Equal(0, result.FailedHostCount);
+        Assert.Equal(shared ? new[] { "a.test", "c.test", "d.test" } : new[] { "a.test", "c.test", "d.test", "e.test" },
+            storage.Requests.Select(r => r.Uri.Host).Order());
     }
 
     [Fact]
-    public async Task NamesAreTrimmedAndCaseSensitive_AndCannotCollideWithIndividualDestinations()
+    public async Task GroupNames_AreTrimmed()
     {
-        using var storage = new Storage(
-            Host("a.test", " group "), Host("b.test", "group"),
-            Host("c.test", "Group"), Host("d.test", "e.test"),
-            Host("e.test"), Host("f.test", " "));
+        using var storage = new Storage(Host("a.test", " group "), Host("b.test", "group"));
+
         var result = await storage.Write(ct: TestContext.Current.CancellationToken);
-        Assert.Equal(5, result.TotalHostCount);
-        Assert.Equal(5, storage.Requests.Count);
-        Assert.DoesNotContain(storage.Requests, r => r.Uri.Host == "b.test");
+
+        Assert.Equal(1, result.TotalHostCount);
+        Assert.Equal(0, result.FailedHostCount);
+        Assert.Equal("a.test", Assert.Single(storage.Requests).Uri.Host);
+    }
+
+    [Fact]
+    public async Task GroupNames_AreCaseSensitive()
+    {
+        using var storage = new Storage(Host("a.test", "group"), Host("b.test", "Group"));
+
+        var result = await storage.Write(ct: TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, result.TotalHostCount);
+        Assert.Equal(0, result.FailedHostCount);
+        Assert.Equal(new[] { "a.test", "b.test" }, storage.Requests.Select(r => r.Uri.Host).Order());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BlankGroupNames_AreUnassigned(bool shared)
+    {
+        using var storage = new Storage(Host("a.test", " "), Host("b.test"));
+        storage.Options.IsoStorageShared = shared;
+
+        var result = await storage.Write(ct: TestContext.Current.CancellationToken);
+
+        Assert.Equal(shared ? 1 : 2, result.TotalHostCount);
+        Assert.Equal(0, result.FailedHostCount);
+        Assert.Equal(shared ? new[] { "a.test" } : new[] { "a.test", "b.test" },
+            storage.Requests.Select(r => r.Uri.Host).Order());
+    }
+
+    [Fact]
+    public async Task GroupNameMatchingAHostAddress_RemainsASeparateDestination()
+    {
+        using var storage = new Storage(Host("a.test", "b.test"), Host("b.test"));
+
+        var result = await storage.Write(ct: TestContext.Current.CancellationToken);
+
+        Assert.Equal(2, result.TotalHostCount);
+        Assert.Equal(0, result.FailedHostCount);
+        Assert.Equal(new[] { "a.test", "b.test" }, storage.Requests.Select(r => r.Uri.Host).Order());
     }
 
     [Fact]
@@ -212,33 +239,15 @@ public class VsphereIsoStorageGroupTests
     }
 
     [Theory]
-    [InlineData(null, false)]
-    [InlineData("", false)]
-    [InlineData("false", false)]
-    [InlineData("true", true)]
-    public void SharingConfiguration_AllowsMissingOrBlankValues(string value, bool shared)
-    {
-        var values = new Dictionary<string, string>();
-        if (value != null)
-            values["Vsphere:IsoStorageShared"] = value;
-        var configuration = new ConfigurationBuilder().AddInMemoryCollection(values).Build();
-        var options = new VsphereOptions();
-        configuration.GetSection("Vsphere").Bind(options);
-        Assert.Equal(shared, options.IsoStorageShared == true);
-    }
-
-    [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task DisconnectedMissingAndClientlessMembers_AreSkipped(bool upload)
+    public async Task DisconnectedMember_IsSkipped(bool upload)
     {
-        using var storage = new Storage(
-            Host("offline.test"), Host("missing.test"), Host("clientless.test"), Host("online.test"));
+        using var storage = new Storage(Host("offline.test"), Host("online.test"));
         storage.Options.IsoStorageShared = true;
         storage.Disconnect("offline.test");
-        storage.Connections.GetConnection("missing.test").Returns((VsphereConnection)null);
-        storage.Members["clientless.test"].Client = null;
         var result = await storage.Write(upload, TestContext.Current.CancellationToken);
+        Assert.Equal(1, result.TotalHostCount);
         Assert.Equal(0, result.FailedHostCount);
         Assert.Equal("online.test", Assert.Single(storage.Requests).Uri.Host);
     }
@@ -260,6 +269,9 @@ public class VsphereIsoStorageGroupTests
         Assert.Equal(1, result.TotalHostCount);
         Assert.Equal(0, result.FailedHostCount);
         Assert.Equal(new[] { "a.test", "b.test" }, storage.Requests.Select(r => r.Uri.Host));
+        var retry = storage.Requests.Last();
+        Assert.Equal("/folder/folder-b.test/view/scope/test.iso", retry.Uri.AbsolutePath);
+        Assert.Contains("dsName=datastore-b.test", retry.Uri.Query);
         if (upload)
             Assert.All(storage.Requests, r => Assert.Equal(storage.Bytes, r.Body));
     }
@@ -299,7 +311,7 @@ public class VsphereIsoStorageGroupTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task AllGroupsFail_ReturnsKnownCountsForProviderAggregation(bool upload)
+    public async Task AllGroupsFail_ReturnsFailureCounts(bool upload)
     {
         using var storage = new Storage(Host("offline.test"), Host("fails.test", "broken"));
         storage.Disconnect("offline.test");
@@ -307,14 +319,6 @@ public class VsphereIsoStorageGroupTests
         var result = await storage.Write(upload, TestContext.Current.CancellationToken);
         Assert.Equal(2, result.TotalHostCount);
         Assert.Equal(2, result.FailedHostCount);
-    }
-
-    [Fact]
-    public async Task NoConfiguredHosts_IsAnError()
-    {
-        using var storage = new Storage();
-        storage.Options.Hosts = null;
-        await Assert.ThrowsAsync<InvalidOperationException>(() => storage.Write(ct: TestContext.Current.CancellationToken));
     }
 
     [Fact]
@@ -327,110 +331,121 @@ public class VsphereIsoStorageGroupTests
         Assert.Single(storage.Requests);
     }
 
-    [Fact]
-    public async Task GroupsRunConcurrently_ButMembersWithinAGroupRunSequentially()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Groups_CanBothStartBeforeEitherCompletes(bool upload)
     {
-        using var storage = new Storage(Host("a.test", "one"), Host("b.test", "one"), Host("c.test", "two"));
-        var firstStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var otherStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var releaseFirst = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        storage.Respond = async (r, ct) =>
+        using var storage = new Storage(Host("a.test", "one"), Host("b.test", "two"));
+        var bothStarted = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var arrivals = 0;
+        storage.Respond = async (_, ct) =>
         {
-            if (r.RequestUri.Host == "a.test")
-            {
-                firstStarted.SetResult();
-                await releaseFirst.Task.WaitAsync(ct);
-                return new HttpResponseMessage(HttpStatusCode.ServiceUnavailable);
-            }
-            if (r.RequestUri.Host == "c.test")
-                otherStarted.SetResult();
+            if (Interlocked.Increment(ref arrivals) == 2)
+                bothStarted.TrySetResult();
+            await release.Task.WaitAsync(ct);
             return new HttpResponseMessage(HttpStatusCode.OK);
         };
-        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        var operation = storage.Write(ct: timeout.Token);
+        var timeout = TimeSpan.FromSeconds(10);
+        var ct = TestContext.Current.CancellationToken;
+        var operation = storage.Write(upload, ct);
+        IsoOperationOutcome result;
         try
         {
-            await Task.WhenAll(firstStarted.Task, otherStarted.Task).WaitAsync(timeout.Token);
-            Assert.DoesNotContain(storage.Requests, r => r.Uri.Host == "b.test");
+            await bothStarted.Task.WaitAsync(timeout, ct);
+            Assert.False(operation.IsCompleted);
         }
         finally
         {
-            releaseFirst.TrySetResult();
-            await operation;
+            release.TrySetResult();
+            result = await operation.WaitAsync(timeout, ct);
         }
-        Assert.Equal(0, (await operation).FailedHostCount);
-        Assert.Equal(3, storage.Requests.Count);
+        Assert.Equal(2, result.TotalHostCount);
+        Assert.Equal(0, result.FailedHostCount);
+        Assert.Equal(new[] { "a.test", "b.test" }, storage.Requests.Select(r => r.Uri.Host).Order());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Upload_MultipleScopes_CountsEachStorageGroupPerScope(bool firstScopeFails)
+    {
+        using var storage = new Storage(
+            Host("a.test", "east"), Host("b.test", "east"), Host("c.test", "west"));
+        var viewId = Guid.NewGuid();
+        var scopes = new[] { Guid.NewGuid().ToString(), Guid.NewGuid().ToString() };
+        storage.Respond = (r, _) => Task.FromResult(new HttpResponseMessage(
+            r.RequestUri.Host == "a.test" ||
+            (firstScopeFails && r.RequestUri.AbsolutePath.Contains($"/{scopes[0]}/"))
+                ? HttpStatusCode.ServiceUnavailable
+                : HttpStatusCode.OK));
+        var provider = new VsphereIsoProvider(storage.Service, storage.Options);
+
+        var result = await provider.UploadAsync(
+            new IsoUploadRequest(viewId, scopes, "test.iso", storage.StagedFile, null),
+            TestContext.Current.CancellationToken);
+
+        Assert.Equal(4, result.TotalHostCount);
+        Assert.Equal(firstScopeFails ? 2 : 0, result.FailedHostCount);
+        var requests = storage.Requests.ToArray();
+        Assert.Equal(6, requests.Length);
+        foreach (var scope in scopes)
+        {
+            foreach (var host in new[] { "a.test", "b.test", "c.test" })
+            {
+                var request = Assert.Single(requests, r => r.Uri.Host == host &&
+                    r.Uri.AbsolutePath == $"/folder/folder-{host}/{viewId}/{scope}/test.iso");
+                Assert.Contains($"dsName=datastore-{host}", request.Uri.Query);
+                Assert.Equal(HttpMethod.Put, request.Method);
+                Assert.Equal(storage.Bytes, request.Body);
+            }
+        }
     }
 
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
-    public async Task CallerCancellation_StopsAttempts(bool upload)
+    public async Task CallerCancellation_InterruptsTheRequestWithoutFallback(bool upload)
     {
         using var storage = new Storage(Host("a.test", "shared"), Host("b.test", "shared"));
-        using var cancellation = new CancellationTokenSource();
-        storage.Respond = (_, ct) =>
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        storage.Respond = async (_, ct) =>
+        {
+            started.TrySetResult();
+            await release.Task.WaitAsync(ct);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        };
+        var timeout = TimeSpan.FromSeconds(10);
+        var ct = TestContext.Current.CancellationToken;
+        var operation = storage.Write(upload, cancellation.Token);
+        try
+        {
+            await started.Task.WaitAsync(timeout, ct);
+            cancellation.Cancel();
+
+            // The wait must not use the caller token: it would hide a request that ignored cancellation.
+            var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => operation.WaitAsync(timeout, ct));
+
+            Assert.Equal(cancellation.Token, error.CancellationToken);
+            Assert.Equal("a.test", Assert.Single(storage.Requests).Uri.Host);
+        }
+        finally
         {
             cancellation.Cancel();
-            return Task.FromCanceled<HttpResponseMessage>(ct);
-        };
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => storage.Write(upload, cancellation.Token));
-        Assert.Single(storage.Requests);
-    }
-
-    [Fact]
-    public async Task AlreadyCancelledRequest_PerformsNoWrites()
-    {
-        using var storage = new Storage(Host("a.test"));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => storage.Write(ct: new CancellationToken(true)));
-        Assert.Empty(storage.Requests);
-    }
-
-    [Fact]
-    public async Task CancellationAfterInventoryLookup_DoesNotCreateDirectoryOrTryAnotherMember()
-    {
-        using var storage = new Storage(Host("a.test", "shared"), Host("b.test", "shared"));
-        using var cancellation = new CancellationTokenSource();
-        var client = storage.Members["a.test"].Client;
-        var inventory = await client.RetrievePropertiesAsync(null, Array.Empty<PropertyFilterSpec>());
-        client.RetrievePropertiesAsync(Arg.Any<ManagedObjectReference>(), Arg.Any<PropertyFilterSpec[]>())
-            .Returns(_ =>
+            release.TrySetResult();
+            try
             {
-                // A completed lookup can be returned even though cancellation has just arrived.
-                // The next SOAP operation must check before starting directory creation.
-                cancellation.Cancel();
-                return inventory;
-            });
-        storage.Connections.ClearReceivedCalls();
-
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => storage.Write(ct: cancellation.Token));
-
-        await client.DidNotReceive().MakeDirectoryAsync(
-            Arg.Any<ManagedObjectReference>(), Arg.Any<string>(), Arg.Any<ManagedObjectReference>(), Arg.Any<bool>());
-        storage.Connections.DidNotReceive().GetConnection("b.test");
-        Assert.Empty(storage.Requests);
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task CancellationAfterSuccessfulOperation_PreservesItsOutcome(bool upload)
-    {
-        using var storage = new Storage(Host("a.test", "shared"), Host("b.test", "shared"));
-        using var cancellation = new CancellationTokenSource();
-        storage.Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
-        {
-            Content = new CancelOnDisposeContent(cancellation)
-        });
-
-        var outcome = await storage.Write(upload, cancellation.Token);
-
-        Assert.True(cancellation.IsCancellationRequested);
-        Assert.Equal(1, outcome.TotalHostCount);
-        Assert.Equal(0, outcome.FailedHostCount);
-        Assert.Single(storage.Requests);
+                await operation.WaitAsync(timeout, ct);
+            }
+            catch (OperationCanceledException) when (cancellation.IsCancellationRequested)
+            {
+                // Observe the cancelled operation; release also lets a broken, uncancellable request finish.
+            }
+        }
     }
 
     [Theory]

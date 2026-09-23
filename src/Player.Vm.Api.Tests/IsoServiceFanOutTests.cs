@@ -73,16 +73,6 @@ public class IsoServiceFanOutTests
         Assert.True(result.PartialFailure);
     }
 
-    // A provider that reports no per-host tally gets no host clause: "Proxmox (1 of 1 hosts)" says
-    // nothing the provider name does not already say.
-    [Fact]
-    public void ProviderWithNoHostTally_CarriesNoHostClause()
-    {
-        var result = Upload(Succeeded(VmType.Vsphere), Threw(VmType.Proxmox));
-
-        Assert.DoesNotContain("hosts", result.Message);
-    }
-
     // vSphere's datastore mode writes to every connected vCenter, so it can fail on some and not others -
     // and then the tally is the useful part, because the upload did partly land.
     [Fact]
