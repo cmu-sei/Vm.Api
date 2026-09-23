@@ -1320,8 +1320,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                         await execute(connection);
                         return true;
                     }
-                    catch (Exception ex) when (!ct.IsCancellationRequested)
+                    catch (Exception ex)
                     {
+                        // Cancellation can race an unrelated error. Report request cancellation,
+                        // rather than leaking that error or treating it as another retryable failure.
+                        ct.ThrowIfCancellationRequested();
                         // A failed attempt (including its timeout) permits fallback. Caller cancellation
                         // propagates instead. Each upload attempt opens a fresh stream on the staged ISO.
                         _logger.LogWarning(ex, "ISO {File} {Operation} attempt failed on {Host}; trying another member of {Kind} group {Group}",
@@ -1377,6 +1380,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             // datastore-relative folder (no "[ds]" prefix; that form is only used for search/mount/MakeDirectory paths)
             var folderPath = BuildIsoFolderRelative(connection.Host.BaseFolder, viewId, scopeId);
 
+            // WaitAsync cancels only our wait; an already-started SOAP lookup keeps running in vCenter.
             var datacenter = await GetDatacenterForDatastore(dsName, connection).WaitAsync(ct);
             if (datacenter == null)
             {
@@ -1387,6 +1391,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             {
                 // The SOAP call cannot take a token; check before starting it after the inventory await.
                 // Ensure the destination directory exists (ignore "already exists").
+                // Once started, creation may finish after cancellation even though WaitAsync stops waiting.
                 ct.ThrowIfCancellationRequested();
                 await EnsureDatastoreDirectory(connection, datacenter, dsName, folderPath).WaitAsync(ct);
             }

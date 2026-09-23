@@ -2,8 +2,17 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using System.IO;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.Extensions.Logging.Abstractions;
+using NSubstitute;
 using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Files;
+using Player.Vm.Api.Features.Files.Models;
+using Player.Vm.Api.Features.Files.Providers;
+using Player.Vm.Api.Infrastructure.Options;
 using Xunit;
 
 namespace Player.Vm.Api.Tests;
@@ -177,5 +186,37 @@ public class IsoServiceFanOutTests
     public void ReturnedCompleteFailureAndThrownFailure_TogetherThrow()
     {
         Assert.Throws<Exception>(() => Upload(PartiallyFailed(VmType.Vsphere, 2, 2), Threw(VmType.Proxmox)));
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ProviderFailureRacingCancellation_PropagatesRequestCancellation(bool upload)
+    {
+        using var cancellation = new CancellationTokenSource();
+        var provider = Substitute.For<IIsoProvider>();
+        provider.Enabled.Returns(true);
+        provider.ProviderType.Returns(VmType.Vsphere);
+        provider.NormalizeFilename(Arg.Any<string>()).Returns(call => call.Arg<string>());
+        Task<IsoOperationOutcome> FailAndCancel()
+        {
+            cancellation.Cancel();
+            return Task.FromException<IsoOperationOutcome>(new InvalidOperationException("provider failed"));
+        }
+        provider.UploadAsync(Arg.Any<IsoUploadRequest>(), Arg.Any<CancellationToken>())
+            .Returns(_ => FailAndCancel());
+        provider.DeleteAsync(Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>())
+            .Returns(_ => FailAndCancel());
+        var service = new IsoService(
+            Substitute.For<IPlayerService>(), Substitute.For<IViewService>(), [provider],
+            new IsoUploadOptions(), NullLogger<IsoService>.Instance);
+        var viewId = Guid.NewGuid();
+
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => upload
+            ? service.UploadAsync(viewId, [viewId.ToString()], "test.iso",
+                () => new MemoryStream([1, 2, 3]), cancellation.Token)
+            : service.DeleteAsync(viewId, viewId.ToString(), "test.iso", cancellation.Token));
+
+        Assert.Equal(cancellation.Token, error.CancellationToken);
     }
 }

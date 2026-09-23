@@ -308,8 +308,11 @@ namespace Player.Vm.Api.Features.Files
                     var outcome = await operation(provider);
                     return new ProviderOutcome(provider.ProviderType, false, outcome.FailedHostCount, outcome.TotalHostCount);
                 }
-                catch (Exception ex) when (!ct.IsCancellationRequested)
+                catch (Exception ex)
                 {
+                    // A provider error can race request cancellation. Prefer the caller's cancellation
+                    // over an unrelated error, without checking again after a successful operation.
+                    ct.ThrowIfCancellationRequested();
                     _logger.LogError(ex,
                         "ISO {File} failed to {Operation} on provider {Provider}",
                         filename, operationName, provider.ProviderType);

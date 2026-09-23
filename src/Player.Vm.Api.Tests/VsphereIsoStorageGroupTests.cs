@@ -244,14 +244,18 @@ public class VsphereIsoStorageGroupTests
     }
 
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task FailedAttempt_FallsBackAndStopsAfterSuccess(bool upload)
+    [InlineData(true, HttpStatusCode.ServiceUnavailable)]
+    [InlineData(false, HttpStatusCode.ServiceUnavailable)]
+    [InlineData(true, HttpStatusCode.BadGateway)]
+    [InlineData(false, HttpStatusCode.BadGateway)]
+    [InlineData(true, HttpStatusCode.GatewayTimeout)]
+    [InlineData(false, HttpStatusCode.GatewayTimeout)]
+    public async Task FailedAttempt_FallsBackAndStopsAfterSuccess(bool upload, HttpStatusCode failureStatus)
     {
         using var storage = new Storage(Host("a.test"), Host("b.test"), Host("c.test"));
         storage.Options.IsoStorageShared = true;
         storage.Respond = (r, _) => Task.FromResult(new HttpResponseMessage(
-            r.RequestUri.Host == "a.test" ? HttpStatusCode.ServiceUnavailable : HttpStatusCode.OK));
+            r.RequestUri.Host == "a.test" ? failureStatus : HttpStatusCode.OK));
         var result = await storage.Write(upload, TestContext.Current.CancellationToken);
         Assert.Equal(1, result.TotalHostCount);
         Assert.Equal(0, result.FailedHostCount);
@@ -260,16 +264,21 @@ public class VsphereIsoStorageGroupTests
             Assert.All(storage.Requests, r => Assert.Equal(storage.Bytes, r.Body));
     }
 
-    [Fact]
-    public async Task AttemptTimeout_PermitsFallback()
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task AttemptTimeout_PermitsFallback(bool upload)
     {
         using var storage = new Storage(Host("a.test", "shared"), Host("b.test", "shared"));
         storage.Respond = (r, _) => r.RequestUri.Host == "a.test"
             ? Task.FromException<HttpResponseMessage>(new TaskCanceledException("attempt timed out"))
             : Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
-        var result = await storage.Write(ct: TestContext.Current.CancellationToken);
+        var result = await storage.Write(upload, TestContext.Current.CancellationToken);
+        Assert.Equal(1, result.TotalHostCount);
         Assert.Equal(0, result.FailedHostCount);
-        Assert.Equal(2, storage.Requests.Count);
+        Assert.Equal(new[] { "a.test", "b.test" }, storage.Requests.Select(r => r.Uri.Host));
+        if (upload)
+            Assert.All(storage.Requests, r => Assert.Equal(storage.Bytes, r.Body));
     }
 
     [Theory]
@@ -421,6 +430,26 @@ public class VsphereIsoStorageGroupTests
         Assert.True(cancellation.IsCancellationRequested);
         Assert.Equal(1, outcome.TotalHostCount);
         Assert.Equal(0, outcome.FailedHostCount);
+        Assert.Single(storage.Requests);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CallerCancellationRacingAnUnrelatedError_StopsAttemptsAsCancellation(bool upload)
+    {
+        using var storage = new Storage(Host("a.test", "shared"), Host("b.test", "shared"));
+        using var cancellation = new CancellationTokenSource();
+        storage.Respond = (_, _) =>
+        {
+            cancellation.Cancel();
+            return Task.FromException<HttpResponseMessage>(new InvalidOperationException("member failed"));
+        };
+
+        var error = await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => storage.Write(upload, cancellation.Token));
+
+        Assert.Equal(cancellation.Token, error.CancellationToken);
         Assert.Single(storage.Requests);
     }
 }
