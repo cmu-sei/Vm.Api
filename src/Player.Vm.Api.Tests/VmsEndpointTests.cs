@@ -224,9 +224,9 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
                 Claim(teamId, nameof(AppTeamPermission.ViewTeam), nameof(AppViewPermission.ViewView), "NotAPermission"),
                 Claim(otherTeamId, nameof(AppTeamPermission.ManageTeam), nameof(AppViewPermission.ManageView))
             ]);
-        Factory.PlayerApiClient
-            .GetMyPermissionsAsync(Arg.Any<CancellationToken>())
-            .Returns([nameof(AppSystemPermission.ControlVms), "NotAPermission"]);
+        Factory.PlayerApi
+            .GetSystemPermissionsAsync(Arg.Any<CancellationToken>())
+            .Returns(new HashSet<AppSystemPermission> { AppSystemPermission.ControlVms });
 
         var permissions = await Get<VmPermissionResult>($"/api/vms/{vm.Id}/permissions");
 
@@ -543,7 +543,6 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         var teamId = Guid.NewGuid();
         var map = Map([teamId]);
         await Seed(map, Map([Guid.NewGuid()]));
-        Factory.PlayerApi.IsTeamVisibleAsync(teamId, Arg.Any<CancellationToken>()).Returns(true);
 
         Assert.Equal(map.Id, (await Get<VmMapModel>($"/api/teams/{teamId}/map")).Id);
     }
@@ -553,7 +552,6 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     {
         var teamId = Guid.NewGuid();
         await Seed(Map([Guid.NewGuid()]));
-        Factory.PlayerApi.IsTeamVisibleAsync(teamId, Arg.Any<CancellationToken>()).Returns(true);
 
         var response = await Client.GetAsync($"/api/teams/{teamId}/map", Ct);
 
@@ -764,7 +762,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
 
-        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns<bool>(_ => throw new ApiException(
                 "Team not found", (int)HttpStatusCode.NotFound, null, null, null));
 
@@ -781,7 +779,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
 
-        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns<bool>(_ => throw new ApiException(
                 "Service Unavailable", (int)HttpStatusCode.ServiceUnavailable, null, null, null));
 
@@ -807,11 +805,9 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
 
     private void DenyEverything()
     {
-        Factory.PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(false);
         Factory.PlayerApi.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(false);
-        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(false);
         Factory.PlayerApi.CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(false);

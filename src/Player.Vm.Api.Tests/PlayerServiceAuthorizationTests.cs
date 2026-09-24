@@ -246,29 +246,6 @@ public class PlayerServiceAuthorizationTests
             [otherTeam], null, [], [], [AppTeamPermission.ManageTeam], Ct));
     }
 
-    // CanViewTeams is the wrapper CanAccessVm uses, and it accepts any of six permissions. This pins
-    // the mapping rather than the underlying Can, which the tests above cover.
-    [Fact]
-    public async Task CanViewTeams_AcceptsATeamLevelViewPermission()
-    {
-        var viewId = Guid.NewGuid();
-        var teamId = Guid.NewGuid();
-        TeamInView(teamId, viewId);
-        TeamPermissions(viewId, TeamClaim(teamId, direct: nameof(AppTeamPermission.ViewTeam)));
-
-        Assert.True(await _service.CanViewTeams([teamId], Ct));
-    }
-
-    // Manage implies view throughout: every wrapper lists the manage permission alongside the one it
-    // is named for, so an admin never has to be granted both.
-    [Fact]
-    public async Task CanViewTeams_AcceptsTheManagePermissionInPlaceOfView()
-    {
-        SystemPermissions(nameof(AppSystemPermission.ManageViews));
-
-        Assert.True(await _service.CanViewTeams([Guid.NewGuid()], Ct));
-    }
-
     [Fact]
     public async Task CanManageTeams_DoesNotAcceptAViewOnlyPermission()
     {
@@ -290,7 +267,7 @@ public class PlayerServiceAuthorizationTests
 
         var teamId = Guid.NewGuid();
 
-        Assert.False(await _service.CanViewVms([teamId], Ct));
+        Assert.False(await _service.CanViewVms([teamId], null, Ct));
         Assert.False(await _service.CanControlVms([teamId], Ct));
         Assert.False(await _service.CanViewMaps([teamId], null, Ct));
         Assert.False(await _service.CanManageMaps([teamId], null, Ct));
@@ -306,7 +283,7 @@ public class PlayerServiceAuthorizationTests
         TeamInView(teamId, viewId);
         TeamPermissions(viewId, TeamClaim(teamId, direct: nameof(AppTeamPermission.ControlTeamVms)));
 
-        Assert.True(await _service.CanViewVms([teamId], Ct));
+        Assert.True(await _service.CanViewVms([teamId], null, Ct));
     }
 
     [Fact]
@@ -317,7 +294,7 @@ public class PlayerServiceAuthorizationTests
         TeamInView(teamId, viewId);
         TeamPermissions(viewId, TeamClaim(teamId, direct: nameof(AppTeamPermission.ViewTeamVms)));
 
-        Assert.True(await _service.CanViewVms([teamId], Ct));
+        Assert.True(await _service.CanViewVms([teamId], null, Ct));
         Assert.False(await _service.CanControlVms([teamId], Ct));
     }
 
@@ -368,6 +345,35 @@ public class PlayerServiceAuthorizationTests
         Assert.False(await _service.CanManageMaps([], [viewId], Ct));
     }
 
+    /// <summary>
+    /// VmService asks this once for a whole View before falling back to one check per team, and
+    /// treats a pass as covering every team in it - so a team-scoped grant must not satisfy it, or one
+    /// team's Vm permission would open every other team's Vms.
+    /// </summary>
+    [Fact]
+    public async Task CanViewVms_ForAView_AcceptsAViewLevelPermission()
+    {
+        var viewId = Guid.NewGuid();
+        var ownTeam = Guid.NewGuid();
+
+        UserViewTeams(viewId, ViewTeam(ownTeam, isMember: true));
+        TeamPermissions(viewId, TeamClaim(ownTeam, isPrimary: true, direct: nameof(AppViewPermission.ViewViewVms)));
+
+        Assert.True(await _service.CanViewVms([], [viewId], Ct));
+    }
+
+    [Fact]
+    public async Task CanViewVms_ForAView_RefusesATeamScopedPermission()
+    {
+        var viewId = Guid.NewGuid();
+        var ownTeam = Guid.NewGuid();
+
+        UserViewTeams(viewId, ViewTeam(ownTeam, isMember: true));
+        TeamPermissions(viewId, TeamClaim(ownTeam, isPrimary: true, direct: nameof(AppTeamPermission.ControlTeamVms)));
+
+        Assert.False(await _service.CanViewVms([], [viewId], Ct));
+    }
+
     #endregion
 
     #region Caching
@@ -384,6 +390,19 @@ public class PlayerServiceAuthorizationTests
         await _service.Can(null, null, [AppSystemPermission.ViewViews], [], [], Ct);
         await _service.Can(null, null, [AppSystemPermission.ViewViews], [], [], Ct);
 
+        await _client.Received(1).GetMyPermissionsAsync(Arg.Any<CancellationToken>());
+    }
+
+    // GetVmPermissions reports system permissions through this rather than asking player.api itself,
+    // so it shares Can's cache and its handling of values from a newer player.api.
+    [Fact]
+    public async Task GetSystemPermissions_SharesCansCacheAndDropsUnknownValues()
+    {
+        SystemPermissions(nameof(AppSystemPermission.ControlVms), "APermissionFromANewerPlayerApi");
+
+        await _service.Can(null, null, [AppSystemPermission.ViewViews], [], [], Ct);
+
+        Assert.Equal([AppSystemPermission.ControlVms], await _service.GetSystemPermissionsAsync(Ct));
         await _client.Received(1).GetMyPermissionsAsync(Arg.Any<CancellationToken>());
     }
 
@@ -746,13 +765,13 @@ public class PlayerServiceAuthorizationTests
 
     // A team nobody can place in a View is not visible, and must not throw on the way to that answer.
     [Fact]
-    public async Task IsTeamVisible_ForATeamInNoView_IsFalse()
+    public async Task VisibilityForTeam_ForATeamInNoView_IsEmpty()
     {
-        Assert.False(await _service.IsTeamVisibleAsync(Guid.NewGuid(), Ct));
+        Assert.Empty((await _service.GetVisibilityContextForTeamAsync(Guid.NewGuid(), Ct)).TeamIds);
     }
 
     [Fact]
-    public async Task IsTeamVisible_ForATeamInTheVisibilitySet_IsTrue()
+    public async Task VisibilityForTeam_IsTheVisibilityOfTheTeamsView()
     {
         var viewId = Guid.NewGuid();
         var teamId = Guid.NewGuid();
@@ -760,7 +779,7 @@ public class PlayerServiceAuthorizationTests
         TeamInView(teamId, viewId);
         TeamPermissions(viewId, TeamClaim(teamId, isPrimary: true, direct: nameof(AppTeamPermission.ViewTeam)));
 
-        Assert.True(await _service.IsTeamVisibleAsync(teamId, Ct));
+        Assert.Contains(teamId, (await _service.GetVisibilityContextForTeamAsync(teamId, Ct)).TeamIds);
     }
 
     /// <summary>

@@ -1,6 +1,10 @@
 // Copyright 2021 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
+using System;
+using System.Collections.Generic;
+using System.Linq;
+
 namespace Player.Vm.Api.Infrastructure.Authorization;
 
 public enum AppSystemPermission
@@ -80,4 +84,32 @@ public enum AppTeamPermission
 
     /// <summary>View, create, edit, and delete the team's Maps.</summary>
     ManageTeamMaps
+}
+
+public static class AppPermissions
+{
+    // The permissions a read check accepts. Control implies view for Vms and manage implies view for
+    // Maps, so each set lists the stronger permission alongside the one it is named for.
+
+    public static readonly AppSystemPermission[] VmReadSystem = [AppSystemPermission.ViewVms, AppSystemPermission.ControlVms];
+    public static readonly AppViewPermission[] VmReadView = [AppViewPermission.ViewViewVms, AppViewPermission.ControlViewVms];
+    public static readonly AppTeamPermission[] VmReadTeam = [AppTeamPermission.ViewTeamVms, AppTeamPermission.ControlTeamVms];
+
+    public static readonly AppSystemPermission[] MapReadSystem = [AppSystemPermission.ViewMaps, AppSystemPermission.ManageMaps];
+    public static readonly AppViewPermission[] MapReadView = [AppViewPermission.ViewViewMaps, AppViewPermission.ManageViewMaps];
+    public static readonly AppTeamPermission[] MapReadTeam = [AppTeamPermission.ViewTeamMaps, AppTeamPermission.ManageTeamMaps];
+
+    /// <summary>
+    /// Translates player.api's permission strings into this application's enum, dropping any it does
+    /// not recognize - a newer player.api may grant permissions this build has never heard of.
+    /// </summary>
+    public static HashSet<TPermission> Parse<TPermission>(IEnumerable<string> permissionValues)
+        where TPermission : struct, Enum
+    {
+        return (permissionValues ?? [])
+            .Select(x => Enum.TryParse<TPermission>(x, out var permission) ? permission : (TPermission?)null)
+            .Where(p => p.HasValue)
+            .Select(p => p.Value)
+            .ToHashSet();
+    }
 }

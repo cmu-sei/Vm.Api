@@ -198,7 +198,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     public async Task WhenTheCallerCannotSeeTheTeamsVms_Is403()
     {
         var vm = await SeedProxmoxVm();
-        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(false);
 
         var response = await Client.GetAsync(Route(vm.Id), Ct);

@@ -162,7 +162,10 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmApiFacto
         await Seed(denied, allowed);
 
         Factory.PlayerApi
-            .CanViewVms(Arg.Is<IEnumerable<Guid>>(teams => teams.Contains(deniedTeam)), Arg.Any<CancellationToken>())
+            .CanViewVms(
+                Arg.Is<IEnumerable<Guid>>(teams => teams.Contains(deniedTeam)),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
             .Returns(false);
 
         VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [allowed.Id] = string.Empty });

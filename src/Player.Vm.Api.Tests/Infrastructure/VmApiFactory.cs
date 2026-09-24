@@ -333,11 +333,12 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
     /// </remarks>
     public void AllowEverything()
     {
-        PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(true);
         PlayerApi.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(true);
-        PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        PlayerApi.CanViewVms(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
             .Returns(true);
         PlayerApi.CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(true);

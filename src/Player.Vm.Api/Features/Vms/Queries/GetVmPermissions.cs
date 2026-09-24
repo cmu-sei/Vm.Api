@@ -1,4 +1,4 @@
-﻿// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
+// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
@@ -25,7 +25,7 @@ public class GetVmPermissions
         public Guid Id { get; set; }
     }
 
-    public class Handler(IVmService vmService, IViewService viewService, IPlayerApiClient playerApiClient) : IRequestHandler<Query, VmPermissionResult>
+    public class Handler(IVmService vmService, IViewService viewService, IPlayerApiClient playerApiClient, IPlayerService playerService) : IRequestHandler<Query, VmPermissionResult>
     {
         public async Task<VmPermissionResult> Handle(Query request, CancellationToken cancellationToken)
         {
@@ -50,24 +50,12 @@ public class GetVmPermissions
             var directViewPermissionValues = claims
                 .SelectMany(x => x.DirectPermissionValues ?? []);
 
-            var appViewPermissions = targetPermissionValues
-                .Concat(directViewPermissionValues)
-                .Select(x => Enum.TryParse<AppViewPermission>(x, out var p) ? p : (AppViewPermission?)null)
-                .Where(p => p.HasValue)
-                .Select(p => p.Value)
-                .Distinct();
+            var appViewPermissions = AppPermissions.Parse<AppViewPermission>(
+                targetPermissionValues.Concat(directViewPermissionValues));
 
-            var appTeamPermissions = targetPermissionValues
-                .Select(x => Enum.TryParse<AppTeamPermission>(x, out var p) ? p : (AppTeamPermission?)null)
-                .Where(p => p.HasValue)
-                .Select(p => p.Value)
-                .Distinct();
+            var appTeamPermissions = AppPermissions.Parse<AppTeamPermission>(targetPermissionValues);
 
-            var appSystemPermissions = (await playerApiClient.GetMyPermissionsAsync(cancellationToken) ?? [])
-                .Select(x => Enum.TryParse<AppSystemPermission>(x, out var p) ? p : (AppSystemPermission?)null)
-                .Where(p => p.HasValue)
-                .Select(p => p.Value)
-                .Distinct();
+            var appSystemPermissions = await playerService.GetSystemPermissionsAsync(cancellationToken);
 
             return new VmPermissionResult
             {

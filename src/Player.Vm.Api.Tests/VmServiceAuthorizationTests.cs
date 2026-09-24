@@ -427,6 +427,37 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         Assert.Equal<Guid>([allowed.Id], vms.Select(x => x.Id).ToArray());
     }
 
+    /// <summary>
+    /// A View-level Vm grant covers every team in the View at once, so the per-team checks are skipped
+    /// entirely - otherwise a large View would repeat the same lookup once per team.
+    /// </summary>
+    [Fact]
+    public async Task GetByViewId_WithAViewLevelVmGrant_SkipsThePerTeamChecks()
+    {
+        var viewId = Guid.NewGuid();
+        var firstTeam = Guid.NewGuid();
+        var secondTeam = Guid.NewGuid();
+
+        var first = Vm(teamIds: [firstTeam], name: "first");
+        var second = Vm(teamIds: [secondTeam], name: "second");
+        await Seed(first, second);
+
+        View(viewId, VisibilityFor(false, [firstTeam, secondTeam]), teams: [Team(firstTeam), Team(secondTeam)]);
+        CanViewVms(false);
+        _player.CanViewVms(
+            Arg.Is<IEnumerable<Guid>>(ids => !ids.Any()),
+            Arg.Is<IEnumerable<Guid>>(ids => ids != null && ids.Contains(viewId)),
+            Arg.Any<CancellationToken>()).Returns(true);
+
+        var vms = await Service.GetByViewIdAsync(viewId, null, false, false, Ct);
+
+        Assert.Equal(new HashSet<Guid> { first.Id, second.Id }, vms.Select(x => x.Id).ToHashSet());
+        await _player.DidNotReceive().CanViewVms(
+            Arg.Is<IEnumerable<Guid>>(ids => ids.Any()),
+            Arg.Any<IEnumerable<Guid>>(),
+            Arg.Any<CancellationToken>());
+    }
+
     [Fact]
     public async Task GetByViewId_MasksTeamIdsTheCallerCannotSee()
     {
@@ -454,7 +485,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     [Fact]
     public async Task GetAll_WithoutASystemPermission_IsForbidden()
     {
-        Can(false);
+        CanViewVms(false);
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetAllAsync(Ct));
     }
@@ -462,7 +493,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     [Fact]
     public async Task GetAllMaps_WithoutASystemPermission_IsForbidden()
     {
-        Can(false);
+        CanViewMaps(false);
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetAllMapsAsync(Ct));
     }
@@ -471,7 +502,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task GetAll_WithASystemPermission_ReturnsEveryVm()
     {
         await Seed(Vm(teamIds: [Guid.NewGuid()]), Vm(teamIds: [Guid.NewGuid()]));
-        Can(true);
+        CanViewVms(true);
 
         Assert.Equal(2, (await Service.GetAllAsync(Ct)).Length);
     }
@@ -630,6 +661,54 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var maps = await Service.GetViewMapsAsync(viewId, Ct);
 
         Assert.Equal<Guid>([teamless.Id], maps.Select(x => x.Id).ToArray());
+    }
+
+    /// <summary>
+    /// Every Map in the listing is in the same View, so a View-level Map grant answers for all of them
+    /// and neither the membership check nor any per-Map check is needed.
+    /// </summary>
+    [Fact]
+    public async Task GetViewMaps_WithAViewLevelMapGrant_SkipsThePerMapChecks()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+
+        var teamless = Map(teamIds: [], viewId: viewId);
+        var teamScoped = Map(teamIds: [teamId], viewId: viewId);
+        await Seed(teamless, teamScoped);
+
+        View(viewId, VisibilityFor(teamId), teams: [Team(teamId)]);
+        CanViewMaps(false);
+        _player.CanViewMaps(
+            Arg.Is<IEnumerable<Guid>>(ids => !ids.Any()),
+            Arg.Is<IEnumerable<Guid>>(ids => ids != null && ids.Contains(viewId)),
+            Arg.Any<CancellationToken>()).Returns(true);
+
+        var maps = await Service.GetViewMapsAsync(viewId, Ct);
+
+        Assert.Equal(new HashSet<Guid> { teamless.Id, teamScoped.Id }, maps.Select(x => x.Id).ToHashSet());
+        await _player.DidNotReceive().IsInViewAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await _player.DidNotReceive().CanViewMaps(
+            Arg.Is<IEnumerable<Guid>>(ids => ids.Any()),
+            Arg.Any<IEnumerable<Guid>>(),
+            Arg.Any<CancellationToken>());
+    }
+
+    // Membership is a property of the View, not of any one Map, so it is asked once for the listing.
+    [Fact]
+    public async Task GetViewMaps_AsksForViewMembershipOnce()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+
+        await Seed(Map(teamIds: [], viewId: viewId), Map(teamIds: [], viewId: viewId), Map(teamIds: [], viewId: viewId));
+
+        View(viewId, VisibilityFor(teamId), teams: [Team(teamId)]);
+        CanViewMaps(false);
+        IsInView(true);
+
+        Assert.Equal(3, (await Service.GetViewMapsAsync(viewId, Ct)).Length);
+        await _player.Received(1).IsInViewAsync(viewId, Arg.Any<CancellationToken>());
     }
 
     // A map can only be assigned to teams the caller manages, and the view must exist. Both failures are
@@ -821,11 +900,10 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     private static ClaimsPrincipal Principal(Guid userId) =>
         new(new ClaimsIdentity([new Claim("sub", userId.ToString())], "test"));
 
-    private void CanViewTeams(bool allowed) =>
-        _player.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns(allowed);
-
     private void CanViewVms(bool allowed) =>
-        _player.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns(allowed);
+        _player.CanViewVms(
+            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
+            Arg.Any<CancellationToken>()).Returns(allowed);
 
     private void CanViewMaps(bool allowed) =>
         _player.CanViewMaps(
@@ -853,6 +931,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         {
             _player.CanViewVms(
                 Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)),
+                Arg.Any<IEnumerable<Guid>>(),
                 Arg.Any<CancellationToken>()).Returns(true);
         }
     }
