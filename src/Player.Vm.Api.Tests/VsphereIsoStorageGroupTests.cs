@@ -53,7 +53,7 @@ public class VsphereIsoStorageGroupTests
 
         public Storage(params VsphereHost[] hosts)
         {
-            Options = new VsphereOptions { Hosts = hosts, IsoUploadViaApi = true };
+            Options = new VsphereOptions { Hosts = hosts, IsoUploadViaApi = true, TaskPollIntervalMilliseconds = 0 };
             File.WriteAllBytes(StagedFile, Bytes);
             foreach (var host in hosts.Where(h => !string.IsNullOrWhiteSpace(h.Address)))
             {
@@ -268,7 +268,9 @@ public class VsphereIsoStorageGroupTests
         var result = await storage.Write(upload, TestContext.Current.CancellationToken);
         Assert.Equal(1, result.TotalHostCount);
         Assert.Equal(0, result.FailedHostCount);
-        Assert.Equal(new[] { "a.test", "b.test" }, storage.Requests.Select(r => r.Uri.Host));
+        // An upload repeats a 5xx PUT on the same member once before falling back.
+        Assert.Equal(upload ? new[] { "a.test", "a.test", "b.test" } : new[] { "a.test", "b.test" },
+            storage.Requests.Select(r => r.Uri.Host));
         var retry = storage.Requests.Last();
         Assert.Equal("/folder/folder-b.test/view/scope/test.iso", retry.Uri.AbsolutePath);
         Assert.Contains("dsName=datastore-b.test", retry.Uri.Query);
@@ -389,18 +391,99 @@ public class VsphereIsoStorageGroupTests
         Assert.Equal(4, result.TotalHostCount);
         Assert.Equal(firstScopeFails ? 2 : 0, result.FailedHostCount);
         var requests = storage.Requests.ToArray();
-        Assert.Equal(6, requests.Length);
+        Assert.Equal(firstScopeFails ? 10 : 8, requests.Length);
         foreach (var scope in scopes)
         {
             foreach (var host in new[] { "a.test", "b.test", "c.test" })
             {
-                var request = Assert.Single(requests, r => r.Uri.Host == host &&
-                    r.Uri.AbsolutePath == $"/folder/folder-{host}/{viewId}/{scope}/test.iso");
-                Assert.Contains($"dsName=datastore-{host}", request.Uri.Query);
-                Assert.Equal(HttpMethod.Put, request.Method);
-                Assert.Equal(storage.Bytes, request.Body);
+                // Every failing PUT is a 503, so each is repeated once on the same member.
+                var fails = host == "a.test" || (firstScopeFails && scope == scopes[0]);
+                var matching = requests.Where(r => r.Uri.Host == host &&
+                    r.Uri.AbsolutePath == $"/folder/folder-{host}/{viewId}/{scope}/test.iso").ToArray();
+                Assert.Equal(fails ? 2 : 1, matching.Length);
+                Assert.All(matching, request =>
+                {
+                    Assert.Contains($"dsName=datastore-{host}", request.Uri.Query);
+                    Assert.Equal(HttpMethod.Put, request.Method);
+                    Assert.Equal(storage.Bytes, request.Body);
+                });
             }
         }
+    }
+
+    [Fact]
+    public async Task Upload_TransientServerError_IsRetriedOnTheSameMember()
+    {
+        using var storage = new Storage(Host("a.test"));
+        var attempts = 0;
+        storage.Respond = (_, _) => Task.FromResult(new HttpResponseMessage(
+            Interlocked.Increment(ref attempts) == 1 ? HttpStatusCode.InternalServerError : HttpStatusCode.Created));
+
+        var result = await storage.Write(ct: TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, result.FailedHostCount);
+        Assert.Equal(2, storage.Requests.Count);
+        Assert.All(storage.Requests, r => Assert.Equal(storage.Bytes, r.Body));
+    }
+
+    [Fact]
+    public async Task Upload_ClientError_IsNotRetried()
+    {
+        using var storage = new Storage(Host("a.test"));
+        storage.Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+
+        var result = await storage.Write(ct: TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, result.FailedHostCount);
+        Assert.Single(storage.Requests);
+    }
+
+    [Fact]
+    public async Task Delete_ServerError_IsNotRetriedOnTheSameMember()
+    {
+        using var storage = new Storage(Host("a.test"));
+        storage.Respond = (_, _) => Task.FromResult(new HttpResponseMessage(HttpStatusCode.InternalServerError));
+
+        var result = await storage.Write(upload: false, ct: TestContext.Current.CancellationToken);
+
+        Assert.Equal(1, result.FailedHostCount);
+        Assert.Single(storage.Requests);
+    }
+
+    // Every scope folder is created, one at a time, on the first member of each group that manages it.
+    [Fact]
+    public async Task PrepareIsoFolders_CreatesEachScopeFolderOncePerGroup()
+    {
+        using var storage = new Storage(Host("a.test", "east"), Host("b.test", "east"), Host("c.test"));
+        var scopes = new[] { "scope-1", "scope-2", "scope-3" };
+
+        await storage.Service.PrepareIsoFolders("view", scopes, TestContext.Current.CancellationToken);
+
+        foreach (var host in new[] { "a.test", "c.test" })
+        {
+            var created = storage.Members[host].Client.ReceivedCalls()
+                .Where(c => c.GetMethodInfo().Name == nameof(IVimClient.MakeDirectoryAsync))
+                .Select(c => (string)c.GetArguments()[1]);
+            Assert.Equal(scopes.Select(scope => $"[datastore-{host}] folder-{host}/view/{scope}"), created);
+        }
+        await storage.Members["b.test"].Client.DidNotReceiveWithAnyArgs()
+            .MakeDirectoryAsync(default, default, default, default);
+        Assert.Empty(storage.Requests);
+    }
+
+    [Fact]
+    public async Task PrepareIsoFolders_FailedMember_FallsBackWithoutThrowing()
+    {
+        using var storage = new Storage(Host("a.test", "shared"), Host("b.test", "shared"));
+        storage.Members["a.test"].Client
+            .MakeDirectoryAsync(Arg.Any<ManagedObjectReference>(), Arg.Any<string>(), Arg.Any<ManagedObjectReference>(), Arg.Any<bool>())
+            .Returns(Task.FromException(new InvalidOperationException("mkdir failed")));
+
+        await storage.Service.PrepareIsoFolders("view", ["scope"], TestContext.Current.CancellationToken);
+
+        await storage.Members["b.test"].Client.Received(1).MakeDirectoryAsync(
+            Arg.Any<ManagedObjectReference>(), "[datastore-b.test] folder-b.test/view/scope",
+            Arg.Any<ManagedObjectReference>(), true);
     }
 
     [Theory]

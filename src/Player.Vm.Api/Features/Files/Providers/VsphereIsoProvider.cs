@@ -92,8 +92,12 @@ namespace Player.Vm.Api.Features.Files.Providers
             if (request.StagedFilePath == null)
                 throw new InvalidOperationException("The vSphere datastore upload path requires a staged file.");
 
+            // Every folder must exist before any PUT starts; see VsphereService.PrepareIsoFolders.
+            var viewId = request.ViewId.ToString();
+            await _vsphereService.PrepareIsoFolders(viewId, request.ScopeIds, ct);
+
             var outcomes = await Task.WhenAll(request.ScopeIds.Select(scopeId =>
-                _vsphereService.UploadIso(request.ViewId.ToString(), scopeId, request.FileName, request.StagedFilePath, ct)));
+                _vsphereService.UploadIso(viewId, scopeId, request.FileName, request.StagedFilePath, ct)));
 
             return new IsoOperationOutcome
             {

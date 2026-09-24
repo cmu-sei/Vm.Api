@@ -47,6 +47,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<string> GetVmFileUrl(Guid id, string username, string password, string filepath);
         Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListIsos(Guid? viewId = null);
         Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListIsosForVm(Guid vmId, Guid? viewId = null);
+        Task PrepareIsoFolders(string viewId, IReadOnlyList<string> scopeIds, CancellationToken ct = default);
         Task<IsoOperationOutcome> UploadIso(string viewId, string scopeId, string filename, string localFilePath, CancellationToken ct = default);
         Task<IsoOperationOutcome> DeleteIso(string viewId, string scopeId, string filename, CancellationToken ct = default);
         int GetEnabledConnectionCount();
@@ -71,6 +72,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private RewriteHostOptions _rewriteHostOptions;
 
         private const int DefaultPollIntervalMilliseconds = 1000;
+        private const int IsoUploadAttempts = 2;
 
         private readonly ILogger<VsphereService> _logger;
         private readonly int _pollInterval;
@@ -1291,10 +1293,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         // remains a required write. LINQ grouping preserves configuration order within each group.
         // The kind keeps explicit names from colliding with implicit groups or host addresses.
         // For example, (Named, "vcenter-a") and (Individual, "vcenter-a") are separate destinations.
-        private async Task<IsoOperationOutcome> ExecuteIsoOperationOnGroups(
-            IsoOperation operation, string filename, Func<VsphereConnection, Task> execute, CancellationToken ct)
+        private IGrouping<(IsoGroupKind Kind, string Name), VsphereHost>[] BuildIsoGroups()
         {
-            var groups = (_vsphereOptions.Hosts ?? Array.Empty<VsphereHost>())
+            return (_vsphereOptions.Hosts ?? Array.Empty<VsphereHost>())
                 .Where(h => h.Enabled && !string.IsNullOrWhiteSpace(h.Address))
                 .GroupBy(h => !string.IsNullOrWhiteSpace(h.IsoStorageGroup)
                     ? (Kind: IsoGroupKind.Named, Name: h.IsoStorageGroup.Trim())
@@ -1302,6 +1303,61 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                         ? (Kind: IsoGroupKind.Shared, Name: "")
                         : (Kind: IsoGroupKind.Individual, Name: h.Address))
                 .ToArray();
+        }
+
+        private VsphereConnection GetUsableConnection(VsphereHost host)
+        {
+            var connection = _connectionService.GetConnection(host.Address);
+            return connection != null && connection.Enabled && connection.Connected && connection.Client != null
+                ? connection
+                : null;
+        }
+
+        // Create every scope's folder before any upload starts. Under a brand-new View folder, vCenter
+        // can answer a PUT with an empty 500 while sibling scope folders are still being created, so
+        // letting each scope's upload create its own folder concurrently failed one scope at random
+        // on a View's first upload. Folders are created one at a time within a group, because members
+        // reach the same physical directory; groups are separate directories and run in parallel.
+        // Best effort: each upload still ensures its own folder, so a failure here only reopens that race.
+        public async Task PrepareIsoFolders(string viewId, IReadOnlyList<string> scopeIds, CancellationToken ct = default)
+        {
+            await Task.WhenAll(BuildIsoGroups().Select(async group =>
+            {
+                foreach (var host in group)
+                {
+                    var connection = GetUsableConnection(host);
+                    if (connection == null)
+                        continue;
+
+                    try
+                    {
+                        var dsName = connection.Host.DsName;
+                        var datacenter = await GetDatacenterForDatastore(dsName, connection).WaitAsync(ct);
+                        if (datacenter == null)
+                            continue; // the upload itself reports the unresolved datacenter
+
+                        foreach (var scopeId in scopeIds)
+                        {
+                            ct.ThrowIfCancellationRequested();
+                            var folderPath = BuildIsoFolderRelative(connection.Host.BaseFolder, viewId, scopeId);
+                            await EnsureDatastoreDirectory(connection, datacenter, dsName, folderPath).WaitAsync(ct);
+                        }
+
+                        return;
+                    }
+                    catch (Exception ex) when (!ct.IsCancellationRequested)
+                    {
+                        _logger.LogWarning(ex, "Could not pre-create ISO folders for view {ViewId} on {Host}; uploads will create their own",
+                            viewId, host.Address);
+                    }
+                }
+            }));
+        }
+
+        private async Task<IsoOperationOutcome> ExecuteIsoOperationOnGroups(
+            IsoOperation operation, string filename, Func<VsphereConnection, Task> execute, CancellationToken ct)
+        {
+            var groups = BuildIsoGroups();
 
             if (groups.Length == 0)
                 throw new InvalidOperationException("No vSphere ISO destinations are configured.");
@@ -1311,8 +1367,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 foreach (var host in group)
                 {
                     ct.ThrowIfCancellationRequested();
-                    var connection = _connectionService.GetConnection(host.Address);
-                    if (connection == null || !connection.Enabled || !connection.Connected || connection.Client == null)
+                    var connection = GetUsableConnection(host);
+                    if (connection == null)
                         continue;
 
                     try
@@ -1351,8 +1407,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             // Resolve the datastore HTTP file API target (and create the destination directory).
             using var client = await BuildDatastoreFileClient(connection, viewId, scopeId, filename, ensureDirectory: true, ct);
 
-            using (var fileStream = System.IO.File.OpenRead(localFilePath))
+            for (var attempt = 1; ; attempt++)
             {
+                using var fileStream = System.IO.File.OpenRead(localFilePath);
                 using var content = new StreamContent(fileStream);
                 content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
                 content.Headers.ContentLength = fileStream.Length;
@@ -1361,11 +1418,22 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
                 // Empty relative URI resolves to BaseAddress (the full /folder/...?dcPath=&dsName= URL).
                 using var response = await client.PutAsync("", content, ct);
-                if (!response.IsSuccessStatusCode)
+                if (response.IsSuccessStatusCode)
+                    return;
+
+                var body = await response.Content.ReadAsStringAsync(ct);
+
+                // vCenter sometimes answers a PUT with a transient, empty 500. A PUT overwrites, so
+                // repeating it is safe. The delay reuses the poll interval so tests can set it to 0.
+                if (attempt < IsoUploadAttempts && (int)response.StatusCode >= 500)
                 {
-                    var body = await response.Content.ReadAsStringAsync(ct);
-                    throw new Exception($"Datastore PUT failed ({(int)response.StatusCode}): {body}");
+                    _logger.LogWarning("Datastore PUT of ISO {File} to {Host} failed ({Status}); retrying",
+                        filename, connection.Address, (int)response.StatusCode);
+                    await Task.Delay(_pollInterval, ct);
+                    continue;
                 }
+
+                throw new Exception($"Datastore PUT failed ({(int)response.StatusCode}): {body}");
             }
         }
 

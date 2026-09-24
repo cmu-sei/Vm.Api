@@ -2,7 +2,9 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using NSubstitute;
@@ -303,10 +305,17 @@ public class VsphereIsoProviderTests
             Request("/tmp/staged.iso", "tools.iso", ScopeId.ToString(), otherScope.ToString()),
             CancellationToken.None);
 
-        await vsphere.Received(1).UploadIso(
-            ViewId.ToString(), ScopeId.ToString(), "tools.iso", "/tmp/staged.iso", CancellationToken.None);
-        await vsphere.Received(1).UploadIso(
-            ViewId.ToString(), otherScope.ToString(), "tools.iso", "/tmp/staged.iso", CancellationToken.None);
+        Received.InOrder(() =>
+        {
+            vsphere.PrepareIsoFolders(
+                ViewId.ToString(),
+                Arg.Is<IReadOnlyList<string>>(s => s.SequenceEqual(new[] { ScopeId.ToString(), otherScope.ToString() })),
+                CancellationToken.None);
+            vsphere.UploadIso(
+                ViewId.ToString(), ScopeId.ToString(), "tools.iso", "/tmp/staged.iso", CancellationToken.None);
+            vsphere.UploadIso(
+                ViewId.ToString(), otherScope.ToString(), "tools.iso", "/tmp/staged.iso", CancellationToken.None);
+        });
 
         Assert.Equal(2, result.FailedHostCount);
         Assert.Equal(6, result.TotalHostCount);
