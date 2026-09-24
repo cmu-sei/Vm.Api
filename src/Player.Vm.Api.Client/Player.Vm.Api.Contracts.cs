@@ -569,6 +569,33 @@ namespace Player.Vm.Api
         System.Threading.Tasks.Task<System.Collections.Generic.ICollection<Vm>> GetViewVmsAsync(System.Guid viewId, string name, bool? includePersonal, bool? onlyMine, System.Threading.CancellationToken cancellationToken);
 
         /// <summary>
+        /// Gets every Vm in the specified View
+        /// </summary>
+        /// <remarks>
+        /// Returns every Vm on any of the View's teams, personal Vms included, regardless of the caller's own team memberships.
+        /// <br/>&lt;para /&gt;
+        /// <br/>Accessible to a User with the ViewVms or ControlVms system permission, or the ViewViewVms or ControlViewVms permission in the View
+        /// </remarks>
+        /// <param name="viewId">The Id of the View</param>
+        /// <returns>OK</returns>
+        /// <exception cref="ApiException">A server side error occurred.</exception>
+        System.Threading.Tasks.Task<System.Collections.Generic.ICollection<Vm>> GetAllViewVmsAsync(System.Guid viewId);
+
+        /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
+        /// <summary>
+        /// Gets every Vm in the specified View
+        /// </summary>
+        /// <remarks>
+        /// Returns every Vm on any of the View's teams, personal Vms included, regardless of the caller's own team memberships.
+        /// <br/>&lt;para /&gt;
+        /// <br/>Accessible to a User with the ViewVms or ControlVms system permission, or the ViewViewVms or ControlViewVms permission in the View
+        /// </remarks>
+        /// <param name="viewId">The Id of the View</param>
+        /// <returns>OK</returns>
+        /// <exception cref="ApiException">A server side error occurred.</exception>
+        System.Threading.Tasks.Task<System.Collections.Generic.ICollection<Vm>> GetAllViewVmsAsync(System.Guid viewId, System.Threading.CancellationToken cancellationToken);
+
+        /// <summary>
         /// Adds a Virtual Machine to a Team
         /// </summary>
         /// <remarks>
@@ -749,6 +776,33 @@ namespace Player.Vm.Api
         /// <returns>OK</returns>
         /// <exception cref="ApiException">A server side error occurred.</exception>
         System.Threading.Tasks.Task<System.Collections.Generic.ICollection<VmMap>> GetViewMapsAsync(System.Guid viewId, System.Threading.CancellationToken cancellationToken);
+
+        /// <summary>
+        /// Get every map in a view
+        /// </summary>
+        /// <remarks>
+        /// Returns every map in the View regardless of the caller's own team memberships.
+        /// <br/>&lt;para /&gt;
+        /// <br/>Accessible to a User with the ViewMaps or ManageMaps system permission, or the ViewViewMaps or ManageViewMaps permission in the View
+        /// </remarks>
+        /// <param name="viewId">The Id of the View</param>
+        /// <returns>OK</returns>
+        /// <exception cref="ApiException">A server side error occurred.</exception>
+        System.Threading.Tasks.Task<System.Collections.Generic.ICollection<VmMap>> GetAllViewMapsAsync(System.Guid viewId);
+
+        /// <param name="cancellationToken">A cancellation token that can be used by other objects or threads to receive notice of cancellation.</param>
+        /// <summary>
+        /// Get every map in a view
+        /// </summary>
+        /// <remarks>
+        /// Returns every map in the View regardless of the caller's own team memberships.
+        /// <br/>&lt;para /&gt;
+        /// <br/>Accessible to a User with the ViewMaps or ManageMaps system permission, or the ViewViewMaps or ManageViewMaps permission in the View
+        /// </remarks>
+        /// <param name="viewId">The Id of the View</param>
+        /// <returns>OK</returns>
+        /// <exception cref="ApiException">A server side error occurred.</exception>
+        System.Threading.Tasks.Task<System.Collections.Generic.ICollection<VmMap>> GetAllViewMapsAsync(System.Guid viewId, System.Threading.CancellationToken cancellationToken);
 
         /// <summary>
         /// Get a specific map by id

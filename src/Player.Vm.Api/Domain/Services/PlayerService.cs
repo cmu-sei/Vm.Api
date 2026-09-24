@@ -26,6 +26,13 @@ namespace Player.Vm.Api.Domain.Services
         /// (e.g. a view-admin or system operator); use for the view-admin / all-views ISO listing.
         /// </summary>
         Task<IEnumerable<Team>> GetAllTeamsByViewIdAsync(Guid viewId, CancellationToken ct);
+
+        /// <summary>
+        /// The ids of every team in the View, fetched with this service's own Player credentials, so
+        /// the caller needs no standing in player.api at all - authorize them before calling. Never
+        /// cached. Null for a View player.api does not have.
+        /// </summary>
+        Task<IEnumerable<Guid>> GetAllTeamIdsByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct);
         Task<VisibilityContext> GetVisibilityContextAsync(Guid viewId, CancellationToken ct);
         Task<VisibilityContext> GetVisibilityContextForTeamAsync(Guid teamId, CancellationToken ct);
@@ -52,8 +59,18 @@ namespace Player.Vm.Api.Domain.Services
         Task<IEnumerable<Guid>> GetGroupIdsForViewAsync(Guid viewId, CancellationToken ct);
         Task<bool> CanManageTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<bool> CanViewVms(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct);
+
+        /// <summary>
+        /// <see cref="CanViewVms"/> without the system permissions: only what the caller's own team
+        /// claims in the View grant. For the membership-scoped listings, where a system permission is
+        /// deliberately not a way in - the all-Vms listing is.
+        /// </summary>
+        Task<bool> CanViewVmsAsMember(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct);
         Task<bool> CanControlVms(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<bool> CanViewMaps(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct);
+
+        /// <summary>The Map counterpart of <see cref="CanViewVmsAsMember"/>.</summary>
+        Task<bool> CanViewMapsAsMember(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct);
         Task<bool> CanManageMaps(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct);
         Task<bool> HasViewNetworkAccess(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<bool> HasManageNetworkAccess(IEnumerable<Guid> teamIds, CancellationToken ct);
@@ -124,6 +141,17 @@ namespace Player.Vm.Api.Domain.Services
                 ct);
         }
 
+        public async Task<bool> CanViewVmsAsMember(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct)
+        {
+            return await Can(
+                teamIds,
+                viewIds,
+                [],
+                AppPermissions.VmReadView,
+                AppPermissions.VmReadTeam,
+                ct);
+        }
+
         /// <summary>
         /// Whether the caller may interact with the Vms of these teams — console input, power
         /// operations, mounting ISOs, and anything else that changes a Vm's state.
@@ -149,6 +177,17 @@ namespace Player.Vm.Api.Domain.Services
                 teamIds,
                 viewIds,
                 AppPermissions.MapReadSystem,
+                AppPermissions.MapReadView,
+                AppPermissions.MapReadTeam,
+                ct);
+        }
+
+        public async Task<bool> CanViewMapsAsMember(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct)
+        {
+            return await Can(
+                teamIds,
+                viewIds,
+                [],
                 AppPermissions.MapReadView,
                 AppPermissions.MapReadTeam,
                 ct);
@@ -296,6 +335,19 @@ namespace Player.Vm.Api.Domain.Services
             // All teams in the View (not just the caller's) - used for the view-admin ISO listing.
             var teams = await _playerApiClient.GetViewTeamsAsync(viewId, ct);
             return teams;
+        }
+
+        public async Task<IEnumerable<Guid>> GetAllTeamIdsByViewIdAsync(Guid viewId, CancellationToken ct)
+        {
+            try
+            {
+                return await _viewService.GetCurrentTeamsForView(viewId, ct);
+            }
+            catch (Player.Api.Client.ApiException ex) when (ex.StatusCode == 404)
+            {
+                // View not found in Player API - return null to allow caller to handle
+                return null;
+            }
         }
 
         public async Task<Team> GetPrimaryTeamByViewIdAsync(Guid viewId, CancellationToken ct)

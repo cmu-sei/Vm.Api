@@ -20,6 +20,14 @@ namespace Player.Vm.Api.Domain.Services
         Task<Guid[]> GetViewIdsForTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<TeamInfo[]> GetInfoForTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<List<Guid>> GetTeamsForView(Guid viewId, CancellationToken ct);
+
+        /// <summary>
+        /// Every Team in the View, fetched with this service's own Player credentials rather than the
+        /// caller's, and never cached. <see cref="GetTeamsForView"/> holds its answer for fifteen
+        /// sliding minutes, so a caller polling it - Steamfitter runs a lookup per task - would never
+        /// see a team added to a running View. Throws <see cref="ApiException"/> 404 for an unknown View.
+        /// </summary>
+        Task<List<Guid>> GetCurrentTeamsForView(Guid viewId, CancellationToken ct);
     }
 
     public class ViewService : IViewService
@@ -94,6 +102,11 @@ namespace Player.Vm.Api.Domain.Services
             }
 
             return teamIds;
+        }
+
+        public async Task<List<Guid>> GetCurrentTeamsForView(Guid viewId, CancellationToken ct)
+        {
+            return (await _playerApiClient.GetViewTeamsAsync(viewId, ct)).Select(x => x.Id).ToList();
         }
 
         private async Task<TeamInfo> GetInfoForTeam(Guid teamId, CancellationToken ct)

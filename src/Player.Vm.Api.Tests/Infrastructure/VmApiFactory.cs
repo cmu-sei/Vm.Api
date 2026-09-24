@@ -340,9 +340,19 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
                 Arg.Any<IEnumerable<Guid>>(),
                 Arg.Any<CancellationToken>())
             .Returns(true);
+        PlayerApi.CanViewVmsAsMember(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
         PlayerApi.CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(true);
         PlayerApi.CanViewMaps(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
+        PlayerApi.CanViewMapsAsMember(
                 Arg.Any<IEnumerable<Guid>>(),
                 Arg.Any<IEnumerable<Guid>>(),
                 Arg.Any<CancellationToken>())
