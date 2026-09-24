@@ -1,4 +1,4 @@
-// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
+﻿// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
@@ -56,7 +56,7 @@ public class IsoServiceMountAuthTests
             .Returns(ViewId);
 
         // Deny by default, so a test that means to allow something has to say so.
-        _playerService.CanEditTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        _playerService.CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(false);
     }
 
@@ -72,12 +72,12 @@ public class IsoServiceMountAuthTests
             .Returns(new IsoMountTarget(viewId, scopeId, filename, Token));
     }
 
-    private void CallerCanEdit(params Guid[] teamIds)
+    private void CallerCanControlVms(params Guid[] teamIds)
     {
         foreach (var teamId in teamIds)
         {
             _playerService
-                .CanEditTeams(Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)), Arg.Any<CancellationToken>())
+                .CanControlVms(Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)), Arg.Any<CancellationToken>())
                 .Returns(true);
         }
     }
@@ -99,15 +99,15 @@ public class IsoServiceMountAuthTests
     public async Task TeamScopedIso_OnATeamOfThisVm_WithEditRights_MountsTheRebuiltToken()
     {
         Decodes(ViewId, TeamA);
-        CallerCanEdit(TeamA);
+        CallerCanControlVms(TeamA);
 
         Assert.Equal(Token, await Mount(TeamA));
     }
 
-    // The check that used to be missing: edit rights on the VM are not edit rights on the team whose
+    // The check that used to be missing: control of the VM is not control of the Vms of the team whose
     // ISO is being published to it.
     [Fact]
-    public async Task TeamScopedIso_WithoutEditRightsOnThatTeam_IsRefused()
+    public async Task TeamScopedIso_WithoutControlOfThatTeamsVms_IsRefused()
     {
         Decodes(ViewId, TeamA);
 
@@ -121,7 +121,7 @@ public class IsoServiceMountAuthTests
     public async Task TeamScopedIso_OnATeamTheCallerMayEditButTheVmIsNotOn_IsAllowed()
     {
         Decodes(ViewId, TeamB);
-        CallerCanEdit(TeamA, TeamB);
+        CallerCanControlVms(TeamA, TeamB);
 
         Assert.Equal(Token, await Mount(TeamA));
     }
@@ -132,13 +132,13 @@ public class IsoServiceMountAuthTests
     public async Task TeamScopedIso_OnATeamTheCallerMayNotEdit_IsRefused_EvenWithRightsOnTheVmsTeam()
     {
         Decodes(ViewId, TeamB);
-        CallerCanEdit(TeamA);
+        CallerCanControlVms(TeamA);
 
         await AssertRefused(TeamA);
     }
 
     // A View-scoped ISO's audience is the whole View, which contains the VM, and the caller has already
-    // been authorized to edit a VM in it - so no team check applies, and none is made.
+    // been authorized to control a VM in it - so no team check applies, and none is made.
     [Fact]
     public async Task ViewScopedIso_InAViewOfThisVm_IsAllowedWithNoTeamCheck()
     {
@@ -147,7 +147,7 @@ public class IsoServiceMountAuthTests
         Assert.Equal(Token, await Mount(TeamA));
 
         await _playerService.DidNotReceive()
-            .CanEditTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>());
+            .CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -159,12 +159,12 @@ public class IsoServiceMountAuthTests
     }
 
     // A hand-built value pairing this VM's View with a team from somewhere else encodes a scope no
-    // upload could have produced. Caught even though the caller may well be able to edit that team.
+    // upload could have produced. Caught even though the caller may well be able to control that team's Vms.
     [Fact]
     public async Task ForgedViewAndTeamPair_IsRefused()
     {
         Decodes(ViewId, TeamA);
-        CallerCanEdit(TeamA);
+        CallerCanControlVms(TeamA);
         _viewService.GetViewIdForTeam(TeamA, Arg.Any<CancellationToken>()).Returns(OtherViewId);
 
         await AssertRefused(TeamA);
@@ -233,7 +233,7 @@ public class IsoServiceMountAuthTests
     {
         ViewExists(ViewId);
         CallerIsIn(ViewId, TeamA);
-        CallerCanEdit(TeamA);
+        CallerCanControlVms(TeamA);
 
         var views = await ResolveViewTeams(TeamA);
 
@@ -241,14 +241,14 @@ public class IsoServiceMountAuthTests
         Assert.Equal(TeamA, Assert.Single(view.Teams).Id);
     }
 
-    // The under-permissive gap: a view-admin who is not a member of the VM's team may still edit it, and
+    // The under-permissive gap: a view-admin who is not a member of the VM's team may still control it, and
     // uploaded the ISO in the first place. The name then comes from the privileged all-teams listing.
     [Fact]
     public async Task Picker_OffersAVmTeamTheCallerIsNotAMemberOf_NamedFromTheAllTeamsListing()
     {
         ViewExists(ViewId);
         CallerIsIn(ViewId);   // no memberships at all
-        CallerCanEdit(TeamA);
+        CallerCanControlVms(TeamA);
         _playerService.GetAllTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
             .Returns([new Team { Id = TeamA, Name = "Red Team" }]);
 
@@ -266,7 +266,7 @@ public class IsoServiceMountAuthTests
     {
         ViewExists(ViewId);
         CallerIsIn(ViewId);
-        CallerCanEdit(TeamA);
+        CallerCanControlVms(TeamA);
         _playerService.GetAllTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
             .Returns<IEnumerable<Team>>(_ => throw new Exception("403 from player.api"));
 
@@ -283,7 +283,7 @@ public class IsoServiceMountAuthTests
     {
         ViewExists(ViewId);
         CallerIsIn(ViewId, TeamA, TeamB);
-        CallerCanEdit(TeamA, TeamB);
+        CallerCanControlVms(TeamA, TeamB);
 
         var teams = Assert.Single(await ResolveViewTeams(TeamA)).Teams;
 
@@ -298,7 +298,7 @@ public class IsoServiceMountAuthTests
         ViewExists(ViewId);
         CallerIsIn(ViewId);   // no memberships at all
         ViewHasTeams(ViewId, TeamA, TeamB);
-        CallerCanEdit(TeamB);
+        CallerCanControlVms(TeamB);
 
         var team = Assert.Single(Assert.Single(await ResolveViewTeams(TeamA)).Teams);
 
@@ -313,7 +313,7 @@ public class IsoServiceMountAuthTests
         ViewExists(ViewId);
         CallerIsIn(ViewId, TeamA);
         ViewHasTeams(ViewId, TeamA, TeamB);
-        CallerCanEdit(TeamA);
+        CallerCanControlVms(TeamA);
 
         var teams = Assert.Single(await ResolveViewTeams(TeamA)).Teams;
 
@@ -327,7 +327,7 @@ public class IsoServiceMountAuthTests
     {
         ViewExists(ViewId);
         CallerIsIn(ViewId, TeamA, TeamB);
-        CallerCanEdit(TeamA, TeamB);
+        CallerCanControlVms(TeamA, TeamB);
         _playerService.GetAllTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
             .Returns<IEnumerable<Team>>(_ => throw new Exception("403 from player.api"));
 
@@ -347,7 +347,7 @@ public class IsoServiceMountAuthTests
             .Returns([
                 new Team { Id = TeamB, Name = "student" },
                 new Team { Id = TeamA, Name = "Admin" }]);
-        CallerCanEdit(TeamA, TeamB);
+        CallerCanControlVms(TeamA, TeamB);
 
         var teams = Assert.Single(await ResolveViewTeams(TeamB)).Teams;
 
@@ -360,7 +360,7 @@ public class IsoServiceMountAuthTests
     public async Task Picker_KeepsTheViewForItsPublicIsos_WhenNoTeamIsAdmitted()
     {
         ViewExists(ViewId);
-        CallerIsIn(ViewId, TeamA);   // a member, but without edit rights
+        CallerIsIn(ViewId, TeamA);   // a member, but without Vm control rights
 
         var view = Assert.Single(await ResolveViewTeams(TeamA));
 
@@ -385,7 +385,7 @@ public class IsoServiceMountAuthTests
         ViewExists(ViewId);
         _playerService.GetTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
             .Returns((IEnumerable<Team>)null);
-        CallerCanEdit(TeamA);
+        CallerCanControlVms(TeamA);
         _playerService.GetAllTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
             .Returns([new Team { Id = TeamA, Name = "Red Team" }]);
 
@@ -403,7 +403,7 @@ public class IsoServiceMountAuthTests
         ViewExists(OtherViewId);
         CallerIsIn(ViewId, TeamA);
         CallerIsIn(OtherViewId, TeamB);
-        CallerCanEdit(TeamA, TeamB);
+        CallerCanControlVms(TeamA, TeamB);
 
         _viewService.GetViewIdsForTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns([ViewId, OtherViewId]);

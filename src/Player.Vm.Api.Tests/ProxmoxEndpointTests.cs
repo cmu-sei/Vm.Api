@@ -1,4 +1,4 @@
-// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
+﻿// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
@@ -190,15 +190,15 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     }
 
     /// <summary>
-    /// Team visibility, which <c>GetVm</c> delegates to <c>VmService.CanAccessVm</c> - the same check the
+    /// Vm visibility, which <c>GetVm</c> delegates to <c>VmService.CanAccessVm</c> - the same check the
     /// ordinary Vm routes make. Asserted on one route rather than seventeen because the seventeen have
     /// already been shown to go through <c>GetVm</c>.
     /// </summary>
     [Fact]
-    public async Task WhenTheCallerCannotSeeTheVmsTeams_Is403()
+    public async Task WhenTheCallerCannotSeeTheTeamsVms_Is403()
     {
         var vm = await SeedProxmoxVm();
-        Factory.PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(false);
 
         var response = await Client.GetAsync(Route(vm.Id), Ct);
@@ -229,7 +229,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
 
     /// <summary>
     /// The routes that change what the Vm is doing, all of which go through <c>GetVmForEditing</c>. Only
-    /// the edit permission is denied here, so a 403 can have come from nowhere else.
+    /// the Vm-control permission is denied here, so a 403 can have come from nowhere else.
     /// </summary>
     [Theory]
     [InlineData("POST", "/actions/power-on")]
@@ -239,10 +239,10 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     [InlineData("POST", "/actions/mount-iso")]
     [InlineData("POST", "/actions/run-guest-process")]
     [InlineData("POST", "/actions/run-guest-process-fast")]
-    public async Task EditingRoutes_WithoutEditPermission_Is403(string method, string suffix)
+    public async Task EditingRoutes_WithoutVmControlPermission_Is403(string method, string suffix)
     {
         var vm = await SeedProxmoxVm();
-        Deny(AppViewPermission.EditView);
+        Deny(AppViewPermission.ControlViewVms);
 
         var response = await Send(method, suffix, vm.Id);
 

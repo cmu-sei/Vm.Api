@@ -626,7 +626,7 @@ namespace Player.Vm.Api.Features.Files
         // the check the handler already made and it only bites where a VM is shared between teams - which
         // is the only place a team's ISO can reach an audience beyond that team.
         private Task<bool> CanUseTeamIsoAsync(Guid teamId, CancellationToken ct) =>
-            _playerService.CanEditTeams([teamId], ct);
+            _playerService.CanControlVms([teamId], ct);
 
         private async Task<List<Team>> GetAllViewTeamsOrEmptyAsync(Guid viewId, CancellationToken ct)
         {

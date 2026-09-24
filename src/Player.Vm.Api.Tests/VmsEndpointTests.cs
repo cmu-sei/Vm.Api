@@ -1,4 +1,4 @@
-// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
+﻿// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
@@ -18,6 +18,7 @@ using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Tests.Infrastructure;
 using Xunit;
+using AppSystemPermission = Player.Vm.Api.Infrastructure.Authorization.AppSystemPermission;
 using AppTeamPermission = Player.Vm.Api.Infrastructure.Authorization.AppTeamPermission;
 using AppViewPermission = Player.Vm.Api.Infrastructure.Authorization.AppViewPermission;
 using PlayerApiTeam = Player.Api.Client.Team;
@@ -193,6 +194,24 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         Assert.Empty(await Get<VmModel[]>($"/api/views/{viewId}/vms"));
     }
 
+    // Personal Vms included, and no query flags to ask for them: the caller is not on the teams, so
+    // there is no "mine" to narrow to.
+    [Fact]
+    public async Task GetAllByViewId_ReturnsEveryVmOnTheViewsTeams()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+        await Seed(
+            Vm([teamId], name: "shared"),
+            Vm([teamId], name: "theirs", userId: Guid.NewGuid()),
+            Vm([Guid.NewGuid()], name: "elsewhere"));
+        Roster(viewId, teamId);
+
+        var vms = await Get<VmModel[]>($"/api/views/{viewId}/vms/all");
+
+        Assert.Equal(["shared", "theirs"], vms.Select(x => x.Name).OrderBy(x => x));
+    }
+
     #endregion
 
     #region Vm permissions
@@ -201,7 +220,8 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     /// The endpoint the UI reads to decide which controls to render. It translates player.api's
     /// permission strings into this application's enums, dropping any it does not recognize, and keeps
     /// only the claims belonging to teams the Vm is actually on - so a caller's rights over a team
-    /// beside it do not turn into rights over this Vm.
+    /// beside it do not turn into rights over this Vm. System permissions are reported alongside them
+    /// because a system-wide grant such as ControlVms reaches every Vm without any team claim.
     /// </summary>
     [Fact]
     public async Task GetVmPermissions_KeepsOnlyTheVmsOwnTeamsAndOnlyKnownPermissions()
@@ -222,11 +242,15 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
                 Claim(teamId, nameof(AppTeamPermission.ViewTeam), nameof(AppViewPermission.ViewView), "NotAPermission"),
                 Claim(otherTeamId, nameof(AppTeamPermission.ManageTeam), nameof(AppViewPermission.ManageView))
             ]);
+        Factory.PlayerApi
+            .GetSystemPermissionsAsync(Arg.Any<CancellationToken>())
+            .Returns(new HashSet<AppSystemPermission> { AppSystemPermission.ControlVms });
 
         var permissions = await Get<VmPermissionResult>($"/api/vms/{vm.Id}/permissions");
 
         Assert.Equal([AppTeamPermission.ViewTeam], permissions.TeamPermissions);
         Assert.Equal([AppViewPermission.ViewView], permissions.ViewPermissions);
+        Assert.Equal([AppSystemPermission.ControlVms], permissions.SystemPermissions);
     }
 
     [Fact]
@@ -509,6 +533,37 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     }
 
     [Fact]
+    public async Task GetAllViewMaps_ReturnsEveryMapInTheViewWithItsCoordinates()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId], viewId);
+        map.Coordinates = [CoordinateEntityFor("desk", 1.5, 2.5)];
+        await Seed(map, Map([Guid.NewGuid()]));
+        Roster(viewId, teamId);
+
+        var maps = await Get<VmMapModel[]>($"/api/views/{viewId}/maps/all");
+
+        Assert.Equal("desk", Assert.Single(Assert.Single(maps).Coordinates).Label);
+    }
+
+    // The same hand-written 404 body as the View's own listings, for the same reason.
+    [Theory]
+    [InlineData("vms/all")]
+    [InlineData("maps/all")]
+    public async Task AllInViewReads_ForAViewPlayerApiDoesNotKnow_Are404WithATitle(string route)
+    {
+        var viewId = Guid.NewGuid();
+        Factory.PlayerApi.GetAllTeamIdsByViewIdAsync(viewId, Arg.Any<CancellationToken>())
+            .Returns((IEnumerable<Guid>)null);
+
+        var response = await Client.GetAsync($"/api/views/{viewId}/{route}", Ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        Assert.Contains("\"title\":\"View not found\"", await response.Content.ReadAsStringAsync(Ct));
+    }
+
+    [Fact]
     public async Task GetMap_ReturnsTheMapWithItsCoordinates()
     {
         var map = Map([Guid.NewGuid()]);
@@ -537,7 +592,6 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         var teamId = Guid.NewGuid();
         var map = Map([teamId]);
         await Seed(map, Map([Guid.NewGuid()]));
-        Factory.PlayerApi.IsTeamVisibleAsync(teamId, Arg.Any<CancellationToken>()).Returns(true);
 
         Assert.Equal(map.Id, (await Get<VmMapModel>($"/api/teams/{teamId}/map")).Id);
     }
@@ -547,19 +601,22 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     {
         var teamId = Guid.NewGuid();
         await Seed(Map([Guid.NewGuid()]));
-        Factory.PlayerApi.IsTeamVisibleAsync(teamId, Arg.Any<CancellationToken>()).Returns(true);
 
         var response = await Client.GetAsync($"/api/teams/{teamId}/map", Ct);
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
     }
 
-    // Unstubbed IsTeamVisibleAsync answers false, which is the denial this asserts.
     [Fact]
-    public async Task GetTeamMap_ForATeamTheCallerCannotSee_Is403()
+    public async Task GetTeamMap_WithoutMapAccessToTheTeam_Is403()
     {
         var teamId = Guid.NewGuid();
         await Seed(Map([teamId]));
+        Factory.PlayerApi.CanViewMaps(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
 
         var response = await Client.GetAsync($"/api/teams/{teamId}/map", Ct);
 
@@ -634,11 +691,14 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     }
 
     [Fact]
-    public async Task DeleteMap_WithoutManageOnItsTeams_Is403AndLeavesTheRow()
+    public async Task DeleteMap_WithoutMapManagementOnItsTeams_Is403AndLeavesTheRow()
     {
         var map = Map([Guid.NewGuid()]);
         await Seed(map);
-        Factory.PlayerApi.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanManageMaps(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
             .Returns(false);
 
         var response = await Client.DeleteAsync($"/api/views/maps/{map.Id}", Ct);
@@ -699,6 +759,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     [InlineData("GET", "vms/{id}/permissions")]
     [InlineData("GET", "teams/{id}/vms")]
     [InlineData("GET", "views/{id}/vms")]
+    [InlineData("GET", "views/{id}/vms/all")]
     [InlineData("POST", "vms")]
     [InlineData("PUT", "vms/{id}")]
     [InlineData("DELETE", "vms/{id}")]
@@ -707,6 +768,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     [InlineData("POST", "views/{id}/map")]
     [InlineData("GET", "views/maps")]
     [InlineData("GET", "views/maps/viewMaps/{id}")]
+    [InlineData("GET", "views/{id}/maps/all")]
     [InlineData("GET", "views/maps/{id}")]
     [InlineData("PUT", "views/maps/{id}")]
     [InlineData("DELETE", "views/maps/{id}")]
@@ -740,6 +802,25 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    // The all-in-View reads take a system- or View-level permission, and belonging to the View is not
+    // a substitute for one.
+    [Theory]
+    [InlineData("vms/all")]
+    [InlineData("maps/all")]
+    public async Task AllInViewReads_WithoutAVmOrMapPermission_Are403(string route)
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+        await Seed(Vm([teamId]), Map([teamId], viewId));
+        Roster(viewId, teamId);
+        DenyEverything();
+        Factory.PlayerApi.IsInViewAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(true);
+
+        var response = await Client.GetAsync($"/api/views/{viewId}/{route}", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     /// <summary>
     /// player.api answering 404 for a view is a 404 here, not a 500: the middleware unwraps
     /// <c>Player.Api.Client.ApiException</c> for that one status. A caller asking about a view that has
@@ -751,7 +832,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
 
-        Factory.PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns<bool>(_ => throw new ApiException(
                 "Team not found", (int)HttpStatusCode.NotFound, null, null, null));
 
@@ -768,7 +849,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
 
-        Factory.PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns<bool>(_ => throw new ApiException(
                 "Service Unavailable", (int)HttpStatusCode.ServiceUnavailable, null, null, null));
 
@@ -792,13 +873,35 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         return await response.Content.ReadFromJsonAsync<T>(JsonOptions, Ct);
     }
 
+    private void Roster(Guid viewId, params Guid[] teamIds) =>
+        Factory.PlayerApi.GetAllTeamIdsByViewIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(teamIds);
+
     private void DenyEverything()
     {
-        Factory.PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(false);
-        Factory.PlayerApi.CanEditTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(false);
         Factory.PlayerApi.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.CanViewVmsAsMember(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.CanViewMaps(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.CanViewMapsAsMember(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.CanManageMaps(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(false);
+        Factory.PlayerApi.IsInViewAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(false);
         Factory.PlayerApi
             .Can(default, default, default, default, default, Ct)
