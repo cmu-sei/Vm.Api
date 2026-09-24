@@ -225,7 +225,7 @@ namespace Player.Vm.Api.Features.Files
                 var request = new IsoUploadRequest(viewId, scopeIds, destName, null,
                     () => isIso ? openUpload() : BuildIsoStream(openUpload(), filename));
 
-                return await FanOutAsync(providers, p => p.UploadAsync(request, ct), "upload", "uploaded", destName);
+                return await FanOutAsync(providers, p => p.UploadAsync(request, ct), "upload", "uploaded", destName, ct);
             }
 
             string tempPath = null;
@@ -235,7 +235,7 @@ namespace Player.Vm.Api.Features.Files
                 tempPath = await StageIsoAsync(openUpload, filename, isIso, ct);
                 var request = new IsoUploadRequest(viewId, scopeIds, destName, tempPath, null);
 
-                return await FanOutAsync(providers, p => p.UploadAsync(request, ct), "upload", "uploaded", destName);
+                return await FanOutAsync(providers, p => p.UploadAsync(request, ct), "upload", "uploaded", destName, ct);
             }
             finally
             {
@@ -256,7 +256,7 @@ namespace Player.Vm.Api.Features.Files
             // later enables Proxmox could no longer delete its own "Win 10.iso", because the request would
             // become "Win_10.iso" and the NFS path treats a miss as success. Each provider normalizes for
             // its own storage internally instead.
-            return await FanOutAsync(providers, p => p.DeleteAsync(viewId, scopeId, filename, ct), "delete", "deleted", filename);
+            return await FanOutAsync(providers, p => p.DeleteAsync(viewId, scopeId, filename, ct), "delete", "deleted", filename, ct);
         }
 
         // Fold a display filename through every enabled provider's character-set restrictions, so one
@@ -273,10 +273,13 @@ namespace Player.Vm.Api.Features.Files
             return filename;
         }
 
-        // What one provider contributed to a fan-out. Threw distinguishes a provider that failed
-        // outright - and so reached none of its targets - from one that reported some of its own hosts
-        // failing, which only vSphere's multi-vCenter datastore mode can do.
-        internal readonly record struct ProviderOutcome(VmType Provider, bool Threw, int FailedHostCount, int TotalHostCount);
+        // What one provider contributed to a fan-out. An exception carries no known target counts;
+        // a returned outcome can report partial or complete destination failure. Zero-count success
+        // remains valid for local storage, so only a positive all-failed tally is complete failure.
+        internal readonly record struct ProviderOutcome(VmType Provider, bool Threw, int FailedHostCount, int TotalHostCount)
+        {
+            public bool FailedCompletely => Threw || (TotalHostCount > 0 && FailedHostCount == TotalHostCount);
+        }
 
         // One provider's listing, with the provider carried alongside it rather than stamped onto every
         // entry. Internal, and never serialized: which hypervisor answered is merge input, and a
@@ -287,15 +290,17 @@ namespace Player.Vm.Api.Features.Files
 
         // Run one write operation on every provider concurrently and reduce the outcomes to the result
         // the API returns. A single provider's failure is caught and logged rather than faulting the
-        // batch - the same tolerance VsphereService already applies across hosts - and only a total
+        // batch - the same tolerance VsphereService applies across destinations - and only a total
         // failure throws.
         private async Task<IsoUploadResult> FanOutAsync(
             IReadOnlyList<IIsoProvider> providers,
             Func<IIsoProvider, Task<IsoOperationOutcome>> operation,
             string operationName,
             string pastTense,
-            string filename)
+            string filename,
+            CancellationToken ct)
         {
+            ct.ThrowIfCancellationRequested();
             var outcomes = await Task.WhenAll(providers.Select(async provider =>
             {
                 try
@@ -305,6 +310,9 @@ namespace Player.Vm.Api.Features.Files
                 }
                 catch (Exception ex)
                 {
+                    // A provider error can race request cancellation. Prefer the caller's cancellation
+                    // over an unrelated error, without checking again after a successful operation.
+                    ct.ThrowIfCancellationRequested();
                     _logger.LogError(ex,
                         "ISO {File} failed to {Operation} on provider {Provider}",
                         filename, operationName, provider.ProviderType);
@@ -324,10 +332,10 @@ namespace Player.Vm.Api.Features.Files
         internal static IsoUploadResult SummarizeFanOut(
             IReadOnlyList<ProviderOutcome> outcomes, string operationName, string pastTense)
         {
-            // Anything short of complete success, whether a whole hypervisor or some of one's hosts.
+            // Anything short of complete success, whether a whole hypervisor or some of its destinations.
             var failures = outcomes.Where(o => o.Threw || o.FailedHostCount > 0).ToList();
 
-            if (outcomes.Count > 0 && outcomes.All(o => o.Threw))
+            if (outcomes.Count > 0 && outcomes.All(o => o.FailedCompletely))
             {
                 throw new Exception(
                     $"ISO {operationName} failed on {DescribeFailures(failures)}. Try again, or contact an administrator if the issue persists.");
@@ -354,14 +362,13 @@ namespace Player.Vm.Api.Features.Files
             };
         }
 
-        // Name the hypervisors an operation failed on. The host tally is only included for a provider
-        // that had more than one target - "Proxmox (1 of 1 hosts)" is noise, since a Proxmox cluster is
-        // always a single write target, whereas "Vsphere (1 of 3 hosts)" says the upload partly landed.
+        // Name the hypervisors an operation failed on. Include a destination tally only when the
+        // provider had multiple targets. Individual group names and vCenter addresses stay in logs.
         private static string DescribeFailures(IReadOnlyList<ProviderOutcome> failures)
         {
             return JoinNames(failures
                 .Select(f => f.TotalHostCount > 1
-                    ? $"{f.Provider} ({f.FailedHostCount} of {f.TotalHostCount} hosts)"
+                    ? $"{f.Provider} ({f.FailedHostCount} of {f.TotalHostCount} destinations)"
                     : f.Provider.ToString()));
         }
 

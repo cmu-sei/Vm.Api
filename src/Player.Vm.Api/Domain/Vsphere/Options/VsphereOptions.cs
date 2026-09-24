@@ -27,11 +27,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
         // Exists mainly so tests can set it to 0 and exercise those loops without real waits.
         public int TaskPollIntervalMilliseconds { get; set; } = 1000;
 
-        // True to push ISOs to every connected vCenter's datastore through its HTTP file API; null or
+        // True to push ISOs to each configured ISO destination through vCenter's HTTP file API; null or
         // false (default) to write them into IsoRoot. Required by VMware Cloud on AWS SDDCs, which
         // have no NFS datastore. The Proxmox equivalent is Proxmox:IsoUploadViaApi.
         //
-        // Each host is written through its OWN DsName and BaseFolder, so an ISO lands at
+        // Each selected group member writes through its OWN DsName and BaseFolder, so an ISO lands at
         // "[{DsName}] {BaseFolder}/{viewId}/{scopeId}/{filename}" (see
         // VsphereService.BuildIsoFolderRelative, the single source of truth for that layout). The
         // destination folder is created if it does not exist.
@@ -49,6 +49,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
         // sits at some other path within it writes ISOs no one can then see.
         public string IsoRoot { get; set; }
 
+        // When true, hosts without an explicit IsoStorageGroup share one ISO destination.
+        // Explicit groups override this default. Only affects API uploads/deletes; null/blank is false.
+        // Members must reach the same physical ISO directory through their own DsName/BaseFolder.
+        public bool? IsoStorageShared { get; set; }
+
         public VsphereHost[] Hosts { get; set; }
     }
 
@@ -60,5 +65,9 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
         public string Password { get; set; }
         public string DsName { get; set; }
         public string BaseFolder { get; set; }
+
+        // Optional ISO destination group. Names are trimmed and case-sensitive; blank is unassigned.
+        // Overrides IsoStorageShared. A unique name gives a shared-storage installation an exception.
+        public string IsoStorageGroup { get; set; }
     }
 }

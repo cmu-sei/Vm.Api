@@ -48,7 +48,7 @@ public class VsphereConnection
         }
     }
 
-    public bool Connected { get; private set; }
+    public bool Connected { get; internal set; }
 
     public VsphereHost Host;
     public VsphereOptions Options;
