@@ -1327,14 +1327,18 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 {
                     var connection = GetUsableConnection(host);
                     if (connection == null)
-                        continue;
+                        continue; // the upload itself reports the unavailable host
 
                     try
                     {
                         var dsName = connection.Host.DsName;
                         var datacenter = await GetDatacenterForDatastore(dsName, connection).WaitAsync(ct);
                         if (datacenter == null)
-                            continue; // the upload itself reports the unresolved datacenter
+                        {
+                            _logger.LogWarning("Could not pre-create ISO folders for view {ViewId} on {Host}: datacenter for datastore {DsName} not found",
+                                viewId, host.Address, dsName);
+                            continue;
+                        }
 
                         foreach (var scopeId in scopeIds)
                         {
@@ -1343,6 +1347,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                             await EnsureDatastoreDirectory(connection, datacenter, dsName, folderPath).WaitAsync(ct);
                         }
 
+                        _logger.LogDebug("Pre-created {Count} ISO folder(s) for view {ViewId} on {Host}",
+                            scopeIds.Count, viewId, host.Address);
                         return;
                     }
                     catch (Exception ex) when (!ct.IsCancellationRequested)
@@ -1369,11 +1375,18 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     ct.ThrowIfCancellationRequested();
                     var connection = GetUsableConnection(host);
                     if (connection == null)
+                    {
+                        // Otherwise an offline host is indistinguishable from one that was never tried.
+                        _logger.LogWarning("ISO {File} {Operation} skipped {Host}: host is not connected; trying another member of {Kind} group {Group}",
+                            filename, operation, host.Address, group.Key.Kind, group.Key.Name);
                         continue;
+                    }
 
                     try
                     {
                         await execute(connection);
+                        _logger.LogDebug("ISO {File} {Operation} succeeded on {Host} for {Kind} group {Group}",
+                            filename, operation, host.Address, group.Key.Kind, group.Key.Name);
                         return true;
                     }
                     catch (Exception ex)
@@ -1427,8 +1440,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 // repeating it is safe. The delay reuses the poll interval so tests can set it to 0.
                 if (attempt < IsoUploadAttempts && (int)response.StatusCode >= 500)
                 {
-                    _logger.LogWarning("Datastore PUT of ISO {File} to {Host} failed ({Status}); retrying",
-                        filename, connection.Address, (int)response.StatusCode);
+                    _logger.LogWarning("Datastore PUT of ISO {File} to {Host} failed ({Status}): {Body}; retrying",
+                        filename, connection.Address, (int)response.StatusCode, body);
                     await Task.Delay(_pollInterval, ct);
                     continue;
                 }
