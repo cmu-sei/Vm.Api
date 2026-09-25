@@ -4,6 +4,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
@@ -22,6 +23,7 @@ namespace Player.Vm.Api.Domain.Proxmox.Services;
 
 public interface IProxmoxStateService
 {
+    Task<IReadOnlySet<Guid>> InitializeVmsAsync(Guid[] ids, CancellationToken ct);
     void CheckState();
     Task UpdateVm(IClusterResourceVm vm);
 }
@@ -34,6 +36,7 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
     private readonly ActionBlock<IClusterResourceVm> _jobQueue;
     private readonly IOptionsMonitor<ProxmoxOptions> _proxmoxOptionsMonitor;
 
+    private readonly SemaphoreSlim _refreshGate = new(1, 1);
     private const int MinimumIntervalSeconds = 1;
 
     /// <summary>
@@ -147,15 +150,40 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
         return configured;
     }
 
+    public async Task<IReadOnlySet<Guid>> InitializeVmsAsync(Guid[] ids, CancellationToken ct)
+    {
+        if (!_proxmoxOptionsMonitor.CurrentValue.Enabled || ids.Length == 0)
+            return new HashSet<Guid>();
+
+        using var scope = _serviceProvider.CreateScope();
+        return await RefreshVms(
+            scope.ServiceProvider.GetRequiredService<VmContext>(),
+            scope.ServiceProvider.GetRequiredService<IProxmoxService>(), ids, ct);
+    }
+
     private async Task ProcessVms(VmContext dbContext, IProxmoxService proxmoxService, CancellationToken cancellationToken)
+        => await RefreshVms(dbContext, proxmoxService, null, cancellationToken);
+
+    private async Task<IReadOnlySet<Guid>> RefreshVms(
+        VmContext dbContext, IProxmoxService proxmoxService, Guid[] ids, CancellationToken cancellationToken)
+    {
+        await _refreshGate.WaitAsync(cancellationToken);
+        try { return await RefreshVmsCore(dbContext, proxmoxService, ids, cancellationToken); }
+        finally { _refreshGate.Release(); }
+    }
+
+    private async Task<IReadOnlySet<Guid>> RefreshVmsCore(
+        VmContext dbContext, IProxmoxService proxmoxService, Guid[] ids, CancellationToken cancellationToken)
     {
         var pveVms = (await proxmoxService.GetVms())
             .DistinctBy(x => x.VmId)
             .ToDictionary(x => x.VmId);
 
-        var dbVms = await dbContext.Vms
-            .Where(x => x.ProxmoxVmInfo != null)
-            .ToListAsync(cancellationToken);
+        var query = dbContext.Vms.Where(x => x.ProxmoxVmInfo != null);
+        if (ids != null)
+            query = query.Where(x => ids.Contains(x.Id));
+        var dbVms = await query.ToListAsync(cancellationToken);
+        var resolved = new HashSet<Guid>();
 
         _logger.LogDebug($"Found {pveVms.Count} {"machine".Pluralize(pveVms.Count)} in PVE and {dbVms.Count} {"machine".Pluralize(dbVms.Count)} in database.");
 
@@ -163,6 +191,8 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
         {
             pveVms.TryGetValue(dbVm.ProxmoxVmInfo.Id, out var pveVm);
             this.UpdateVm(dbVm, pveVm);
+            if (pveVm != null && pveVm.GetPowerState() != Domain.Models.PowerState.Unknown)
+                resolved.Add(dbVm.Id);
         }
 
         var count = await dbContext.SaveChangesAsync(cancellationToken);
@@ -177,6 +207,7 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
         {
             _logger.LogDebug($"Updated {count} {"machine".Pluralize(count)}");
         }
+        return resolved;
     }
 
     private async Task ProcessVm(IClusterResourceVm pveVm)

@@ -43,6 +43,7 @@ namespace Player.Vm.Api.Tests;
 /// </remarks>
 public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBase(fixture)
 {
+    private readonly IVmInitializationQueue _initialization = Substitute.For<IVmInitializationQueue>();
     private readonly IViewService _views = Substitute.For<IViewService>();
     private readonly HubContextHarness<VmHub> _hub = new();
 
@@ -63,6 +64,7 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
         services.AddLogging();
         services.AddMediatR(cfg =>
             cfg.RegisterServicesFromAssemblies(typeof(Player.Vm.Api.Startup).Assembly));
+        services.AddSingleton(_initialization);
         services.AddSingleton(_views);
         services.AddSingleton(_hub.Context);
         services.AddSingleton(TestMapper.Value);
@@ -89,6 +91,28 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
         }
 
         await base.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task VmInitializationIsQueuedOnlyAfterCommit()
+    {
+        var vm = new VmEntity { Id = Guid.NewGuid(), Name = "new" };
+        await using var transaction = await App.Database.BeginTransactionAsync(Ct);
+        App.Add(vm);
+        await App.SaveChangesAsync(Ct);
+        _initialization.DidNotReceive().Enqueue(Arg.Any<VmEntity>());
+        await transaction.CommitAsync(Ct);
+        _initialization.Received(1).Enqueue(Arg.Is<VmEntity>(x => x.Id == vm.Id));
+    }
+
+    [Fact]
+    public async Task RolledBackCreationDoesNotQueueInitialization()
+    {
+        await using var transaction = await App.Database.BeginTransactionAsync(Ct);
+        App.Add(new VmEntity { Id = Guid.NewGuid(), Name = "rolled-back" });
+        await App.SaveChangesAsync(Ct);
+        await transaction.RollbackAsync(Ct);
+        _initialization.DidNotReceive().Enqueue(Arg.Any<VmEntity>());
     }
 
     /// <summary>

@@ -20,11 +20,13 @@ using Player.Vm.Api.Domain.Models;
 using Nito.AsyncEx;
 using Player.Vm.Api.Infrastructure.Extensions;
 using Player.Vm.Api.Domain.Services.HealthChecks;
+using Player.Vm.Api.Domain.Services;
 
 namespace Player.Vm.Api.Domain.Vsphere.Services;
 
 public interface IConnectionService
 {
+    Task<IReadOnlySet<Guid>> InitializeVmsAsync(Guid[] ids, CancellationToken ct);
     ManagedObjectReference GetMachineById(Guid id);
     Guid? GetVmIdByRef(string reference, string vsphereHost);
     List<Network> GetNetworksByHost(string hostReference, string vsphereHost);
@@ -48,7 +50,8 @@ public class ConnectionService : BackgroundService, IConnectionService
     public ConcurrentDictionary<string, VsphereConnection> _connections = new(); // address to connection
     public ConcurrentDictionary<Guid, string> _machines = new(); // machine to vsphere address
 
-    private Dictionary<string, Task<IEnumerable<VsphereVirtualMachine>>> _taskDict = new();
+    private readonly Dictionary<string, Task> _taskDict = new();
+    private readonly SemaphoreSlim _discoverySlots = new(8, 8);
 
     public ConnectionService(
             IOptionsMonitor<VsphereOptions> vsphereOptionsMonitor,
@@ -84,104 +87,118 @@ public class ConnectionService : BackgroundService, IConnectionService
     private async Task DoWork(CancellationToken cancellationToken)
     {
         var options = _optionsMonitor.CurrentValue;
-
         foreach (var host in options.Hosts)
         {
             var connection = _connections.GetOrAdd(host.Address, x => new VsphereConnection(host, options, _logger));
-            connection.Options = options;
-            connection.Host = host;
-
             if (!_taskDict.ContainsKey(connection.Address))
-            {
-                _taskDict.Add(connection.Address, connection.Load());
-            }
+                _taskDict.Add(connection.Address, RefreshConnectionAsync(connection, host, options, cancellationToken));
         }
 
-        var timeout = Task.Delay(TimeSpan.FromSeconds(options.ConnectionTimeoutSeconds), cancellationToken);
         var allTasks = Task.WhenAll(_taskDict.Values);
-        var completed = await Task.WhenAny(allTasks, timeout);
-        var completedTasks = _taskDict.Where(x => x.Value.IsCompletedSuccessfully).ToDictionary();
+        await Task.WhenAny(allTasks, Task.Delay(TimeSpan.FromSeconds(options.ConnectionTimeoutSeconds), cancellationToken));
         _connectionServiceHealthCheck.StartupCheckComplete = true;
-        _connectionServiceHealthCheck.Connections = _connections.Select(x => x.Value).ToArray();
+        _connectionServiceHealthCheck.Connections = _connections.Values.ToArray();
 
-        var results = new List<VsphereVirtualMachine>();
-
-        foreach (var (key, task) in _taskDict.ToList())
+        foreach (var (host, task) in _taskDict.ToArray())
         {
             if (!task.IsCompleted)
             {
-                _logger.LogWarning(task.Exception, "Loading connection for {Host} did not complete in time. It will be checked again in the next loop.", key);
+                _logger.LogWarning("Loading connection for {Host} did not complete in time. It will be checked again in the next loop.", host);
                 continue;
             }
-
-            if (task.IsCompletedSuccessfully)
-            {
-                results.AddRange(task.Result);
-            }
-            else if (task.IsFaulted)
-            {
-                _logger.LogWarning(task.Exception, "Loading connection for {Host} failed", key);
-            }
-            else if (task.IsCanceled)
-            {
-                _logger.LogInformation("Loading connection for {Host} was canceled", key);
-            }
-
-            _taskDict.Remove(key);
-        }
-
-        this.ProcessTasks(completedTasks);
-        await this.UpdateVms(results);
-    }
-
-    private void ProcessTasks(Dictionary<string, Task<IEnumerable<VsphereVirtualMachine>>> taskDict)
-    {
-        // Add or update machines cache
-        foreach (var kvp in taskDict)
-        {
-            var machines = kvp.Value.Result;
-
-            foreach (var machine in machines)
-            {
-                _machines.AddOrUpdate(machine.Id, kvp.Key, (k, v) => v = kvp.Key);
-            }
-        }
-
-        // Remove machines that no longer exist from cache
-        var allMachines = _connections.Values.SelectMany(x => x.MachineCache.Select(y => y.Key));
-
-        foreach (var kvp in _machines)
-        {
-            if (!allMachines.Contains(kvp.Key))
-            {
-                _machines.TryRemove(kvp);
-            }
+            if (task.IsFaulted)
+                _logger.LogWarning(task.Exception, "Loading connection for {Host} failed", host);
+            _taskDict.Remove(host);
         }
     }
 
-    private async Task UpdateVms(IEnumerable<VsphereVirtualMachine> vsphereVirtualMachines)
+    private async Task RefreshConnectionAsync(
+        VsphereConnection connection, VsphereHost host, VsphereOptions options, CancellationToken ct)
     {
-        using (var scope = _serviceProvider.CreateScope())
+        await connection.InventoryGate.WaitAsync(ct);
+        try
         {
-            var dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
-            var vms = await dbContext.Vms.ToArrayAsync();
-
-            foreach (var vsphereVirtualMachine in vsphereVirtualMachines)
-            {
-                var vm = vms.FirstOrDefault(x => x.Id == vsphereVirtualMachine.Id);
-
-                if (vm != null)
-                {
-                    var powerState = vsphereVirtualMachine.State == "on" ? PowerState.On : PowerState.Off;
-                    vm.PowerState = powerState;
-                    vm.IpAddresses = vsphereVirtualMachine.IpAddresses;
-                    vm.Type = VmType.Vsphere;
-                    vm.HasSnapshot = vsphereVirtualMachine.HasSnapshot;
-                }
-            }
-
-            var count = await dbContext.SaveChangesAsync();
+            connection.Host = host;
+            connection.Options = options;
+            var machines = (await connection.Load()).ToArray();
+            await PublishMachinesAsync(connection, machines, removeMissing: true, ct);
         }
+        finally { connection.InventoryGate.Release(); }
+    }
+
+    public async Task<IReadOnlySet<Guid>> InitializeVmsAsync(Guid[] ids, CancellationToken ct)
+    {
+        // A failed connection is isolated from the other connections' discovery and writes.
+        var resolved = new ConcurrentDictionary<Guid, byte>();
+        await Task.WhenAll(_connections.Values.Select(async connection =>
+        {
+            await connection.InventoryGate.WaitAsync(ct);
+            try
+            {
+                if (!connection.Enabled || !connection.Connected)
+                    return;
+
+                var candidates = ids.Where(id =>
+                    !_machines.TryGetValue(id, out var address) || address == connection.Address).ToArray();
+                if (candidates.Length == 0)
+                    return;
+
+                var machines = (await connection.LoadMachinesAsync(candidates, _discoverySlots, ct)).ToArray();
+                await PublishMachinesAsync(connection, machines, removeMissing: false, ct);
+                foreach (var vm in machines.Where(x => x.State != "unknown"))
+                    resolved.TryAdd(vm.Id, 0);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "VM initialization failed on {Host}", connection.Address);
+            }
+            finally { connection.InventoryGate.Release(); }
+        }));
+        return resolved.Keys.ToHashSet();
+    }
+
+    // Both refresh paths hold the connection's gate until every cache and database update is done.
+    private async Task PublishMachinesAsync(
+        VsphereConnection connection, VsphereVirtualMachine[] machines, bool removeMissing, CancellationToken ct)
+    {
+        foreach (var machine in machines)
+            _machines[machine.Id] = connection.Address;
+
+        if (removeMissing)
+        {
+            foreach (var entry in _machines.Where(x => x.Value == connection.Address).ToArray())
+                if (!connection.MachineCache.ContainsKey(entry.Key))
+                    _machines.TryRemove(entry);
+        }
+
+        if (machines.Length == 0)
+            return;
+
+        using var scope = _serviceProvider.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
+        var ids = machines.Select(x => x.Id).ToArray();
+        var vms = await dbContext.Vms.Where(x => ids.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
+        foreach (var machine in machines)
+        {
+            if (!vms.TryGetValue(machine.Id, out var vm) ||
+                VmInitializationQueue.GetProvider(vm) != VmType.Vsphere)
+                continue;
+
+            var state = machine.State switch
+            {
+                "on" => PowerState.On,
+                "off" => PowerState.Off,
+                "suspended" => PowerState.Suspended,
+                _ => PowerState.Unknown
+            };
+            if (state != PowerState.Unknown)
+                vm.PowerState = state;
+            vm.IpAddresses = machine.IpAddresses;
+            vm.Type = VmType.Vsphere;
+            vm.HasSnapshot = machine.HasSnapshot;
+        }
+        await dbContext.SaveChangesAsync(ct);
     }
 
     public VsphereAggregate GetAggregate(Guid id)

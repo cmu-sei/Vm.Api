@@ -7,6 +7,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.ServiceModel;
 using System.Threading.Tasks;
+using System.Threading;
 using Microsoft.Extensions.Logging;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
 using Player.Vm.Api.Domain.Vsphere.Options;
@@ -53,6 +54,8 @@ public class VsphereConnection
     public VsphereHost Host;
     public VsphereOptions Options;
     private ILogger _logger;
+    // Held by ConnectionService across collection, cache publication, and database persistence.
+    internal SemaphoreSlim InventoryGate { get; } = new(1, 1);
     private bool _forceReload = false;
     private DateTime? LastCacheUpdate;
 
@@ -85,7 +88,7 @@ public class VsphereConnection
                 var connected = await Connect();
                 this.Connected = connected;
 
-                if (connected && LastCacheUpdate == null || (DateTime.UtcNow - LastCacheUpdate.Value).TotalMinutes >= Options.LoadCacheAfterMinutes || _forceReload)
+                if (connected && (LastCacheUpdate == null || (DateTime.UtcNow - LastCacheUpdate.Value).TotalMinutes >= Options.LoadCacheAfterMinutes || _forceReload))
                 {
                     try
                     {
@@ -371,10 +374,63 @@ public class VsphereConnection
         return machineCache;
     }
 
-    private IEnumerable<VsphereVirtualMachine> LoadMachineCache(VimClient.ObjectContent[] virtualMachines)
+    // The caller owns InventoryGate. UUID discovery is bounded across all connections, and only
+    // the requested references are passed to the property collector.
+    internal async Task<IEnumerable<VsphereVirtualMachine>> LoadMachinesAsync(
+        Guid[] ids, SemaphoreSlim discoverySlots, CancellationToken ct)
     {
-        IEnumerable<Guid> existingMachineIds = MachineCache.Keys;
-        List<Guid> currentMachineIds = new List<Guid>();
+        var references = new ConcurrentDictionary<Guid, ManagedObjectReference>();
+        await Parallel.ForEachAsync(ids, new ParallelOptions
+        {
+            MaxDegreeOfParallelism = 8,
+            CancellationToken = ct
+        }, async (id, token) =>
+        {
+            if (MachineCache.TryGetValue(id, out var cached))
+            {
+                references[id] = cached;
+                return;
+            }
+
+            await discoverySlots.WaitAsync(token);
+            try
+            {
+                var reference = await Client.FindByUuidAsync(Sic.searchIndex, null, id.ToString(), true, false);
+                if (reference != null)
+                    references[id] = reference;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not discover VM {VmId} on {Host}", id, Address);
+            }
+            finally { discoverySlots.Release(); }
+        });
+
+        ct.ThrowIfCancellationRequested();
+        if (references.IsEmpty)
+            return [];
+
+        var response = await Client.RetrievePropertiesAsync(Props, [
+            new PropertyFilterSpec
+            {
+                objectSet = references.Values.Select(reference => new ObjectSpec { obj = reference }).ToArray(),
+                propSet = [
+                    new PropertySpec
+                    {
+                        type = "VirtualMachine",
+                        pathSet = ["name", "config.uuid", "summary.runtime.powerState", "guest.net", "snapshot"]
+                    }
+                ]
+            }
+        ]);
+        ct.ThrowIfCancellationRequested();
+        return LoadMachineCache(response.returnval.FindType("VirtualMachine"), removeMissing: false);
+    }
+
+    private IEnumerable<VsphereVirtualMachine> LoadMachineCache(VimClient.ObjectContent[] virtualMachines, bool removeMissing = true)
+    {
+        IEnumerable<Guid> existingMachineIds = removeMissing ? MachineCache.Keys : [];
+        HashSet<Guid> currentMachineIds = new();
         List<VsphereVirtualMachine> vsphereVirtualMachines = new List<VsphereVirtualMachine>();
 
         foreach (var vm in virtualMachines)
@@ -409,14 +465,23 @@ public class VsphereConnection
                     Id = guid,
                     Name = name,
                     Reference = vm.obj,
-                    State = (VirtualMachinePowerState)vm.GetProperty("summary.runtime.powerState") == VirtualMachinePowerState.poweredOn ? "on" : "off",
+                    State = vm.GetProperty("summary.runtime.powerState") switch
+                    {
+                        VirtualMachinePowerState.poweredOn => "on",
+                        VirtualMachinePowerState.poweredOff => "off",
+                        VirtualMachinePowerState.suspended => "suspended",
+                        _ => "unknown"
+                    },
                     VmToolsStatus = vmToolsStatus,
-                    IpAddresses = ((GuestNicInfo[])vm.GetProperty("guest.net")).Where(x => x.ipAddress != null).SelectMany(x => x.ipAddress).ToArray(),
-                    HasSnapshot = snapshots == null ? false : snapshots.rootSnapshotList.Any()
+                    IpAddresses = (vm.GetProperty("guest.net") as GuestNicInfo[] ?? [])
+                        .Where(x => x?.ipAddress != null).SelectMany(x => x.ipAddress).ToArray(),
+                    HasSnapshot = snapshots?.rootSnapshotList?.Any() == true
                 };
 
                 vsphereVirtualMachines.Add(virtualMachine);
 
+                if (MachineCache.TryGetValue(guid, out var oldReference) && oldReference.Value != vm.obj.Value)
+                    VmGuids.TryRemove(oldReference.Value, out _);
                 MachineCache.AddOrUpdate(virtualMachine.Id, virtualMachine.Reference, (k, v) => v = virtualMachine.Reference);
                 currentMachineIds.Add(virtualMachine.Id);
                 VmGuids.AddOrUpdate(vm.obj.Value, guid, (k, v) => (v = guid));
@@ -431,6 +496,7 @@ public class VsphereConnection
         {
             if (MachineCache.TryRemove(existingId, out ManagedObjectReference stale))
             {
+                VmGuids.TryRemove(stale.Value, out _);
                 _logger.LogDebug($"removing stale cache entry {stale.Value}");
             }
         }
