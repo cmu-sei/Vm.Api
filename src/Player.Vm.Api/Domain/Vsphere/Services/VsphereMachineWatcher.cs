@@ -57,7 +57,6 @@ public sealed class VsphereMachineWatcher
     }
 
     internal TimeSpan InitialBackoff { get; init; } = TimeSpan.FromSeconds(5);
-    internal TimeSpan DisconnectedPollInterval { get; init; } = TimeSpan.FromSeconds(1);
     internal TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(5);
 
     public async Task RunAsync(CancellationToken ct)
@@ -66,11 +65,15 @@ public sealed class VsphereMachineWatcher
 
         while (!ct.IsCancellationRequested)
         {
-            var session = _connection.GetSession();
+            // Taken before the session is read, so a login in between completes the signal held here.
+            var connected = _connection.WhenConnected();
+            var session = _connection.Current;
 
-            if (session.Client == null || session.Sic == null)
+            if (session == null)
             {
-                await Delay(DisconnectedPollInterval, ct);
+                // The signal is the fast path. The bound means a missed one costs a retry interval, not
+                // the watcher.
+                await WaitAsync(connected, MaxBackoff(), ct);
                 continue;
             }
 
@@ -86,9 +89,10 @@ public sealed class VsphereMachineWatcher
             {
                 _connection.WatcherError = ex.Message;
 
-                if (_connection.Generation != session.Generation)
+                if (!ReferenceEquals(_connection.Current, session))
                 {
-                    // The session was replaced under the pending call. The new one is ready now.
+                    // The session was replaced or dropped under the pending call. Start again on whatever
+                    // the connection has now.
                     _logger.LogInformation("Session for {Host} was replaced. Rebuilding the machine watcher.", _connection.Address);
                     continue;
                 }
@@ -100,15 +104,18 @@ public sealed class VsphereMachineWatcher
 
                 _logger.LogWarning(ex, "Machine watcher for {Host} failed. Retrying in {Delay}.", _connection.Address, backoff);
                 await Delay(backoff, ct);
-
-                var max = _maxBackoff();
-                backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, Math.Max(max.Ticks, InitialBackoff.Ticks)));
+                backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, MaxBackoff().Ticks));
             }
         }
     }
 
-    private async Task WatchAsync(
-        (IVimClient Client, ServiceContent Sic, int Generation) session, Action onHealthy, CancellationToken ct)
+    private TimeSpan MaxBackoff()
+    {
+        var max = _maxBackoff();
+        return max > InitialBackoff ? max : InitialBackoff;
+    }
+
+    private async Task WatchAsync(VsphereSession session, Action onHealthy, CancellationToken ct)
     {
         var client = session.Client;
         ManagedObjectReference view = null;
@@ -127,7 +134,7 @@ public sealed class VsphereMachineWatcher
             var version = "";
             var options = BuildWaitOptions();
 
-            while (_connection.Generation == session.Generation)
+            while (ReferenceEquals(_connection.Current, session))
             {
                 var update = await WaitAsync(client, collector, version, options, ct);
 
@@ -155,7 +162,7 @@ public sealed class VsphereMachineWatcher
         finally
         {
             // Objects made under a session that has since been replaced went with it.
-            if (_connection.Generation == session.Generation)
+            if (ReferenceEquals(_connection.Current, session))
             {
                 if (collector != null)
                 {
@@ -316,6 +323,18 @@ public sealed class VsphereMachineWatcher
             await Task.Delay(delay, ct);
         }
         catch (OperationCanceledException)
+        {
+        }
+    }
+
+    // Until the signal completes, the bound passes or the watcher stops, whichever comes first.
+    private static async Task WaitAsync(Task signal, TimeSpan bound, CancellationToken ct)
+    {
+        try
+        {
+            await signal.WaitAsync(bound, ct);
+        }
+        catch (Exception ex) when (ex is TimeoutException or OperationCanceledException)
         {
         }
     }

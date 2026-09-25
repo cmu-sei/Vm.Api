@@ -10,9 +10,9 @@ using Player.Vm.Api.Domain.Vsphere.Services;
 namespace Player.Vm.Api.Features.Vms.EventHandlers;
 
 /// <summary>
-/// Once a new Vm row has committed, queues it for the vSphere persister. VmService fills the state it
-/// had cached before the insert, but the watcher may have reported the machine, or a newer state for
-/// it, between that read and the commit; the persister writes whatever is cached now. No vCenter call.
+/// Once a new Vm row has committed, queues it for the vSphere persister. The row starts Unknown; if the
+/// watcher has already reported the machine, the persister writes its cached state straight after. The
+/// watcher alone would miss a machine it reported before the row existed. No vCenter call.
 /// </summary>
 public sealed class VmCreatedInitializationHandler(IConnectionService connections)
     : INotificationHandler<EntityCreated<Domain.Models.Vm>>

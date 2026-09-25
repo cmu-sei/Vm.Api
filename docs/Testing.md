@@ -210,8 +210,8 @@ and nothing about any service.
   watcher's subject is the caches: truncated initial pages, pruning only after the last one, a missing
   property keeping its value, a stale moref's `leave` not removing a newer mapping. The service's is the
   lifecycle: one login kept for as long as the session probe says it is live, a re-login that retires the
-  old session and moves `Generation` so the watcher rebuilds, and a disabled or removed host draining its
-  watcher and logging out.
+  old session and swaps in a new session object so the watcher rebuilds, a watcher that died being
+  restarted, and a disabled or removed host draining its watcher and logging out.
 
 Three classes cover the entity-event handlers, which are the sending end of those same group names. A
 change to a Vm never reaches a client directly: `VmContext` raises an entity event on save, MediatR hands

@@ -89,16 +89,12 @@ public class VsphereServiceCommandTests
             _connection = new VsphereConnection(
                 new VsphereHost { Enabled = true, Address = "vcenter.example.test" },
                 Options,
-                NullLogger.Instance)
+                NullLogger.Instance);
+            _ = _connection.Replace(new VsphereSession(Client, new ServiceContent
             {
-                Client = Client,
-                Props = Mor("PropertyCollector", "propertyCollector"),
-                Sic = new ServiceContent
-                {
-                    propertyCollector = Mor("PropertyCollector", "propertyCollector"),
-                    searchIndex = Mor("SearchIndex", "SearchIndex")
-                }
-            };
+                propertyCollector = Mor("PropertyCollector", "propertyCollector"),
+                searchIndex = Mor("SearchIndex", "SearchIndex")
+            }));
 
             // GetVm falls back to searching every connection when the cache misses. Registering the
             // connection means an unregistered VM takes that path and comes back empty (FindByUuidAsync

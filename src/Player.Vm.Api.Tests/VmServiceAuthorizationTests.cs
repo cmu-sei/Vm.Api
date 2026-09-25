@@ -10,7 +10,6 @@ using System.Threading.Tasks;
 using NSubstitute;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Services;
-using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Networks;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Infrastructure.Exceptions;
@@ -47,9 +46,8 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
     private readonly IPlayerService _player = Substitute.For<IPlayerService>();
     private readonly INetworkService _networks = Substitute.For<INetworkService>();
-    private readonly IConnectionService _connections = Substitute.For<IConnectionService>();
 
-    private VmService Service => new(Db, _player, Principal(Caller), TestMapper.Value, _networks, _connections);
+    private VmService Service => new(Db, _player, Principal(Caller), TestMapper.Value, _networks);
 
     #region CanAccessVm
 

@@ -131,20 +131,20 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
     }
 
     /// <summary>
-    /// A connection that is up but has not finished connecting yet is skipped rather than dereferenced.
+    /// A connection that is up but has not logged in yet is skipped rather than dereferenced.
     /// </summary>
     /// <remarks>
     /// <c>ConnectionService</c> creates the <c>VsphereConnection</c> before it logs in, so a poll landing
-    /// in that window sees a connection with no <c>ServiceContent</c>. Reading
-    /// <c>connection.Sic.taskManager</c> there would throw inside the loop over connections, which is
-    /// outside every inner <c>try</c> in <c>getRecentTasks</c> - so one vCenter still starting up would
-    /// cost the whole pass, including the reconciliation of every other vCenter's machines.
+    /// in that window sees a connection with no session, and so no <c>ServiceContent</c> or property
+    /// collector. Reading <c>connection.Sic.taskManager</c> there would throw inside the loop over
+    /// connections, which is outside every inner <c>try</c> in <c>getRecentTasks</c> - so one vCenter still
+    /// starting up would cost the whole pass, including the reconciliation of every other vCenter's machines.
     /// </remarks>
     [Fact]
-    public async Task AConnectionStillWaitingForItsServiceContent_IsNotQueried()
+    public async Task AConnectionStillWaitingForItsSession_IsNotQueried()
     {
         var vcenter = new Vcenter();
-        vcenter.Connection.Sic = null;
+        await vcenter.Connection.Replace(null);
         await Seed(VsphereVm(VmA, pending: true));
         var poller = Poll(vcenter);
 
@@ -154,23 +154,6 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
         Assert.Empty(poller.Errors);
 
         // The pass still finished its own work rather than dying on the way in.
-        Assert.False(await Pending(VmA));
-    }
-
-    // The same window seen from the other field: Props is the property collector every query is addressed
-    // to, and it is assigned alongside Sic on connect and cleared alongside it on disconnect.
-    [Fact]
-    public async Task AConnectionWithNoPropertyCollector_IsNotQueried()
-    {
-        var vcenter = new Vcenter();
-        vcenter.Connection.Props = null;
-        await Seed(VsphereVm(VmA, pending: true));
-        var poller = Poll(vcenter);
-
-        await poller.Run();
-
-        Assert.Empty(vcenter.Filters);
-        Assert.Empty(poller.Errors);
         Assert.False(await Pending(VmA));
     }
 
@@ -991,15 +974,12 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
             Connection = new VsphereConnection(
                 new VsphereHost { Enabled = true, Address = address },
                 new VsphereOptions(),
-                NullLogger.Instance)
+                NullLogger.Instance);
+            _ = Connection.Replace(new VsphereSession(Client, new ServiceContent
             {
-                Client = Client,
-                Props = new ManagedObjectReference { type = "PropertyCollector", Value = "propertyCollector" },
-                Sic = new ServiceContent
-                {
-                    taskManager = new ManagedObjectReference { type = "TaskManager", Value = "TaskManager" }
-                }
-            };
+                propertyCollector = new ManagedObjectReference { type = "PropertyCollector", Value = "propertyCollector" },
+                taskManager = new ManagedObjectReference { type = "TaskManager", Value = "TaskManager" }
+            }));
 
             _answer = () => Task.FromResult(new RetrievePropertiesResponse([.. _tasks]));
 

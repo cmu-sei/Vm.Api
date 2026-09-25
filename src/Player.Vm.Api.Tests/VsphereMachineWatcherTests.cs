@@ -49,8 +49,7 @@ public class VsphereMachineWatcherTests
         {
             ClientFactory = _ => _feed.Client
         };
-        _connection.Client = _feed.Client;
-        _connection.Sic = ServiceContent();
+        _ = _connection.Replace(new VsphereSession(_feed.Client, ServiceContent()));
     }
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
@@ -72,7 +71,7 @@ public class VsphereMachineWatcherTests
         await Watch();
 
         Assert.Equal([A, B], _connection.MachineStates.Keys.Order());
-        Assert.Equal([A, B], _connection.MachineCache.Keys.Order());
+        Assert.Equal([A, B], _connection.VmGuids.Values.Order());
         Assert.Equal(["vm-1", "vm-2"], _connection.VmGuids.Keys.Order());
         Assert.Equal(["", "1", "2"], _feed.Versions);
         Assert.Equal([A, B], _changed);
@@ -149,7 +148,6 @@ public class VsphereMachineWatcherTests
         await Watch();
 
         Assert.Empty(_connection.MachineStates);
-        Assert.Empty(_connection.MachineCache);
         Assert.Empty(_connection.VmGuids);
     }
 
@@ -166,7 +164,6 @@ public class VsphereMachineWatcherTests
 
         await Watch();
 
-        Assert.Equal("vm-7", _connection.MachineCache[A].Value);
         Assert.Equal("vm-7", _connection.MachineStates[A].Reference.Value);
         Assert.Equal("on", _connection.MachineStates[A].State);
         Assert.Equal(["vm-7"], _connection.VmGuids.Keys);
@@ -181,7 +178,6 @@ public class VsphereMachineWatcherTests
         await Watch();
 
         Assert.Equal([B], _connection.MachineStates.Keys);
-        Assert.Equal([B], _connection.MachineCache.Keys);
         Assert.Equal(B, _connection.VmGuids["vm-1"]);
     }
 
@@ -300,6 +296,7 @@ public class VsphereMachineWatcherTests
             ClientFactory = _ => clients.TryDequeue(out var client) ? client : throw new InvalidOperationException("No more clients")
         };
         await connection.Load();
+        var first = connection.Current;
 
         _feed.Then(Page("1", Enter("vm-1", A)));
         replacement.Then(Page("1", Enter("vm-1", A, VirtualMachinePowerState.poweredOn)));
@@ -315,12 +312,43 @@ public class VsphereMachineWatcherTests
         cts.Cancel();
         await run;
 
-        Assert.Equal(2, connection.Generation);
+        Assert.NotSame(first, connection.Current);
+        Assert.Same(replacement.Client, connection.Client);
         Assert.Equal("on", connection.MachineStates[A].State);
         Assert.Equal(1, replacement.ViewsCreated);
         await _feed.Client.DidNotReceive().DestroyPropertyCollectorAsync(Arg.Any<ManagedObjectReference>());
         await replacement.Client.Received(1).DestroyPropertyCollectorAsync(Arg.Any<ManagedObjectReference>());
         Assert.Equal(0, _reconnects);
+    }
+
+    /// <summary>
+    /// A watcher started before its connection has logged in waits for the login rather than polling for
+    /// it, and builds on the session as soon as there is one. The retry bound here is far longer than the
+    /// test waits, so only the connection's signal can have woken it.
+    /// </summary>
+    [Fact]
+    public async Task StartedWhileDisconnected_BuildsAsSoonAsTheConnectionLogsIn()
+    {
+        var connection = new VsphereConnection(
+            new VsphereHost { Address = "vcenter", Username = "u", Password = "p" }, new VsphereOptions(), NullLogger.Instance)
+        {
+            ClientFactory = _ => _feed.Client
+        };
+        _feed.Then(Page("1", Enter("vm-1", A, VirtualMachinePowerState.poweredOn)));
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var run = Watcher(connection, maxBackoff: TimeSpan.FromMinutes(10)).RunAsync(cts.Token);
+
+        await Task.Delay(50, Ct);
+        Assert.Equal(0, _feed.ViewsCreated);
+
+        await connection.Load();
+        await PollLoop.Until(() => _feed.Idle, "the watcher to build on the new session");
+
+        cts.Cancel();
+        await run;
+
+        Assert.Equal("on", connection.MachineStates[A].State);
     }
 
     [Theory]
@@ -354,12 +382,11 @@ public class VsphereMachineWatcherTests
 
     #endregion
 
-    private VsphereMachineWatcher Watcher(VsphereConnection connection = null) =>
+    private VsphereMachineWatcher Watcher(VsphereConnection connection = null, TimeSpan? maxBackoff = null) =>
         new(connection ?? _connection, _changed.Enqueue, () => Interlocked.Increment(ref _reconnects),
-            () => TimeSpan.FromMilliseconds(20), NullLogger.Instance)
+            () => maxBackoff ?? TimeSpan.FromMilliseconds(20), NullLogger.Instance)
         {
-            InitialBackoff = TimeSpan.FromMilliseconds(10),
-            DisconnectedPollInterval = TimeSpan.FromMilliseconds(10)
+            InitialBackoff = TimeSpan.FromMilliseconds(10)
         };
 
     // Runs the watcher until it has taken every scripted step and is waiting on the next, then stops it.

@@ -7,9 +7,11 @@ using System.Linq;
 using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
+using Crucible.Common.EntityEvents.Events;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 using NSubstitute;
@@ -22,6 +24,7 @@ using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Networks;
 using Player.Vm.Api.Features.Vms;
+using Player.Vm.Api.Features.Vms.EventHandlers;
 using Player.Vm.Api.Tests.Infrastructure;
 using VimClient;
 using Xunit;
@@ -66,12 +69,13 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         var connection = Connection(_ => { logins++; return _feed.Client; });
 
         await connection.Load();
+        var first = connection.Current;
         await connection.Load();
         await connection.Load();
 
         Assert.True(connection.Connected);
         Assert.Equal(1, logins);
-        Assert.Equal(1, connection.Generation);
+        Assert.Same(first, connection.Current);
         await _feed.Client.DidNotReceive().LogoutAsync(Arg.Any<ManagedObjectReference>());
     }
 
@@ -88,7 +92,6 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
 
         Assert.True(connection.Connected);
         Assert.Same(replacement.Client, connection.Client);
-        Assert.Equal(2, connection.Generation);
         await PollLoop.Until(() => Calls(_feed, nameof(IVimClient.LogoutAsync)) == 1, "the old session to be logged out");
     }
 
@@ -108,67 +111,43 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
 
     #endregion
 
-    #region Cached state
-
-    [Fact]
-    public void ApplyCachedState_CopiesTheWatchersState()
-    {
-        var service = Service();
-        Cache(service, Machine(A, "on", ["10.0.0.5"], snapshot: true));
-        var vm = new VmEntity { Id = A };
-
-        Assert.True(service.ApplyCachedState(vm));
-
-        Assert.Equal(PowerState.On, vm.PowerState);
-        Assert.Equal(["10.0.0.5"], vm.IpAddresses);
-        Assert.Equal(VmType.Vsphere, vm.Type);
-        Assert.True(vm.HasSnapshot);
-    }
-
-    [Fact]
-    public void ApplyCachedState_WithAnUnknownPowerState_KeepsTheOneTheVmHas()
-    {
-        var service = Service();
-        Cache(service, Machine(A, "unknown"));
-        var vm = new VmEntity { Id = A, PowerState = PowerState.Off };
-
-        service.ApplyCachedState(vm);
-
-        Assert.Equal(PowerState.Off, vm.PowerState);
-    }
-
-    [Fact]
-    public void ApplyCachedState_IgnoresADisabledHost()
-    {
-        var service = Service();
-        Cache(service, Machine(A, "on"), enabled: false);
-        var vm = new VmEntity { Id = A };
-
-        Assert.False(service.ApplyCachedState(vm));
-        Assert.Equal(PowerState.Unknown, vm.PowerState);
-    }
+    #region VM creation
 
     /// <summary>
-    /// A machine vCenter has already reported is created with its state, so the row - and the create
-    /// broadcast it raises - never says Unknown.
+    /// The race the post-commit handler closes: vCenter reports the machine before its row exists, so
+    /// the persister has nothing to write then, and no later change will prompt it. The row is created
+    /// Unknown, and the handler's queueing is what gets the cached state written.
     /// </summary>
     [Fact]
-    public async Task CreatingAVmVcenterHasReported_StoresItsState()
+    public async Task CreatingAVmVcenterHasAlreadyReported_WritesItsStateAfterCommit()
     {
-        var service = Service();
-        Cache(service, Machine(A, "on", ["10.0.0.5"]));
-        var player = Substitute.For<IPlayerService>();
-        player.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns(true);
-        var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", Guid.NewGuid().ToString())], "test"));
-        var vms = new VmService(Db, player, principal, TestMapper.Value, Substitute.For<INetworkService>(), service);
+        _feed.Then(Page("1", Enter("vm-1", A, VirtualMachinePowerState.poweredOn, ["10.0.0.5"])));
+        var (service, _) = Running();
 
-        var created = await vms.CreateAsync(new VmCreateForm { Id = A, Name = "new", TeamIds = [Guid.NewGuid()] }, Ct);
+        await service.StartAsync(Ct);
+        try
+        {
+            await PollLoop.Until(() => _feed.Idle, "the watcher to report the machine");
 
-        Assert.Equal(PowerState.On, created.PowerState);
-        var row = await Read(A);
-        Assert.Equal(PowerState.On, row.PowerState);
-        Assert.Equal(["10.0.0.5"], row.IpAddresses);
-        Assert.Equal(VmType.Vsphere, row.Type);
+            var player = Substitute.For<IPlayerService>();
+            player.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns(true);
+            var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", Guid.NewGuid().ToString())], "test"));
+            var vms = new VmService(Db, player, principal, TestMapper.Value, Substitute.For<INetworkService>());
+
+            var created = await vms.CreateAsync(new VmCreateForm { Id = A, Name = "new", TeamIds = [Guid.NewGuid()] }, Ct);
+            Assert.Equal(PowerState.Unknown, created.PowerState);
+
+            await new VmCreatedInitializationHandler(service).Handle(new EntityCreated<VmEntity>(await Read(A)), Ct);
+
+            await UntilWritten(A, PowerState.On);
+            var row = await Read(A);
+            Assert.Equal(["10.0.0.5"], row.IpAddresses);
+            Assert.Equal(VmType.Vsphere, row.Type);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
     }
 
     #endregion
@@ -206,6 +185,20 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         var c = await Read(C);
         Assert.Equal(PowerState.On, c.PowerState);
         Assert.Equal(["10.0.0.9"], c.IpAddresses);
+    }
+
+    [Fact]
+    public async Task PersistBatch_IgnoresADisabledHost()
+    {
+        await Seed(new VmEntity { Id = A, Name = "a", PowerState = PowerState.Off });
+        var service = Service();
+        Cache(service, Machine(A, "on"), enabled: false);
+
+        await service.PersistBatchAsync([A], Ct);
+
+        var a = await Read(A);
+        Assert.Equal(PowerState.Off, a.PowerState);
+        Assert.Equal(VmType.Unknown, a.Type);
     }
 
     #endregion
@@ -258,6 +251,34 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         Assert.Equal(1, _contextsRefused);
     }
 
+    /// <summary>
+    /// A watcher only returns once cancelled, so a task that ended any other way is one that died. The
+    /// only way out of its catch is the log call, so a logger that throws once kills it.
+    /// </summary>
+    [Fact]
+    public async Task AWatcherThatDied_IsRestartedByTheNextLoop()
+    {
+        await Seed(new VmEntity { Id = A, Name = "a" });
+        _feed
+            .ThenThrow(new InvalidOperationException("boom"))
+            .Then(Page("1", Enter("vm-1", A, VirtualMachinePowerState.poweredOn)));
+        var logger = new ThrowOnceLogger("Machine watcher for");
+        var (service, _) = Running(logger: logger);
+
+        await service.StartAsync(Ct);
+        try
+        {
+            await UntilWritten(A, PowerState.On);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+
+        Assert.True(logger.Thrown);
+        Assert.Equal(2, _feed.ViewsCreated);
+    }
+
     [Fact]
     public async Task DisablingAHost_StopsItsWatcherClearsItsCachesAndLogsOut()
     {
@@ -274,7 +295,6 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
 
             await PollLoop.Until(() => Calls(_feed, nameof(IVimClient.LogoutAsync)) == 1, "the disabled host to log out");
             Assert.Empty(connection.MachineStates);
-            Assert.Empty(connection.MachineCache);
             Assert.Null(connection.Client);
             Assert.Equal(1, Calls(_feed, nameof(IVimClient.CancelWaitForUpdatesAsync)));
             Assert.Equal(1, Calls(_feed, nameof(IVimClient.DestroyPropertyCollectorAsync)));
@@ -344,8 +364,8 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
     private static VsphereConnection Connection(Func<VsphereHost, IVimClient> factory, bool enabled = true) =>
         new(Host(enabled), Options(), NullLogger.Instance) { ClientFactory = factory };
 
-    private ConnectionService Service(IServiceProvider provider = null) =>
-        new(_options, NullLogger<ConnectionService>.Instance, provider ?? Provider(), _health)
+    private ConnectionService Service(IServiceProvider provider = null, ILogger<ConnectionService> logger = null) =>
+        new(_options, logger ?? NullLogger<ConnectionService>.Instance, provider ?? Provider(), _health)
         {
             PersistRetryDelay = TimeSpan.FromMilliseconds(10)
         };
@@ -375,11 +395,12 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
     }
 
     // A service whose one configured host is this test's fake vCenter.
-    private (ConnectionService Service, VsphereConnection Connection) Running(int refuseContexts = 0)
+    private (ConnectionService Service, VsphereConnection Connection) Running(
+        int refuseContexts = 0, ILogger<ConnectionService> logger = null)
     {
         var host = Host();
         _options.CurrentValue.Returns(Options(host));
-        var service = Service(Provider(refuseContexts));
+        var service = Service(Provider(refuseContexts), logger);
         var connection = new VsphereConnection(host, Options(host), NullLogger.Instance) { ClientFactory = _ => _feed.Client };
         service._connections[Address] = connection;
         return (service, connection);
@@ -415,4 +436,23 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
 
     private static int Calls(FakeChangeFeed feed, string method) =>
         feed.Client.ReceivedCalls().Count(x => x.GetMethodInfo().Name == method);
+
+    // Throws from the first log call whose message starts with the prefix.
+    private sealed class ThrowOnceLogger(string prefix) : ILogger<ConnectionService>
+    {
+        private int _thrown;
+
+        public bool Thrown => _thrown == 1;
+
+        public IDisposable BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception exception, Func<TState, Exception, string> formatter)
+        {
+            if (formatter(state, exception).StartsWith(prefix) && Interlocked.Exchange(ref _thrown, 1) == 0)
+                throw new InvalidOperationException("Logger failed for the test");
+        }
+    }
 }

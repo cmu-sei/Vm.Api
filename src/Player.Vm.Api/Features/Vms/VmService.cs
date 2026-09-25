@@ -16,7 +16,6 @@ using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using Player.Vm.Api.Features.Networks;
-using Player.Vm.Api.Domain.Vsphere.Services;
 
 namespace Player.Vm.Api.Features.Vms
 {
@@ -54,22 +53,19 @@ namespace Player.Vm.Api.Features.Vms
         private readonly ClaimsPrincipal _user;
         private readonly IMapper _mapper;
         private readonly INetworkService _networkService;
-        private readonly IConnectionService _connectionService;
 
         public VmService(
             VmContext context,
             IPlayerService playerService,
             IPrincipal user,
             IMapper mapper,
-            INetworkService networkService,
-            IConnectionService connectionService)
+            INetworkService networkService)
         {
             _context = context;
             _playerService = playerService;
             _user = user as ClaimsPrincipal;
             _mapper = mapper;
             _networkService = networkService;
-            _connectionService = connectionService;
         }
 
         public async Task<Vm[]> GetAllAsync(CancellationToken ct)
@@ -277,10 +273,6 @@ namespace Player.Vm.Api.Features.Vms
 
             if (tasks.Any(x => !x.Result))
                 throw new ForbiddenException();
-
-            // A machine vCenter already reported is created with its state, so the create broadcast
-            // carries it. TODO: move behind a provider-neutral seam rather than calling vSphere here.
-            _connectionService.ApplyCachedState(vmEntity);
 
             _context.Vms.Add(vmEntity);
             await _context.SaveChangesAsync(ct);

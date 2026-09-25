@@ -37,12 +37,6 @@ public interface IConnectionService
     IEnumerable<VsphereConnection> GetAllConnections();
 
     /// <summary>
-    /// Copies the watcher's cached state for <paramref name="vm"/> onto it, if any vCenter has reported
-    /// the machine. Returns false when none has.
-    /// </summary>
-    bool ApplyCachedState(Domain.Models.Vm vm);
-
-    /// <summary>
     /// Queues <paramref name="id"/> for the persister, which writes its cached state to the database.
     /// </summary>
     void MarkDirty(Guid id);
@@ -107,7 +101,7 @@ public class ConnectionService : BackgroundService, IConnectionService
         finally
         {
             await Task.WhenAll(_watchers.Keys.ToArray().Select(StopWatcherAsync));
-            await Task.WhenAll(_connections.Values.Select(x => x.LogoutAsync().WaitAsync(ShutdownTimeout).ContinueWith(_ => { })));
+            await Task.WhenAll(_connections.Values.Select(x => x.DisconnectAsync().WaitAsync(ShutdownTimeout).ContinueWith(_ => { })));
             await persister.ContinueWith(_ => { });
         }
     }
@@ -141,7 +135,7 @@ public class ConnectionService : BackgroundService, IConnectionService
             {
                 await StopWatcherAsync(host.Address);
                 connection.ClearMachines();
-                await connection.LogoutAsync().WaitAsync(ShutdownTimeout).ContinueWith(_ => { });
+                await connection.DisconnectAsync().WaitAsync(ShutdownTimeout).ContinueWith(_ => { });
             }
         }
 
@@ -163,10 +157,19 @@ public class ConnectionService : BackgroundService, IConnectionService
         }
     }
 
+    // Also restarts a watcher whose task has ended. RunAsync only returns once it is cancelled, so an
+    // ended task that was not cancelled is a watcher that died; without this it would never come back.
     private void StartWatcher(VsphereConnection connection, CancellationToken cancellationToken)
     {
-        if (_watchers.ContainsKey(connection.Address))
-            return;
+        if (_watchers.TryGetValue(connection.Address, out var existing))
+        {
+            if (!existing.Task.IsCompleted || existing.Cancel.IsCancellationRequested)
+                return;
+
+            _logger.LogWarning(existing.Task.Exception, "Machine watcher for {Host} stopped unexpectedly. Restarting it.", connection.Address);
+            existing.Cancel.Dispose();
+            _watchers.Remove(connection.Address);
+        }
 
         var cancel = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         var watcher = new VsphereMachineWatcher(
@@ -207,24 +210,13 @@ public class ConnectionService : BackgroundService, IConnectionService
         {
             _logger.LogInformation("vSphere host {Host} was removed from configuration", address);
             connection.ClearMachines();
-            await connection.LogoutAsync().WaitAsync(ShutdownTimeout).ContinueWith(_ => { });
+            await connection.DisconnectAsync().WaitAsync(ShutdownTimeout).ContinueWith(_ => { });
         }
     }
 
     public void MarkDirty(Guid id)
     {
         _dirty.Writer.TryWrite(id);
-    }
-
-    public bool ApplyCachedState(Domain.Models.Vm vm)
-    {
-        var machine = GetCachedMachine(vm.Id);
-
-        if (machine == null)
-            return false;
-
-        ApplyState(vm, machine);
-        return true;
     }
 
     private VsphereVirtualMachine GetCachedMachine(Guid id)
@@ -352,9 +344,9 @@ public class ConnectionService : BackgroundService, IConnectionService
     {
         foreach (var connection in _connections.Values)
         {
-            if (connection.MachineCache.TryGetValue(id, out var machineReference))
+            if (connection.MachineStates.TryGetValue(id, out var machine))
             {
-                return new VsphereAggregate(connection, machineReference);
+                return new VsphereAggregate(connection, machine.Reference);
             }
         }
 
@@ -375,12 +367,11 @@ public class ConnectionService : BackgroundService, IConnectionService
 
     public ManagedObjectReference GetMachineById(Guid id)
     {
-        ManagedObjectReference machineReference;
         foreach (var connection in _connections.Values)
         {
-            if (connection.MachineCache.TryGetValue(id, out machineReference))
+            if (connection.MachineStates.TryGetValue(id, out var machine))
             {
-                return machineReference;
+                return machine.Reference;
             }
         }
 
