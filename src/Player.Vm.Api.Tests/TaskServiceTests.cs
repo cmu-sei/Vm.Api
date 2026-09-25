@@ -29,8 +29,7 @@ namespace Player.Vm.Api.Tests;
 
 /// <summary>
 /// vSphere's <c>TaskService</c>: the poller that reads vCenter's recent-task list, reconciles
-/// <c>Vm.HasPendingTasks</c>, broadcasts progress into <c>ProgressHub</c> groups and pokes
-/// <c>IMachineStateService</c> when a power task finishes. It is what drives the progress bar and the
+/// <c>Vm.HasPendingTasks</c> and broadcasts progress into <c>ProgressHub</c> groups. It is what drives the progress bar and the
 /// spinner in the VM UI, and it is the reason a machine stops looking busy once vCenter is done with it.
 /// </summary>
 /// <remarks>
@@ -475,78 +474,6 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
 
     #endregion
 
-    #region The state check a finished power task triggers
-
-    /// <summary>
-    /// A power task finishing asks <c>IMachineStateService</c> to look again immediately.
-    /// </summary>
-    /// <remarks>
-    /// This is what makes the power indicator in the UI change the moment a power-on completes rather
-    /// than whenever the state poller next happens to run - which at the shipped
-    /// <c>CheckTaskProgressIntervalMilliseconds</c> is up to five seconds later, on the machine the user
-    /// is watching, after they pressed the button themselves.
-    /// </remarks>
-    [Theory]
-    [InlineData(PowerOn)]
-    [InlineData(PowerOff)]
-    public async Task ASuccessfulPowerTask_AsksForAStateCheck(string type)
-    {
-        var vcenter = new Vcenter();
-        vcenter.Doing(VmA, state: TaskInfoState.success, type: type);
-        await Seed(VsphereVm(VmA));
-        var poller = Poll(vcenter);
-
-        await poller.Run();
-
-        poller.MachineState.Received(1).CheckState();
-    }
-
-    // Only the two power types, because only they change something the state poller reports. A snapshot
-    // or a reconfigure finishing would otherwise cost a full sweep of every machine on every vCenter.
-    [Fact]
-    public async Task ASuccessfulTaskOfAnyOtherType_AsksForNoStateCheck()
-    {
-        var vcenter = new Vcenter();
-        vcenter.Doing(VmA, state: TaskInfoState.success, type: "VirtualMachine.reconfigure");
-        await Seed(VsphereVm(VmA));
-        var poller = Poll(vcenter);
-
-        await poller.Run();
-
-        poller.MachineState.DidNotReceive().CheckState();
-    }
-
-    // And only on success: a power task that is still running has not changed the power state yet, so
-    // asking now would read the state the user is waiting to see change.
-    [Fact]
-    public async Task APowerTaskStillRunning_AsksForNoStateCheck()
-    {
-        var vcenter = new Vcenter();
-        vcenter.Doing(VmA, state: TaskInfoState.running, type: PowerOn);
-        await Seed(VsphereVm(VmA));
-        var poller = Poll(vcenter);
-
-        await poller.Run();
-
-        poller.MachineState.DidNotReceive().CheckState();
-    }
-
-    // A power task on a machine this deployment does not own is somebody else's business. On a shared
-    // vCenter that is most of the power tasks in the list, and each one would otherwise cost a sweep.
-    [Fact]
-    public async Task ASuccessfulPowerTaskForNoKnownVm_AsksForNoStateCheck()
-    {
-        var vcenter = new Vcenter();
-        vcenter.DoingSomethingUnrelated(state: TaskInfoState.success, type: PowerOn);
-        var poller = Poll(vcenter);
-
-        await poller.Run();
-
-        poller.MachineState.DidNotReceive().CheckState();
-    }
-
-    #endregion
-
     #region What one failure costs
 
     /// <summary>
@@ -941,8 +868,7 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
     /// <remarks>
     /// <para>
     /// A defect, characterized rather than fixed. <c>TaskService.cs:95</c> calls
-    /// <c>_resetEvent.WaitAsync</c> with no cancellation token, where <c>ProxmoxTaskService.cs:109</c> and
-    /// <c>MachineStateService.cs:80-82</c> both pass one. So a shutdown waits out up to a full
+    /// <c>_resetEvent.WaitAsync</c> with no cancellation token, where <c>ProxmoxTaskService.cs:109</c> passes one. So a shutdown waits out up to a full
     /// <c>CheckTaskProgressIntervalMilliseconds</c> - five seconds as <c>appsettings.json</c> ships it -
     /// on every deployment, every restart and every rolling update, after which the container is killed
     /// rather than stopped if the orchestrator's grace period is shorter. It is also why
@@ -950,7 +876,7 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
     /// the defect being there.
     /// </para>
     /// <para>
-    /// The fix is to pass the token, as the other two pollers do. This test will then fail, and the
+    /// The fix is to pass the token, as the other poller does. This test will then fail, and the
     /// assertion to replace it with is that the stop completes without a nudge. The observation window is
     /// half a second against a configured minute, so it says the loop is asleep and not that it is slow.
     /// </para>
@@ -1185,12 +1111,10 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
             monitor.CurrentValue.Returns(options);
 
             Service = new TaskService(
-                monitor, Log, Hub.Context, Connections, MachineState, Loop, Health);
+                monitor, Log, Hub.Context, Connections, Loop, Health);
         }
 
         public IConnectionService Connections { get; } = Substitute.For<IConnectionService>();
-
-        public IMachineStateService MachineState { get; } = Substitute.For<IMachineStateService>();
 
         public HubContextHarness<ProgressHub> Hub { get; } = new();
 

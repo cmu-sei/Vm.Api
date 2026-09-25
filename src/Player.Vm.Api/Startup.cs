@@ -160,17 +160,6 @@ public class Startup
             .Configure<DatabaseOptions>(Configuration.GetSection("Database"))
             .AddScoped(config => config.GetService<IOptionsMonitor<DatabaseOptions>>().CurrentValue);
 
-        services.AddOptions<VmInitializationOptions>()
-            .Bind(Configuration.GetSection("VmInitialization"))
-            .ValidateDataAnnotations()
-            .Validate(x => x.MaxWaitSeconds >= x.DebounceSeconds,
-                "VmInitialization:MaxWaitSeconds must be at least DebounceSeconds.")
-            .ValidateOnStart();
-        services.AddSingleton(System.TimeProvider.System);
-        services.AddSingleton<VmInitializationQueue>();
-        services.AddSingleton<IVmInitializationQueue>(x => x.GetRequiredService<VmInitializationQueue>());
-        services.AddHostedService<VmInitializationService>();
-
         IConfiguration isoConfig = Configuration.GetSection("IsoUpload");
         IsoUploadOptions isoOptions = new IsoUploadOptions();
         isoConfig.Bind(isoOptions);
@@ -343,9 +332,6 @@ public class Startup
         services.AddSingleton<TaskService>();
         services.AddSingleton<IHostedService>(x => x.GetService<TaskService>());
         services.AddSingleton<ITaskService>(x => x.GetService<TaskService>());
-        services.AddSingleton<MachineStateService>();
-        services.AddSingleton<IHostedService>(x => x.GetService<MachineStateService>());
-        services.AddSingleton<IMachineStateService>(x => x.GetService<MachineStateService>());
 
         // Proxmox Services
         services.AddScoped<IProxmoxService, ProxmoxService>();

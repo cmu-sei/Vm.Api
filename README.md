@@ -9,29 +9,13 @@ and it is started in a container; it needs no network, vCenter or Proxmox cluste
 [docs/Testing.md](./docs/Testing.md) for how the harness works, the conventions to follow when adding
 a test, and what the suite does not cover yet.
 
-## Initializing newly registered VMs
+## Machine state
 
-New VMs are discovered in the background after their database transaction commits. Each provider
-collects arrivals until there have been two quiet seconds, or five seconds have elapsed since the
-first arrival. Configure these values through the `VmInitialization` section:
-
-```json
-"VmInitialization": {
-  "DebounceSeconds": 2,
-  "MaxWaitSeconds": 5
-}
-```
-
-Both values must be positive whole seconds (at most 86400), and `MaxWaitSeconds` must be at least
-`DebounceSeconds`. Environment equivalents are `VmInitialization__DebounceSeconds` and
-`VmInitialization__MaxWaitSeconds`. Reloaded settings apply to subsequent batches.
-
-The maximum wait bounds batching delay, not provider response time. vSphere looks up only the new
-VMs, with at most eight concurrent UUID searches, then fetches their properties in batches per
-vCenter. Proxmox reads cluster resources once per batch and updates only the new records.
-Unresolved VMs become eligible for retries after 2, 5, and 15 seconds; retries join the debounce
-queue. Periodic reconciliation remains enabled and recovers work interrupted by an API restart.
-VM creation does not wait for discovery, so the initial response can still report `Unknown`.
+vSphere machine state - power, IP addresses and snapshots - is streamed from each vCenter through the
+property collector's `WaitForUpdatesEx`, over the same session the API already holds, so a newly created
+machine is usually picked up within seconds, though there is no guaranteed bound. Proxmox machine state is
+still polled every `StateRefreshIntervalSeconds`. A single API replica is assumed: each replica runs its
+own watchers and writers. A machine removed from vCenter keeps the last state its row recorded.
 
 ## Reporting bugs and requesting features
 

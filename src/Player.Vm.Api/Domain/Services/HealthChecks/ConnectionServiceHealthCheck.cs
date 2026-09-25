@@ -31,6 +31,11 @@ namespace Player.Vm.Api.Domain.Services.HealthChecks
                 return Task.FromResult(HealthCheckResult.Degraded("One or more enabled hosts are not connected."));
             }
 
+            if (Connections.Any(x => x.Enabled && x.WatcherError != null))
+            {
+                return Task.FromResult(HealthCheckResult.Degraded("One or more enabled hosts are not receiving machine updates."));
+            }
+
             return Task.FromResult(HealthCheckResult.Healthy());
         }
     }

@@ -39,7 +39,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private VmContext _dbContext;
 
         private IConnectionService _connectionService;
-        private IMachineStateService _machineStateService;
         private ConcurrentDictionary<string, List<Notification>> _runningTasks = new ConcurrentDictionary<string, List<Notification>>();
         private AsyncAutoResetEvent _resetEvent = new AsyncAutoResetEvent(false);
         private bool _tasksPending = false;
@@ -51,7 +50,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 ILogger<TaskService> logger,
                 IHubContext<ProgressHub> progressHub,
                 IConnectionService connectionService,
-                IMachineStateService machineStateService,
                 IServiceProvider serviceProvider,
                 TaskServiceHealthCheck taskServiceHealthCheck
             )
@@ -61,7 +59,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _progressHub = progressHub;
             _connectionService = connectionService;
             _serviceProvider = serviceProvider;
-            _machineStateService = machineStateService;
             _taskServiceHealthCheck = taskServiceHealthCheck;
         }
 
@@ -152,7 +149,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
 
             _runningTasks.Clear();
-            var forceCheckMachineState = false;
 
             foreach (var kvp in responseDict)
             {
@@ -207,15 +203,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                                 stillPendingVmIds.Add(vmId.Value);
                             }
                         }
-
-                        if (state == TaskInfoState.success.ToString() &&
-                            this.GetPowerTaskTypes().Contains(taskType))
-                        {
-                            if (vmId.HasValue)
-                            {
-                                forceCheckMachineState = true;
-                            }
-                        }
                     }
                     catch (Exception ex)
                     {
@@ -246,20 +233,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
 
             await _dbContext.SaveChangesAsync();
-
-            if (forceCheckMachineState)
-            {
-                _machineStateService.CheckState();
-            }
-        }
-
-        private string[] GetPowerTaskTypes()
-        {
-            return new string[]
-            {
-                "VirtualMachine.powerOff",
-                "VirtualMachine.powerOn",
-            };
         }
 
 

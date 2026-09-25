@@ -201,11 +201,17 @@ and nothing about any service.
   covers `UpdateVm`, the out-of-band entry point that is not a pass at all: the hub and the command
   handlers hand it a single machine and it is serviced by a `MaxDegreeOfParallelism = -1` `ActionBlock`,
   which creates a scope per item and so is counted by the same barrier.
-- `MachineStateServiceTests` covers `MachineStateService`, which is not a task poller: it asks each vCenter
-  for the power events since it last looked and writes what they imply onto `Vm.PowerState`. Its subject is
-  as much the window as the mapping - where the first one starts, when it advances and when it must not -
-  because a window that moves over an outage drops the events in it silently and the indicator is simply
-  wrong from then on.
+- `VsphereMachineWatcherTests` and `ConnectionServiceTests` cover how vSphere machine state reaches the
+  database. Neither is a poller: `VsphereMachineWatcher` long-polls one vCenter's property-collector change
+  feed (`WaitForUpdatesEx`), and `ConnectionService` owns the session, one watcher per enabled host, and the
+  single persister that writes what the watchers report. Both run against `FakeChangeFeed`, a substituted
+  `IVimClient` that plays a script of update sets and then holds the next call open the way vCenter does,
+  so `Idle` - every step taken and a call pending - is the barrier a test waits on rather than a sleep. The
+  watcher's subject is the caches: truncated initial pages, pruning only after the last one, a missing
+  property keeping its value, a stale moref's `leave` not removing a newer mapping. The service's is the
+  lifecycle: one login kept for as long as the session probe says it is live, a re-login that retires the
+  old session and moves `Generation` so the watcher rebuilds, and a disabled or removed host draining its
+  watcher and logging out.
 
 Three classes cover the entity-event handlers, which are the sending end of those same group names. A
 change to a Vm never reaches a client directly: `VmContext` raises an entity event on save, MediatR hands
@@ -855,16 +861,9 @@ Proxmox power refusal - which carries no field - reaches the UI with a leading `
 `UrlEncode` families in use disagreeing on case, `WebUtility` in the console URL emitting upper-case hex
 where `HttpUtility` in the query path emits lower-case and `+` for a space.
 
-The four pollers add a cluster of their own, and it divides in a way the others do not: two of them are
-about an operator never being told, and the rest are about a user seeing something wrong. The first is the
-one to read before anything else in `MachineStateService`:
+The pollers add a cluster of their own, and it divides in a way the others do not: the first is about an
+operator never being told, and the rest are about a user seeing something wrong.
 
-- **`MachineStateService`'s loop-level catch logs at `Debug`.** No deployment runs at Debug, so this poller
-  failing every pass is silent: the power indicator stops following anything, every machine in the UI keeps
-  whatever state it last had, and nothing is logged at a level anybody sees. The same class logs the
-  *smaller*, per-connection failure at `Error` nine lines below, and the other three pollers use `Error` at
-  their loop level, so it is a slip rather than a decision. Pinned in
-  `WhenAWholePassFails_ItIsSwallowedAndLoggedAtDebugWhereNothingWillSeeIt`.
 - **`HealthAllowanceSeconds` has no default and is compared with a strict `<`**, so zero means
   "unresponsive however recently it ran" - and vSphere's `TaskService` is the only thing that ever writes
   either half of that readiness check. It overwrites the class's own field default of 90 on every pass, so a
@@ -872,17 +871,6 @@ one to read before anything else in `MachineStateService`:
   works perfectly. An environment-variable install cannot inherit a single key from `appsettings.json` once
   it overrides the section, which is how that happens. `appsettings.json` ships 180. Pinned in
   `WithNoAllowanceConfigured_ReadinessFailsThoughThePassSucceeded`.
-- **The power indicator is only correct from startup onward.** The first window per vCenter is seeded from
-  the clock (`_lastCheckedTimes.GetOrAdd(connection.Address, DateTime.UtcNow)`), and `_lastCheckedTimes` is
-  a field of a singleton `BackgroundService`, so "first pass" is once per process rather than once per
-  reconnect. A machine powered off while the API was restarting still reads as on until something else
-  changes its state. Pinned in
-  `TheFirstWindowBeginsAtStartup_SoAPowerEventFromBeforeTheApiStartedIsNeverSeen`.
-- **A window is not advanced when `GetEvents` fails**, which is the good half of the same design and is
-  pinned for that reason: the `catch` returns before the assignment, so an outage does not consume the
-  window and the events are re-requested next pass. Tidying the assignment above the `try` would silently
-  drop every power event in the outage.
-  `WhenAVcenterCannotBeReached_ItIsLoggedAndItsWindowIsNotAdvanced` is the test that would object.
 - **`ProxmoxTaskService`'s query that *sets* `HasPendingTasks` has no provider filter, while the query that
   *clears* it does.** So a Vm with a `ProxmoxVmInfo` row and some other `Vm.Type` can be flagged by this
   poller and then skipped by its own clearing sweep forever - a spinner that never stops and power buttons
@@ -919,8 +907,8 @@ one to read before anything else in `MachineStateService`:
 - **vSphere's `TaskService` is the one poller whose `WaitAsync` is given no cancellation token.** Cancelling
   leaves it asleep for up to a full `CheckTaskProgressIntervalMilliseconds` - five seconds as shipped - so
   every restart and every rolling update waits that out, after which the container is killed rather than
-  stopped if the orchestrator's grace period is shorter. `ProxmoxTaskService` and `MachineStateService` both
-  pass one. It is also why `PollLoop.Stop` has to nudge after cancelling, and so why every test in that
+  stopped if the orchestrator's grace period is shorter. `ProxmoxTaskService` passes
+  one. It is also why `PollLoop.Stop` has to nudge after cancelling, and so why every test in that
   class depends on the defect being there - the `<remarks>` says which assertion replaces it once the token
   is passed. Pinned in `WhenCancelled_TheLoopSleepsOnUntilSomethingNudgesIt`.
 - **A task that cannot be processed costs its own machine's spinner.** The per-task `catch` isolates the
@@ -933,12 +921,6 @@ one to read before anything else in `MachineStateService`:
   sends `running` or PVE's own status string with `progress` **permanently the empty string**, because
   PVE's cluster task list carries no percentage. A client rendering a progress bar off that field shows one
   for a vSphere machine and nothing for a Proxmox one. Pinned from both sides.
-- **The newest-event rule is per vCenter only.** The `GroupBy`/`OrderByDescending` that picks the latest
-  event for a machine runs inside the per-connection loop, and the cross-connection merge is
-  `eventDict.TryAdd` - so where two vCenters both resolve to the same Player Vm, the first connection in
-  `GetAllConnections()` order wins outright however much older its event is. Narrow to reach - a machine
-  moved between vCenters while both connection caches still hold its moref - and deterministic when it is.
-  Pinned in `WhenTwoVcentersBothNameTheSameVm_TheFirstConnectionWinsRatherThanTheNewerEvent`.
 
 Two more were found by mutation rather than by reading, and are the reason the convention in "Adding a
 test" is worth the round trip: removing `_runningTasks.Clear()` and removing `_tasksPending = false`, both
@@ -953,21 +935,14 @@ arrangement, which no other test in the class had; cross-pass state was the shap
 lines.
 
 Smaller ones are `<remarks>`ed in place: `AsyncExExtensions.WaitAsync` disposing neither its timeout CTS
-nor its linked CTS, so every pass of all four pollers leaves a callback registered on the long-lived
+nor its linked CTS, so every pass of all three pollers leaves a callback registered on the long-lived
 stopping token; three of the eight `Task` properties vSphere is asked for never being read - `info.name`,
 `info.cancelled` and `info.error` - so a cancelled or failed task is only ever "not queued and not
 running" to that poller and a user is told a task ended, never that it failed; `_tasksPending` being set
 from a task's state before the code asks whether a Player Vm was resolved, so another tenant's long
-datastore operation holds this deployment's poller at its fast interval; `MachineStateService`'s
-`endTimeSpecified` left false, so consecutive windows overlap rather than abut and an event can be
-delivered twice - harmless, since writing a state twice equals writing it once; its first two passes asking
-for the same instant, because the stored time is read one statement before its replacement is captured, so
-the first window that has genuinely moved is the third pass's; there being no machine-state interval at all,
-so slowing task-progress polling to spare a busy vCenter also slows how fast the power indicator notices
-anything; `ProxmoxTaskService`'s per-task `catch` logging `task?.UniqueTaskId`, written for a null task
-that would already have been dereferenced two lines earlier; and `Include(x => x.VmTeams)` on
-`MachineStateService`'s update query, which nothing in that method reads - unlike the two pollers' own
-`Include`s, which the entity-event handlers need in order to compute group names after the save;
+datastore operation holds this deployment's poller at its fast interval; `ProxmoxTaskService`'s per-task
+`catch` logging `task?.UniqueTaskId`, written for a null task that would already have been dereferenced two
+lines earlier;
 `ProxmoxStateService`'s `DistinctBy(x => x.VmId)`, which is load-bearing rather than tidy, because PVE
 lists a machine mid-migration under both nodes and the `ToDictionary` behind it would otherwise throw the
 whole pass away - it keeps the first entry, so which node gets written for a migrating machine is PVE's
@@ -1353,6 +1328,9 @@ currently tell you.
     document for step 8 of "Adding a test". What is left above the two drivers is `ProxmoxStateService`
     (126 lines, 0%), which is the fourth poller and needs nothing this item did not already build, and
     `ConnectionService` (180, 0%), which is the vSphere connection cache and does need a vCenter.
+    `MachineStateService` and its 21 cases have since been removed: vSphere power state now arrives
+    through `VsphereMachineWatcher`'s change feed rather than an event poll, and `ConnectionService` is
+    no longer at 0% - see `VsphereMachineWatcherTests` and `ConnectionServiceTests` above.
 12. ~~The fourth poller.~~ Done, and it is the cheapest item on this list, because item 11's `PollLoop` was
     already most of a harness for it: `ProxmoxStateService` (126 lines, 0%) is the loop behind the Proxmox
     power indicator, and `ProxmoxStateServiceTests` took it to **100%** of its lines and 20 of 20 branches

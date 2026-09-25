@@ -7,13 +7,13 @@ using VimClient;
 namespace Player.Vm.Api.Domain.Vsphere.Models;
 
 /// <summary>
-/// The subset of the vSphere SOAP API this service actually calls - two dozen operations out of the
+/// The subset of the vSphere SOAP API this service actually calls - about thirty operations out of the
 /// several hundred the WSDL defines. It exists so <see cref="VsphereConnection.Client"/> can be
 /// substituted in tests: <see cref="VimPortTypeClient"/> is a generated WCF client whose methods are
 /// non-virtual, so there is otherwise no seam between VsphereService and a live vCenter.
 ///
 /// The generated <c>VimPortType</c> interface is not usable for this directly. For operations whose
-/// response is a message contract - RetrieveProperties, ReadNextEvents, ListProcessesInGuest - it
+/// response is a message contract - RetrieveProperties, CreateContainerView, ListProcessesInGuest - it
 /// declares only the wrapped form (<c>RetrievePropertiesAsync(RetrievePropertiesRequest)</c>), while
 /// the friendly parameter-per-argument overload that every caller here uses is generated on the
 /// client class instead. Declaring the friendly signatures ourselves keeps call sites unchanged and
@@ -28,6 +28,7 @@ public interface IVimClient
     // Session and lookup
     Task<ServiceContent> RetrieveServiceContentAsync(ManagedObjectReference _this);
     Task<UserSession> LoginAsync(ManagedObjectReference _this, string userName, string password, string locale);
+    Task LogoutAsync(ManagedObjectReference _this);
     Task<ManagedObjectReference> FindByUuidAsync(ManagedObjectReference _this, ManagedObjectReference datacenter, string uuid, bool vmSearch, bool instanceUuid);
     Task<RetrievePropertiesResponse> RetrievePropertiesAsync(ManagedObjectReference _this, PropertyFilterSpec[] specSet);
 
@@ -54,12 +55,18 @@ public interface IVimClient
     Task SetScreenResolutionAsync(ManagedObjectReference _this, int width, int height);
     Task<VirtualMachineTicket> AcquireTicketAsync(ManagedObjectReference _this, string ticketType);
 
-    // Datastore browsing and events
+    // Datastore browsing
     Task MakeDirectoryAsync(ManagedObjectReference _this, string name, ManagedObjectReference datacenter, bool createParentDirectories);
     Task<ManagedObjectReference> SearchDatastoreSubFolders_TaskAsync(ManagedObjectReference _this, string datastorePath, HostDatastoreBrowserSearchSpec searchSpec);
-    Task<ManagedObjectReference> CreateCollectorForEventsAsync(ManagedObjectReference _this, EventFilterSpec filter);
-    Task<ReadNextEventsResponse> ReadNextEventsAsync(ManagedObjectReference _this, int maxCount);
-    Task DestroyCollectorAsync(ManagedObjectReference _this);
+
+    // Property-collector change feed (VsphereMachineWatcher)
+    Task<CreateContainerViewResponse> CreateContainerViewAsync(ManagedObjectReference _this, ManagedObjectReference container, string[] type, bool recursive);
+    Task DestroyViewAsync(ManagedObjectReference _this);
+    Task<ManagedObjectReference> CreatePropertyCollectorAsync(ManagedObjectReference _this);
+    Task DestroyPropertyCollectorAsync(ManagedObjectReference _this);
+    Task<ManagedObjectReference> CreateFilterAsync(ManagedObjectReference _this, PropertyFilterSpec spec, bool partialUpdates);
+    Task<UpdateSet> WaitForUpdatesExAsync(ManagedObjectReference _this, string version, WaitOptions options);
+    Task CancelWaitForUpdatesAsync(ManagedObjectReference _this);
 }
 
 /// <summary>

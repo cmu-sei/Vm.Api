@@ -20,10 +20,9 @@ namespace Player.Vm.Api.Tests.Infrastructure;
 /// </summary>
 /// <remarks>
 /// <para>
-/// The four pollers - <c>MachineStateService</c>, vSphere's <c>TaskService</c>,
-/// <c>ProxmoxTaskService</c> and <c>ProxmoxStateService</c> - share one shape: a <c>while</c> over a
-/// cancellation token, a scope created per turn, all of the work inside a <c>try</c> that logs and
-/// swallows, and then a wait on an <c>AsyncAutoResetEvent</c> which the service's own public method sets.
+/// The three pollers - vSphere's <c>TaskService</c>, <c>ProxmoxTaskService</c> and
+/// <c>ProxmoxStateService</c> - share one shape: a <c>while</c> over a cancellation token, a scope
+/// created per turn, all of the work inside a <c>try</c> that logs and swallows, and then a wait on an <c>AsyncAutoResetEvent</c> which the service's own public method sets.
 /// Nothing about a turn is observable from outside, which is why every other test in this suite
 /// substitutes these services away.
 /// </para>

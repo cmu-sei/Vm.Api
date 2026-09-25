@@ -55,7 +55,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<Dictionary<Guid, string>> BulkShutdown(Guid[] ids);
         Task<Dictionary<Guid, string>> BulkReboot(Guid[] ids);
         Task<Dictionary<Guid, PowerState>> GetPowerState(IEnumerable<Guid> machineIds);
-        Task<IEnumerable<Event>> GetEvents(EventFilterSpec filterSpec, VsphereConnection connection);
         Task RevertToCurrentSnapshot(Guid vmId);
         Task<List<VmSnapshot>> GetSnapshots(Guid vmId);
         Task RevertToSnapshot(Guid vmId, string snapshotMoRefValue);
@@ -1752,29 +1751,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
 
             return state;
-        }
-
-        public async Task<IEnumerable<Event>> GetEvents(EventFilterSpec filterSpec, VsphereConnection connection)
-        {
-            var events = new List<Event>();
-            const int maxCount = 1000; // maximum allowable by vsphere api
-
-            if (connection.Client != null)
-            {
-                var collector = await connection.Client.CreateCollectorForEventsAsync(connection.Sic.eventManager, filterSpec);
-                int resultCount;
-
-                do
-                {
-                    var response = await connection.Client.ReadNextEventsAsync(collector, maxCount);
-                    events.AddRange(response.returnval);
-                    resultCount = response.returnval.Length;
-                }
-                while (resultCount != 0);
-                await connection.Client.DestroyCollectorAsync(collector);
-            }
-
-            return events;
         }
 
         public async Task RevertToCurrentSnapshot(Guid vmId)

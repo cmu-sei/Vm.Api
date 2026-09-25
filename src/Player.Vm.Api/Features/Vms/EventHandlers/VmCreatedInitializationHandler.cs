@@ -5,16 +5,21 @@ using System.Threading;
 using System.Threading.Tasks;
 using Crucible.Common.EntityEvents.Events;
 using MediatR;
-using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Domain.Vsphere.Services;
 
 namespace Player.Vm.Api.Features.Vms.EventHandlers;
 
-public sealed class VmCreatedInitializationHandler(IVmInitializationQueue queue)
+/// <summary>
+/// Once a new Vm row has committed, queues it for the vSphere persister. VmService fills the state it
+/// had cached before the insert, but the watcher may have reported the machine, or a newer state for
+/// it, between that read and the commit; the persister writes whatever is cached now. No vCenter call.
+/// </summary>
+public sealed class VmCreatedInitializationHandler(IConnectionService connections)
     : INotificationHandler<EntityCreated<Domain.Models.Vm>>
 {
     public Task Handle(EntityCreated<Domain.Models.Vm> notification, CancellationToken cancellationToken)
     {
-        queue.Enqueue(notification.Entity);
+        connections.MarkDirty(notification.Entity.Id);
         return Task.CompletedTask;
     }
 }
