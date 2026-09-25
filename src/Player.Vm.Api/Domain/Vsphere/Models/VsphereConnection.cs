@@ -20,6 +20,13 @@ public class VsphereConnection
     private volatile VsphereSession _session;
     private TaskCompletionSource _connected = NewSignal();
 
+    // Guards the session and the signal together, so the signal is complete exactly while there is a
+    // session. Readers go without it: Current and WhenConnected read one field each.
+    private readonly Lock _gate = new();
+
+    // Counts DisconnectAsync calls, so a login begun before one cannot install its session after it.
+    private int _disconnects;
+
     /// <summary>The current login, or null while there is none. Replaced whole by <see cref="Replace"/>.</summary>
     internal VsphereSession Current => _session;
 
@@ -98,7 +105,7 @@ public class VsphereConnection
             {
                 var connected = await Connect();
 
-                if (connected &&(LastCacheUpdate == null || (DateTime.UtcNow - LastCacheUpdate.Value).TotalMinutes >= Options.LoadCacheAfterMinutes || _forceReload))
+                if (connected && (LastCacheUpdate == null || (DateTime.UtcNow - LastCacheUpdate.Value).TotalMinutes >= Options.LoadCacheAfterMinutes || _forceReload))
                 {
                     try
                     {
@@ -136,6 +143,7 @@ public class VsphereConnection
     // long-poll keeps it from idling out, so it is replaced only when the probe below says it is gone.
     private async Task<bool> Connect()
     {
+        var epoch = Volatile.Read(ref _disconnects);
         var current = _session;
 
         if (current?.ClientBase?.State == CommunicationState.Faulted)
@@ -170,8 +178,7 @@ public class VsphereConnection
             newClient = ClientFactory(Host);
             var newSic = await ConnectToHost(newClient);
             var session = await ConnectToSession(newClient, newSic);
-            _ = Replace(new VsphereSession(newClient, newSic, session));
-            return true;
+            return Install(new VsphereSession(newClient, newSic, session), epoch);
         }
         catch (Exception ex)
         {
@@ -217,26 +224,62 @@ public class VsphereConnection
     {
         VsphereSession old;
 
-        if (next != null)
+        lock (_gate)
         {
-            old = Interlocked.Exchange(ref _session, next);
-            Volatile.Read(ref _connected).TrySetResult();
-        }
-        else
-        {
-            // Re-arm the signal before the session goes, so a watcher that finds no session always
-            // holds a signal the next login will complete.
-            var signal = Volatile.Read(ref _connected);
-
-            if (signal.Task.IsCompleted)
-            {
-                Interlocked.CompareExchange(ref _connected, NewSignal(), signal);
-            }
-
-            old = Interlocked.Exchange(ref _session, null);
+            old = Swap(next);
         }
 
         return old == null ? Task.CompletedTask : RetireAsync(old);
+    }
+
+    // A login that outlived a DisconnectAsync - a Load still running when its host was disabled, removed
+    // or shut down - would otherwise install a session nothing logs out. It is logged out instead.
+    private bool Install(VsphereSession next, int epoch)
+    {
+        VsphereSession old;
+        bool installed;
+
+        lock (_gate)
+        {
+            installed = _disconnects == epoch;
+            old = installed ? Swap(next) : next;
+        }
+
+        if (!installed)
+        {
+            _logger.LogInformation("Connect():  {Host} was disconnected during the login. Logging the new session out.", Host.Address);
+        }
+
+        if (old != null)
+        {
+            _ = RetireAsync(old);
+        }
+
+        return installed;
+    }
+
+    // Under _gate. The signal is re-armed before the session goes, so a watcher that finds no session
+    // always holds a signal the next login will complete.
+    private VsphereSession Swap(VsphereSession next)
+    {
+        var old = _session;
+
+        if (next != null)
+        {
+            _session = next;
+            _connected.TrySetResult();
+        }
+        else
+        {
+            if (_connected.Task.IsCompleted)
+            {
+                Volatile.Write(ref _connected, NewSignal());
+            }
+
+            _session = null;
+        }
+
+        return old;
     }
 
     private async Task RetireAsync(VsphereSession session)
@@ -273,7 +316,15 @@ public class VsphereConnection
     public Task DisconnectAsync()
     {
         _logger.LogInformation("Disconnecting from {Host}", Host.Address);
-        return Replace(null);
+        VsphereSession old;
+
+        lock (_gate)
+        {
+            _disconnects++;
+            old = Swap(null);
+        }
+
+        return old == null ? Task.CompletedTask : RetireAsync(old);
     }
 
     private async Task<ServiceContent> ConnectToHost(IVimClient client)
@@ -415,15 +466,9 @@ public class VsphereConnection
     /// </summary>
     internal void UpsertMachine(VsphereVirtualMachine machine)
     {
-        var reference = machine.Reference.Value;
-
-        // The same uuid under a new moref (unregistered and re-registered): drop the old moref.
-        if (MachineStates.TryGetValue(machine.Id, out var old) && old.Reference.Value != reference)
-        {
-            VmGuids.TryRemove(new KeyValuePair<string, Guid>(old.Reference.Value, machine.Id));
-        }
-
-        VmGuids[reference] = machine.Id;
+        // Every live moref keeps its mapping, even when two share a uuid (a copied VM), so tasks on
+        // either still resolve. A moref that goes away is dropped by its leave, or by the next snapshot.
+        VmGuids[machine.Reference.Value] = machine.Id;
         MachineStates[machine.Id] = machine;
     }
 
@@ -445,6 +490,7 @@ public class VsphereConnection
     {
         VmGuids.Clear();
         MachineStates.Clear();
+        WatcherError = null;
     }
 
     private void LoadNetworkCache(VimClient.ObjectContent[] distributedSwitches, VimClient.ObjectContent[] networks)

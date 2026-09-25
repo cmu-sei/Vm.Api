@@ -109,6 +109,77 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         Assert.Null(connection.Client);
     }
 
+    /// <summary>
+    /// A Load that outlives the connection loop's timeout is not awaited, so the host can be disabled,
+    /// removed or shut down while its login is still in flight. That login is logged out, not installed:
+    /// nothing else would ever log it out, and vCenter limits how many sessions a user may hold.
+    /// </summary>
+    [Fact]
+    public async Task ALoginThatFinishesAfterADisconnect_IsLoggedOutNotInstalled()
+    {
+        var login = new TaskCompletionSource<UserSession>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _feed.Client.LoginAsync(Arg.Any<ManagedObjectReference>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
+            .Returns(login.Task);
+        var connection = Connection(_ => _feed.Client);
+
+        var load = connection.Load();
+        await PollLoop.Until(() => Calls(_feed, nameof(IVimClient.LoginAsync)) == 1, "the login to start");
+        await connection.DisconnectAsync();
+        login.SetResult(new UserSession { key = "late" });
+        await load;
+
+        Assert.False(connection.Connected);
+        Assert.False(connection.WhenConnected().IsCompleted);
+        await PollLoop.Until(() => Calls(_feed, nameof(IVimClient.LogoutAsync)) == 1, "the late session to be logged out");
+    }
+
+    /// <summary>A login after a disconnect has finished is the host being enabled again, and is kept.</summary>
+    [Fact]
+    public async Task ALoginStartedAfterADisconnect_IsInstalled()
+    {
+        var connection = Connection(_ => _feed.Client);
+
+        await connection.DisconnectAsync();
+        await connection.Load();
+
+        Assert.True(connection.Connected);
+        Assert.True(connection.WhenConnected().IsCompleted);
+    }
+
+    /// <summary>
+    /// The watcher waits on the signal only while there is no session, so the signal must be pending
+    /// exactly then: a completed signal with no session would have it spin without awaiting.
+    /// </summary>
+    [Fact]
+    public void TheLoginSignal_IsCompleteExactlyWhileThereIsASession()
+    {
+        var connection = Connection(_ => _feed.Client);
+        var session = new VsphereSession(_feed.Client, ServiceContent());
+
+        Assert.False(connection.WhenConnected().IsCompleted);
+        _ = connection.Replace(session);
+        Assert.True(connection.WhenConnected().IsCompleted);
+        _ = connection.Replace(null);
+        Assert.False(connection.WhenConnected().IsCompleted);
+        _ = connection.Replace(new VsphereSession(_feed.Client, ServiceContent()));
+        Assert.True(connection.WhenConnected().IsCompleted);
+        _ = connection.DisconnectAsync();
+        Assert.False(connection.WhenConnected().IsCompleted);
+        Assert.Null(connection.Current);
+    }
+
+    [Fact]
+    public async Task ClearingTheMachines_ClearsAWatcherError()
+    {
+        var connection = Connection(_ => _feed.Client);
+        await connection.Load();
+        connection.WatcherError = "boom";
+
+        connection.ClearMachines();
+
+        Assert.Null(connection.WatcherError);
+    }
+
     #endregion
 
     #region VM creation
@@ -187,6 +258,31 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         Assert.Equal(["10.0.0.9"], c.IpAddresses);
     }
 
+    /// <summary>
+    /// Every re-snapshot queues every machine, so a row that already matches the cache must cost nothing:
+    /// no update, and so no <c>VmUpdated</c> to every client. The addresses are the case that needs showing,
+    /// because an array is compared by value only through the provider's value comparer.
+    /// </summary>
+    [Fact]
+    public async Task PersistBatch_OfARowThatAlreadyMatches_WritesNothing()
+    {
+        await Seed(
+            new VmEntity { Id = A, Name = "a", PowerState = PowerState.On, IpAddresses = ["10.0.0.5", "fe80::1"], Type = VmType.Vsphere },
+            new VmEntity { Id = B, Name = "b", PowerState = PowerState.On, IpAddresses = ["10.0.0.6"], Type = VmType.Vsphere });
+        var service = Service();
+        var connection = Cache(service, Machine(A, "on", ["10.0.0.5", "fe80::1"]));
+        connection.UpsertMachine(Machine(B, "on", ["10.0.0.7"]));
+        Mediator.ClearReceivedCalls();
+
+        await service.PersistBatchAsync([A, B], Ct);
+
+        // B, which did change, is the control: it shows the save does announce what it writes.
+        Assert.Equal([B], Mediator.ReceivedCalls()
+            .Select(x => x.GetArguments().FirstOrDefault())
+            .OfType<EntityUpdated<VmEntity>>()
+            .Select(x => x.Entity.Id));
+    }
+
     [Fact]
     public async Task PersistBatch_IgnoresADisabledHost()
     {
@@ -231,12 +327,16 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         Assert.Equal(1, Calls(_feed, nameof(IVimClient.DestroyPropertyCollectorAsync)));
     }
 
+    /// <summary>
+    /// A failed write is retried until it succeeds. The machine does not change again, so nothing else
+    /// would ever write it: giving up would leave its row wrong for good.
+    /// </summary>
     [Fact]
-    public async Task RunningService_RetriesAFailedWriteOnce()
+    public async Task RunningService_RetriesAFailedWriteUntilItSucceeds()
     {
         await Seed(new VmEntity { Id = A, Name = "a" });
         _feed.Then(Page("1", Enter("vm-1", A, VirtualMachinePowerState.poweredOn)));
-        var (service, _) = Running(refuseContexts: 1);
+        var (service, _) = Running(refuseContexts: 3);
 
         await service.StartAsync(Ct);
         try
@@ -248,7 +348,7 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
             await service.StopAsync(CancellationToken.None);
         }
 
-        Assert.Equal(1, _contextsRefused);
+        Assert.Equal(3, _contextsRefused);
     }
 
     /// <summary>

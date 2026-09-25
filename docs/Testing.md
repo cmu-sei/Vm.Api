@@ -208,10 +208,16 @@ and nothing about any service.
   `IVimClient` that plays a script of update sets and then holds the next call open the way vCenter does,
   so `Idle` - every step taken and a call pending - is the barrier a test waits on rather than a sleep. The
   watcher's subject is the caches: truncated initial pages, pruning only after the last one, a missing
-  property keeping its value, a stale moref's `leave` not removing a newer mapping. The service's is the
-  lifecycle: one login kept for as long as the session probe says it is live, a re-login that retires the
-  old session and swaps in a new session object so the watcher rebuilds, a watcher that died being
-  restarted, and a disabled or removed host draining its watcher and logging out.
+  property keeping its value, a stale moref's `leave` not removing a newer mapping, two live morefs sharing
+  a uuid both staying mapped, and the periodic re-snapshot (an empty version on the same collector)
+  correcting an update the watcher failed to apply and pruning a machine it no longer includes. A session
+  replaced under the long-poll is not reported as a watcher error, and a stop during a stalled setup call
+  returns at once. The service's is the lifecycle: one login kept for as long as the session probe says it
+  is live, a re-login that retires the old session and swaps in a new session object so the watcher
+  rebuilds, a login that finishes after a disconnect being logged out rather than installed, the login
+  signal being complete exactly while there is a session, a watcher that died being restarted, a disabled
+  or removed host draining its watcher and logging out, a failed write retried until it succeeds, and a
+  row that already matches the cache written - and announced - not at all.
 
 Three classes cover the entity-event handlers, which are the sending end of those same group names. A
 change to a Vm never reaches a client directly: `VmContext` raises an entity event on save, MediatR hands
@@ -225,7 +231,9 @@ and nothing compares the two.
   know, a Vm on no team at all. The rest is what each announcement carries, since the payload is the whole
   message: a create's null property list, an update's camel-cased property names, a delete's bare id. The
   update's names are taken off a real save rather than written by hand, so they are the ones EF's change
-  tracker produced. Last are the two states a Vm arrives in - with its teams loaded, or without them, which
+  tracker produced. A create sends the row as committed rather than the event's copy, read untracked, since
+  another handler of the same event can have written the new row's vSphere state and announced it as an
+  update first; a row already deleted falls back to the copy. Last are the two states a Vm arrives in - with its teams loaded, or without them, which
   is what every announcement caused by a poller looks like.
 - `VmTeamSignalRHandlerTests` covers the two handlers behind a Vm gaining or losing a team, which say "this
   Vm has appeared" and "this Vm has gone" to clients for whom nothing about the Vm itself changed. Their

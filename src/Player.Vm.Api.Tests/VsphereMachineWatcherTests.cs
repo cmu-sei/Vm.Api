@@ -169,6 +169,35 @@ public class VsphereMachineWatcherTests
         Assert.Equal(["vm-7"], _connection.VmGuids.Keys);
     }
 
+    /// <summary>
+    /// Two live machines can share a uuid - a VM copied without a new one - and a task on either has to
+    /// resolve to the Vm. Each moref keeps its own mapping, and one leaving does not take the other's.
+    /// </summary>
+    [Fact]
+    public async Task TwoMachinesWithOneUuid_BothResolveUntilOneLeaves()
+    {
+        _feed.Then(Page("1", Enter("vm-1", A), Enter("vm-9", A)))
+             .Then(Page("2", Leave("vm-9")));
+
+        await Watch();
+
+        Assert.Equal(["vm-1"], _connection.VmGuids.Keys);
+        Assert.Equal(A, _connection.VmGuids["vm-1"]);
+    }
+
+    [Fact]
+    public async Task TwoMachinesWithOneUuid_BothMapToIt()
+    {
+        _feed.Then(Page("1", Enter("vm-1", A), Enter("vm-9", A)))
+             .Then(Page("2", Modify("vm-1", Power(VirtualMachinePowerState.poweredOn))));
+
+        await Watch();
+
+        // The update to vm-1 used to evict vm-9, which had taken the uuid's mapping last.
+        Assert.Equal(["vm-1", "vm-9"], _connection.VmGuids.Keys.Order());
+        Assert.All(_connection.VmGuids.Values, x => Assert.Equal(A, x));
+    }
+
     [Fact]
     public async Task UuidChange_MovesTheMachineToItsNewId()
     {
@@ -233,6 +262,63 @@ public class VsphereMachineWatcherTests
         Assert.Equal("unknown", machine.State);
         Assert.Empty(machine.IpAddresses);
         Assert.False(machine.HasSnapshot);
+    }
+
+    #endregion
+
+    #region Re-snapshot
+
+    /// <summary>
+    /// The change feed is all the watcher follows, so an update it failed to apply would stay missed
+    /// until that machine next changed. The periodic re-read asks for the whole state again, with an
+    /// empty version on the same collector, and what it finds replaces the cache.
+    /// </summary>
+    [Fact]
+    public async Task Resnapshot_CorrectsAnUpdateTheWatcherMissed()
+    {
+        var due = false;
+        _feed.Then(Page("1", Enter("vm-1", A, VirtualMachinePowerState.poweredOn)))
+             .Then(() =>
+             {
+                 // An update that fails to apply, as a malformed one does in Apply's per-object catch.
+                 due = true;
+                 return Page("2", new ObjectUpdate { kind = ObjectUpdateKind.modify });
+             })
+             .Then(() =>
+             {
+                 due = false;
+                 return Page("3", Enter("vm-1", A, VirtualMachinePowerState.poweredOff));
+             });
+
+        await Watch(Watcher(resnapshotInterval: () => due ? TimeSpan.FromTicks(1) : TimeSpan.FromHours(1)));
+
+        Assert.Equal(["", "1", "", "3"], _feed.Versions);
+        Assert.Equal("off", _connection.MachineStates[A].State);
+        Assert.Equal([A, A], _changed);
+        Assert.Equal(1, _feed.ViewsCreated);
+    }
+
+    /// <summary>A machine the re-read does not include is gone, as it would be after the first snapshot.</summary>
+    [Fact]
+    public async Task Resnapshot_PrunesAMachineItDoesNotInclude()
+    {
+        var due = false;
+        _feed.Then(() =>
+             {
+                 due = true;
+                 return Page("1", Enter("vm-1", A), Enter("vm-2", B));
+             })
+             .Then(() =>
+             {
+                 due = false;
+                 return Page("2", Enter("vm-1", A));
+             });
+
+        await Watch(Watcher(resnapshotInterval: () => due ? TimeSpan.FromTicks(1) : TimeSpan.FromHours(1)));
+
+        Assert.Equal(["", "", "2"], _feed.Versions);
+        Assert.Equal([A], _connection.MachineStates.Keys);
+        Assert.Equal(["vm-1"], _connection.VmGuids.Keys);
     }
 
     #endregion
@@ -351,6 +437,55 @@ public class VsphereMachineWatcherTests
         Assert.Equal("on", connection.MachineStates[A].State);
     }
 
+    /// <summary>
+    /// A replaced session faults the long-poll it held, and that is the ordinary way a watcher learns of
+    /// the replacement, not a failure: the health check must not report one while it rebuilds. The
+    /// replacement's setup is held open so no snapshot can clear an error in between.
+    /// </summary>
+    [Fact]
+    public async Task SessionReplaced_IsNotReportedAsAnError()
+    {
+        var replacement = new FakeChangeFeed();
+        replacement.Client.CreateContainerViewAsync(
+                Arg.Any<ManagedObjectReference>(), Arg.Any<ManagedObjectReference>(), Arg.Any<string[]>(), Arg.Any<bool>())
+            .Returns(new TaskCompletionSource<CreateContainerViewResponse>().Task);
+        _feed.Then(Page("1", Enter("vm-1", A)));
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var run = Watcher().RunAsync(cts.Token);
+        await PollLoop.Until(() => _feed.Idle, "the first session's snapshot");
+
+        _ = _connection.Replace(new VsphereSession(replacement.Client, ServiceContent()));
+        await PollLoop.Until(() => replacement.ViewsCreated == 1, "the watcher to rebuild on the replacement");
+
+        Assert.Null(_connection.WatcherError);
+
+        cts.Cancel();
+        await run;
+    }
+
+    /// <summary>
+    /// A vCenter that stops answering during setup cannot hold up a watcher being stopped - on disable,
+    /// removal or shutdown - for the whole send timeout.
+    /// </summary>
+    [Fact]
+    public async Task Stopping_DuringAStalledSetup_EndsPromptly()
+    {
+        _feed.Client.CreatePropertyCollectorAsync(Arg.Any<ManagedObjectReference>())
+            .Returns(new TaskCompletionSource<ManagedObjectReference>().Task);
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var run = Watcher().RunAsync(cts.Token);
+        await PollLoop.Until(
+            () => _feed.Client.ReceivedCalls().Any(x => x.GetMethodInfo().Name == nameof(IVimClient.CreatePropertyCollectorAsync)),
+            "the watcher to reach the stalled call");
+
+        cts.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(5), Ct);
+
+        Assert.Null(_connection.WatcherError);
+    }
+
     [Theory]
     [InlineData(typeof(CommunicationException), true)]
     [InlineData(typeof(TimeoutException), false)]
@@ -382,18 +517,20 @@ public class VsphereMachineWatcherTests
 
     #endregion
 
-    private VsphereMachineWatcher Watcher(VsphereConnection connection = null, TimeSpan? maxBackoff = null) =>
+    private VsphereMachineWatcher Watcher(
+        VsphereConnection connection = null, TimeSpan? maxBackoff = null, Func<TimeSpan> resnapshotInterval = null) =>
         new(connection ?? _connection, _changed.Enqueue, () => Interlocked.Increment(ref _reconnects),
-            () => maxBackoff ?? TimeSpan.FromMilliseconds(20), NullLogger.Instance)
+            () => maxBackoff ?? TimeSpan.FromMilliseconds(20), resnapshotInterval ?? (() => TimeSpan.FromHours(1)),
+            NullLogger.Instance)
         {
             InitialBackoff = TimeSpan.FromMilliseconds(10)
         };
 
     // Runs the watcher until it has taken every scripted step and is waiting on the next, then stops it.
-    private async Task Watch()
+    private async Task Watch(VsphereMachineWatcher watcher = null)
     {
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
-        var run = Watcher().RunAsync(cts.Token);
+        var run = (watcher ?? Watcher()).RunAsync(cts.Token);
 
         await PollLoop.Until(() => _feed.Idle || run.IsCompleted, "the watcher to take every scripted step");
 

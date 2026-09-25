@@ -98,7 +98,14 @@ public sealed class FakeChangeFeed
         return this;
     }
 
-    public FakeChangeFeed ThenTimeout() => Then(null);
+    /// <summary>A step built when the call is made, for a test that has to act at that moment.</summary>
+    public FakeChangeFeed Then(Func<UpdateSet> step)
+    {
+        _steps.Enqueue(step);
+        return this;
+    }
+
+    public FakeChangeFeed ThenTimeout() => Then((UpdateSet)null);
 
     public FakeChangeFeed ThenThrow(Exception ex)
     {

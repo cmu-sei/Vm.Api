@@ -59,7 +59,6 @@ public class ConnectionService : BackgroundService, IConnectionService
     // Machine ids whose cached state has changed and not yet been written. One reader, so the
     // database only ever receives the latest cached value for a machine.
     private readonly Channel<Guid> _dirty = Channel.CreateUnbounded<Guid>(new UnboundedChannelOptions { SingleReader = true });
-    private readonly ConcurrentDictionary<Guid, byte> _retried = new();
 
     internal TimeSpan PersistRetryDelay { get; init; } = TimeSpan.FromSeconds(5);
     internal TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(5);
@@ -177,6 +176,7 @@ public class ConnectionService : BackgroundService, IConnectionService
             MarkDirty,
             () => _resetEvent.Set(),
             () => TimeSpan.FromSeconds(_optionsMonitor.CurrentValue.ConnectionRetryIntervalSeconds),
+            () => TimeSpan.FromMinutes(_optionsMonitor.CurrentValue.LoadCacheAfterMinutes),
             _logger);
         _watchers[connection.Address] = (cancel, Task.Run(() => watcher.RunAsync(cancel.Token)));
     }
@@ -250,9 +250,14 @@ public class ConnectionService : BackgroundService, IConnectionService
     }
 
     // Drains whatever is queued in one batch, with no debounce: during a burst the next batch
-    // simply collects the ids that arrived while this one was being written.
+    // simply collects the ids that arrived while this one was being written. A failed batch is
+    // requeued after a backoff, and retried until it succeeds: nothing else would write a machine
+    // that does not change again.
     private async Task PersistAsync(CancellationToken ct)
     {
+        var failures = 0;
+        var backoff = PersistRetryDelay;
+
         try
         {
             while (await _dirty.Reader.WaitToReadAsync(ct))
@@ -265,8 +270,12 @@ public class ConnectionService : BackgroundService, IConnectionService
                 {
                     await PersistBatchAsync(ids, ct);
 
-                    foreach (var id in ids)
-                        _retried.TryRemove(id, out _);
+                    if (failures > 0)
+                        _logger.LogInformation("Saved the state of vSphere machines again after {Attempts} failed attempts", failures);
+
+                    failures = 0;
+                    backoff = PersistRetryDelay;
+                    continue;
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -274,9 +283,22 @@ public class ConnectionService : BackgroundService, IConnectionService
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogError(ex, "Failed to save the state of {Count} vSphere machines", ids.Count);
-                    Retry(ids, ct);
+                    failures++;
+
+                    if (failures == 1)
+                        _logger.LogError(ex, "Failed to save the state of {Count} vSphere machines. Retrying in {Delay}", ids.Count, backoff);
+                    else
+                        _logger.LogWarning(ex, "Failed to save the state of {Count} vSphere machines, attempt {Attempt}. Retrying in {Delay}", ids.Count, failures, backoff);
                 }
+
+                // Ids queued meanwhile wait in the channel and join the retried ones in the next batch.
+                await Task.Delay(backoff, ct);
+
+                foreach (var id in ids)
+                    MarkDirty(id);
+
+                var cap = TimeSpan.FromSeconds(Math.Max(1, _optionsMonitor.CurrentValue.ConnectionRetryIntervalSeconds));
+                backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, Math.Max(cap.Ticks, PersistRetryDelay.Ticks)));
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -306,38 +328,6 @@ public class ConnectionService : BackgroundService, IConnectionService
         }
 
         await dbContext.SaveChangesAsync(ct);
-    }
-
-    // One more attempt per id after a short delay, then give up until the machine next changes.
-    private void Retry(IEnumerable<Guid> ids, CancellationToken ct)
-    {
-        var retry = ids.Where(id => _retried.TryAdd(id, 0)).ToArray();
-
-        foreach (var id in ids.Except(retry))
-        {
-            _retried.TryRemove(id, out _);
-            _logger.LogWarning("Giving up on saving the state of vSphere machine {Id} until it next changes", id);
-        }
-
-        if (retry.Length == 0)
-            return;
-
-        _ = RequeueAsync();
-
-        async Task RequeueAsync()
-        {
-            try
-            {
-                await Task.Delay(PersistRetryDelay, ct);
-            }
-            catch (OperationCanceledException)
-            {
-                return;
-            }
-
-            foreach (var id in retry)
-                MarkDirty(id);
-        }
     }
 
     public VsphereAggregate GetAggregate(Guid id)

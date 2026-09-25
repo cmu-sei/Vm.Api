@@ -37,6 +37,7 @@ public sealed class VsphereMachineWatcher
     private readonly Action<Guid> _changed;
     private readonly Action _requestReconnect;
     private readonly Func<TimeSpan> _maxBackoff;
+    private readonly Func<TimeSpan> _resnapshotInterval;
     private readonly ILogger _logger;
 
     // Property values by moref, as the change feed last reported them.
@@ -47,12 +48,14 @@ public sealed class VsphereMachineWatcher
         Action<Guid> changed,
         Action requestReconnect,
         Func<TimeSpan> maxBackoff,
+        Func<TimeSpan> resnapshotInterval,
         ILogger logger)
     {
         _connection = connection;
         _changed = changed;
         _requestReconnect = requestReconnect;
         _maxBackoff = maxBackoff;
+        _resnapshotInterval = resnapshotInterval;
         _logger = logger;
     }
 
@@ -87,8 +90,6 @@ public sealed class VsphereMachineWatcher
             }
             catch (Exception ex)
             {
-                _connection.WatcherError = ex.Message;
-
                 if (!ReferenceEquals(_connection.Current, session))
                 {
                     // The session was replaced or dropped under the pending call. Start again on whatever
@@ -96,6 +97,8 @@ public sealed class VsphereMachineWatcher
                     _logger.LogInformation("Session for {Host} was replaced. Rebuilding the machine watcher.", _connection.Address);
                     continue;
                 }
+
+                _connection.WatcherError = ex.Message;
 
                 if (IsSessionLost(ex))
                 {
@@ -123,25 +126,45 @@ public sealed class VsphereMachineWatcher
 
         try
         {
+            // Bounded by the token, so a stalled vCenter cannot hold up a watcher being stopped. Whatever an
+            // abandoned call creates goes with the session, which every path that stops a watcher logs out.
             view = (await client.CreateContainerViewAsync(
-                session.Sic.viewManager, session.Sic.rootFolder, ["VirtualMachine"], true)).returnval;
-            collector = await client.CreatePropertyCollectorAsync(session.Sic.propertyCollector);
-            await client.CreateFilterAsync(collector, BuildFilterSpec(view), false);
+                session.Sic.viewManager, session.Sic.rootFolder, ["VirtualMachine"], true).WaitAsync(ct)).returnval;
+            collector = await client.CreatePropertyCollectorAsync(session.Sic.propertyCollector).WaitAsync(ct);
+            await client.CreateFilterAsync(collector, BuildFilterSpec(view), false).WaitAsync(ct);
 
             _objects.Clear();
             var seen = new HashSet<string>();
             var initial = true;
+            var resnapshot = false;
+            var snapshotAt = TimeSpan.Zero;
+            var clock = System.Diagnostics.Stopwatch.StartNew();
             var version = "";
             var options = BuildWaitOptions();
 
             while (ReferenceEquals(_connection.Current, session))
             {
+                // Everything else here follows the change feed, so anything it missed would stay missed
+                // until that machine next changed. An empty version asks the same collector for the whole
+                // current state again, which the snapshot path applies and prunes against as it did the
+                // first time; the persister then writes only the rows that differ. A zero interval turns it off.
+                var interval = _resnapshotInterval();
+
+                if (!initial && interval > TimeSpan.Zero && clock.Elapsed - snapshotAt >= interval)
+                {
+                    _objects.Clear();
+                    seen = new HashSet<string>();
+                    initial = true;
+                    resnapshot = true;
+                    version = "";
+                }
+
                 var update = await WaitAsync(client, collector, version, options, ct);
 
                 if (update != null)
                 {
                     version = update.version;
-                    Apply(update, initial ? seen : null);
+                    Apply(update, initial ? seen : null, resnapshot);
 
                     if (update.truncatedSpecified && update.truncated)
                     {
@@ -151,11 +174,15 @@ public sealed class VsphereMachineWatcher
 
                 if (initial)
                 {
-                    Prune(seen);
-                    initial = false;
+                    Prune(seen, resnapshot);
                     _connection.WatcherError = null;
                     onHealthy();
-                    _logger.LogInformation("Watching {Count} machines on {Host}", _objects.Count, _connection.Address);
+                    _logger.Log(resnapshot ? LogLevel.Debug : LogLevel.Information,
+                        "Watching {Count} machines on {Host}", _objects.Count, _connection.Address);
+
+                    initial = false;
+                    resnapshot = false;
+                    snapshotAt = clock.Elapsed;
                 }
             }
         }
@@ -199,7 +226,7 @@ public sealed class VsphereMachineWatcher
         return null;
     }
 
-    private void Apply(UpdateSet update, HashSet<string> seen)
+    private void Apply(UpdateSet update, HashSet<string> seen, bool resnapshot)
     {
         foreach (var filter in update.filterSet ?? [])
         {
@@ -213,7 +240,7 @@ public sealed class VsphereMachineWatcher
             {
                 try
                 {
-                    Apply(objectUpdate, seen);
+                    Apply(objectUpdate, seen, resnapshot);
                 }
                 catch (Exception ex)
                 {
@@ -223,7 +250,7 @@ public sealed class VsphereMachineWatcher
         }
     }
 
-    private void Apply(ObjectUpdate update, HashSet<string> seen)
+    private void Apply(ObjectUpdate update, HashSet<string> seen, bool resnapshot)
     {
         var reference = update.obj.Value;
 
@@ -288,21 +315,50 @@ public sealed class VsphereMachineWatcher
             return;
         }
 
-        _connection.UpsertMachine(ToMachine(update.obj, id, properties));
+        var machine = ToMachine(update.obj, id, properties);
+
+        if (resnapshot && (!_connection.MachineStates.TryGetValue(id, out var cached) || !SameState(cached, machine)))
+        {
+            _logger.LogWarning("Re-reading {Host} corrected the cached state of machine {Id} ({Reference})",
+                _connection.Address, id, reference);
+        }
+
+        _connection.UpsertMachine(machine);
         _changed(id);
     }
 
-    // After the initial snapshot: forget machines this host had cached that the snapshot did not include.
-    private void Prune(HashSet<string> seen)
+    // After a snapshot: forget every moref this host had cached that the snapshot did not include, and any
+    // machine whose moref now maps to another uuid.
+    private void Prune(HashSet<string> seen, bool resnapshot)
     {
+        foreach (var (reference, id) in _connection.VmGuids.ToArray())
+        {
+            if (!seen.Contains(reference))
+            {
+                if (resnapshot)
+                {
+                    _logger.LogWarning("Re-reading {Host} found machine {Id} ({Reference}) gone", _connection.Address, id, reference);
+                }
+
+                _connection.RemoveMachine(id, reference);
+            }
+        }
+
         foreach (var (id, machine) in _connection.MachineStates.ToArray())
         {
-            if (!seen.Contains(machine.Reference.Value))
+            if (!_connection.VmGuids.TryGetValue(machine.Reference.Value, out var mapped) || mapped != id)
             {
                 _connection.RemoveMachine(id, machine.Reference.Value);
             }
         }
     }
+
+    private static bool SameState(VsphereVirtualMachine a, VsphereVirtualMachine b) =>
+        a.Reference.Value == b.Reference.Value
+        && a.Name == b.Name
+        && a.State == b.State
+        && a.HasSnapshot == b.HasSnapshot
+        && a.IpAddresses.SequenceEqual(b.IpAddresses);
 
     private async Task Bounded(Func<Task> action)
     {

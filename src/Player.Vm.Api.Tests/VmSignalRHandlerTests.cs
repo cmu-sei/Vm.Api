@@ -170,6 +170,69 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
     }
 
     /// <summary>
+    /// A create sends the row as committed, not the event's copy of it. Handlers run in no guaranteed
+    /// order, and the vSphere persister, queued by another handler of the same event, can write the new
+    /// row's state and announce it as an update before this one sends. The client applies an update only
+    /// to a Vm it holds and a create only to one it does not, so a create carrying the event's
+    /// <c>Unknown</c> would be what the client kept.
+    /// </summary>
+    [Fact]
+    public async Task Created_SendsTheCommittedStateNotTheEvents()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = await SeedColdly(teamId);
+        await WriteState(vm.Id);
+
+        await Created.Handle(new EntityCreated<VmEntity>(vm), Ct);
+
+        var sent = Assert.IsType<VmDto>(Assert.Single(_hub.Of(VmHubMethods.VmCreated)).Args[0]);
+        Assert.Equal(PowerState.On, sent.PowerState);
+        Assert.Equal(["10.0.0.5"], sent.IpAddresses);
+        Assert.Equal(VmType.Vsphere, sent.Type);
+        Assert.True(sent.HasSnapshot);
+        Assert.Equal<Guid>([teamId], sent.TeamIds);
+    }
+
+    /// <summary>
+    /// The handler's context is the one that saved the Vm, so it still tracks the event's copy. A tracked
+    /// query would hand that copy back, <c>Unknown</c> and all, rather than read the row.
+    /// </summary>
+    [Fact]
+    public async Task Created_DoesNotSendTheCopyItsContextTracks()
+    {
+        var vm = await SeedVm(Guid.NewGuid());
+        await WriteState(vm.Id);
+
+        await Created.Handle(new EntityCreated<VmEntity>(vm), Ct);
+
+        Assert.Equal(PowerState.Unknown, vm.PowerState);
+        var sent = Assert.IsType<VmDto>(Assert.Single(_hub.Of(VmHubMethods.VmCreated)).Args[0]);
+        Assert.Equal(PowerState.On, sent.PowerState);
+    }
+
+    /// <summary>
+    /// A Vm deleted before its create was announced is still announced, from the event's copy: its delete
+    /// follows, and a client that never heard of it would ignore that.
+    /// </summary>
+    [Fact]
+    public async Task Created_WhenTheRowIsAlreadyGone_SendsTheEventsCopy()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = await SeedVm(teamId);
+
+        await using (var context = NewContext())
+        {
+            await context.Vms.Where(x => x.Id == vm.Id).ExecuteDeleteAsync(Ct);
+        }
+
+        await Created.Handle(new EntityCreated<VmEntity>(vm), Ct);
+
+        var send = Assert.Single(_hub.Of(VmHubMethods.VmCreated));
+        Assert.Equal(vm.Id, Assert.IsType<VmDto>(send.Args[0]).Id);
+        Assert.Equal<string>([teamId.ToString()], send.Groups);
+    }
+
+    /// <summary>
     /// The property names EF recorded for the save, camel cased. The client matches them against the
     /// serialized field names of the Vm it already holds, which are camel case, so the conversion is the
     /// whole point of the second argument: <c>PowerState</c> would match nothing.
@@ -429,6 +492,17 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
         await context.SaveChangesAsync(Ct);
 
         return vm;
+    }
+
+    /// <summary>What the vSphere persister writes to a new row, written behind the test's context.</summary>
+    private async Task WriteState(Guid id)
+    {
+        await using var context = NewContext();
+        await context.Vms.Where(x => x.Id == id).ExecuteUpdateAsync(x => x
+            .SetProperty(v => v.PowerState, PowerState.On)
+            .SetProperty(v => v.IpAddresses, new[] { "10.0.0.5" })
+            .SetProperty(v => v.Type, VmType.Vsphere)
+            .SetProperty(v => v.HasSnapshot, true), Ct);
     }
 
     /// <summary>
