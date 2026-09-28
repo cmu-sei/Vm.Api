@@ -131,10 +131,13 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             foreach (var connection in connections)
             {
-                if (connection.Enabled && connection.Sic != null && connection.Props != null)
+                // Read once, so the task manager and the client come from the same login.
+                var session = connection.Current;
+
+                if (connection.Enabled && session != null)
                 {
-                    PropertyFilterSpec[] filters = createPFSForRecentTasks(connection.Sic.taskManager);
-                    var task = connection.Client.RetrievePropertiesAsync(connection.Props, filters);
+                    PropertyFilterSpec[] filters = createPFSForRecentTasks(session.Sic.taskManager);
+                    var task = session.Client.RetrievePropertiesAsync(session.Sic.propertyCollector, filters);
                     responseDict.Add(connection, task);
                 }
             }

@@ -31,6 +31,21 @@ public class VsphereConnection
     internal VsphereSession Current => _session;
 
     /// <summary>
+    /// <see cref="Current"/> for a call that needs more than one of its parts, so they all come from one
+    /// login. Throws while there is none, where reading the parts one by one would throw a
+    /// NullReferenceException.
+    /// </summary>
+    internal VsphereSession GetRequiredSession() =>
+        _session ?? throw new InvalidOperationException($"Not connected to vCenter {Host.Address}");
+
+    /// <summary>RetrieveProperties through the current session's own property collector.</summary>
+    internal Task<RetrievePropertiesResponse> RetrievePropertiesAsync(PropertyFilterSpec[] specSet)
+    {
+        var session = GetRequiredSession();
+        return session.Client.RetrievePropertiesAsync(session.Sic.propertyCollector, specSet);
+    }
+
+    /// <summary>
     /// The vSphere SOAP operations, typed as <see cref="IVimClient"/> rather than the concrete
     /// generated client so tests can substitute it. See <see cref="IVimClient"/> for why the
     /// generated VimPortType interface cannot be used here directly.

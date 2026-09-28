@@ -172,6 +172,8 @@ public class VsphereMachineWatcherTests
     /// <summary>
     /// Two live machines can share a uuid - a VM copied without a new one - and a task on either has to
     /// resolve to the Vm. Each moref keeps its own mapping, and one leaving does not take the other's.
+    /// vm-9 entered last, so it held the uuid's cached state; the survivor takes that over and is reported,
+    /// or the Vm would neither resolve nor be written until vm-1 next changed.
     /// </summary>
     [Fact]
     public async Task TwoMachinesWithOneUuid_BothResolveUntilOneLeaves()
@@ -183,6 +185,25 @@ public class VsphereMachineWatcherTests
 
         Assert.Equal(["vm-1"], _connection.VmGuids.Keys);
         Assert.Equal(A, _connection.VmGuids["vm-1"]);
+        Assert.Equal("vm-1", _connection.MachineStates[A].Reference.Value);
+        Assert.Equal(3, _changed.Count(x => x == A));
+    }
+
+    /// <summary>
+    /// A copy given its own uuid after the fact moves to the new id, and the original stays behind the old one.
+    /// </summary>
+    [Fact]
+    public async Task UuidChange_OfATwin_LeavesTheOtherResolving()
+    {
+        _feed.Then(Page("1", Enter("vm-1", A), Enter("vm-9", A)))
+             .Then(Page("2", Modify("vm-9", Assign("config.uuid", B.ToString()))));
+
+        await Watch();
+
+        Assert.Equal("vm-1", _connection.MachineStates[A].Reference.Value);
+        Assert.Equal("vm-9", _connection.MachineStates[B].Reference.Value);
+        Assert.Equal(A, _connection.VmGuids["vm-1"]);
+        Assert.Equal(B, _connection.VmGuids["vm-9"]);
     }
 
     [Fact]

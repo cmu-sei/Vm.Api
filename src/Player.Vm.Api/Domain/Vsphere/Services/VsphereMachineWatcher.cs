@@ -261,7 +261,7 @@ public sealed class VsphereMachineWatcher
             // The database row keeps its last state, as it did when the full reload dropped a machine.
             if (_objects.Remove(reference, out var gone) && TryGetId(gone, out var goneId))
             {
-                _connection.RemoveMachine(goneId, reference);
+                RemoveReference(goneId, reference);
             }
 
             return;
@@ -302,7 +302,7 @@ public sealed class VsphereMachineWatcher
 
         if (hadId && (!hasId || oldId != id))
         {
-            _connection.RemoveMachine(oldId, reference);
+            RemoveReference(oldId, reference);
         }
 
         if (!hasId)
@@ -340,7 +340,7 @@ public sealed class VsphereMachineWatcher
                     _logger.LogWarning("Re-reading {Host} found machine {Id} ({Reference}) gone", _connection.Address, id, reference);
                 }
 
-                _connection.RemoveMachine(id, reference);
+                RemoveReference(id, reference);
             }
         }
 
@@ -348,7 +348,30 @@ public sealed class VsphereMachineWatcher
         {
             if (!_connection.VmGuids.TryGetValue(machine.Reference.Value, out var mapped) || mapped != id)
             {
-                _connection.RemoveMachine(id, machine.Reference.Value);
+                RemoveReference(id, machine.Reference.Value);
+            }
+        }
+    }
+
+    // Removes one moref's mapping. Where that moref held the uuid's cached state and another live moref
+    // shares the uuid (a copied VM), the survivor takes its place, so the Vm still resolves and is persisted.
+    // Every caller has already dropped the moref from _objects or moved it to another uuid.
+    private void RemoveReference(Guid id, string reference)
+    {
+        _connection.RemoveMachine(id, reference);
+
+        if (_connection.MachineStates.ContainsKey(id))
+        {
+            return;
+        }
+
+        foreach (var (other, properties) in _objects)
+        {
+            if (other != reference && TryGetId(properties, out var otherId) && otherId == id)
+            {
+                _connection.UpsertMachine(ToMachine(new ManagedObjectReference { type = "VirtualMachine", Value = other }, id, properties));
+                _changed(id);
+                return;
             }
         }
     }

@@ -53,7 +53,7 @@ public class ConnectionService : BackgroundService, IConnectionService
 
     public ConcurrentDictionary<string, VsphereConnection> _connections = new(); // address to connection
 
-    private readonly Dictionary<string, Task> _taskDict = new();
+    internal readonly Dictionary<string, Task> _taskDict = new(); // address to pending Load
     private readonly Dictionary<string, (CancellationTokenSource Cancel, Task Task)> _watchers = new();
 
     // Machine ids whose cached state has changed and not yet been written. One reader, so the
@@ -205,6 +205,10 @@ public class ConnectionService : BackgroundService, IConnectionService
     private async Task RemoveConnectionAsync(string address)
     {
         await StopWatcherAsync(address);
+
+        // A Load still pending here would otherwise stop the host, if re-added, from loading again until
+        // it finished. Left to run, it catches its own errors, and DisconnectAsync refuses its login.
+        _taskDict.Remove(address);
 
         if (_connections.TryRemove(address, out var connection))
         {

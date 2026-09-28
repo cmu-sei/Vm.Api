@@ -209,15 +209,19 @@ and nothing about any service.
   so `Idle` - every step taken and a call pending - is the barrier a test waits on rather than a sleep. The
   watcher's subject is the caches: truncated initial pages, pruning only after the last one, a missing
   property keeping its value, a stale moref's `leave` not removing a newer mapping, two live morefs sharing
-  a uuid both staying mapped, and the periodic re-snapshot (an empty version on the same collector)
+  a uuid both staying mapped (and, when one leaves or changes uuid, the other taking over the uuid's cached
+  state), and the periodic re-snapshot (an empty version on the same collector)
   correcting an update the watcher failed to apply and pruning a machine it no longer includes. A session
   replaced under the long-poll is not reported as a watcher error, and a stop during a stalled setup call
   returns at once. The service's is the lifecycle: one login kept for as long as the session probe says it
   is live, a re-login that retires the old session and swaps in a new session object so the watcher
   rebuilds, a login that finishes after a disconnect being logged out rather than installed, the login
   signal being complete exactly while there is a session, a watcher that died being restarted, a disabled
-  or removed host draining its watcher and logging out, a failed write retried until it succeeds, and a
-  row that already matches the cache written - and announced - not at all.
+  or removed host draining its watcher and logging out, a host removed mid-login leaving no Load pending,
+  a failed write retried until it succeeds, and a row that already matches the cache written - and
+  announced - not at all.
+  `VsphereServiceCommandTests` also checks that a command run with the session dropped fails naming the
+  host rather than with a `NullReferenceException`.
 
 Three classes cover the entity-event handlers, which are the sending end of those same group names. A
 change to a Vm never reaches a client directly: `VmContext` raises an entity event on save, MediatR hands

@@ -163,6 +163,9 @@ public class VsphereServiceCommandTests
                     Arg.Any<ManagedObjectReference>(),
                     Arg.Is<PropertyFilterSpec[]>(x => !IsTaskFilter(x)))
                 .Returns(new RetrievePropertiesResponse([]));
+
+        /// <summary>The session dropped - logged out or lost - with the machine still in the cache.</summary>
+        public void Disconnect() => _ = _connection.Replace(null);
     }
 
     #region PowerOnVm
@@ -665,6 +668,23 @@ public class VsphereServiceCommandTests
         var vcenter = new FakeVcenter();
 
         Assert.Equal("error", await vcenter.Service().GetPowerState(VmA));
+    }
+
+    #endregion
+
+    #region Disconnected
+
+    // A call that needs the client and a manager from the session reads the session once, so a
+    // dropped one fails with a message naming the host rather than a NullReferenceException.
+    [Fact]
+    public async Task GetSnapshots_WhenDisconnected_SaysSoRatherThanThrowingNullReference()
+    {
+        var vcenter = new FakeVcenter();
+        vcenter.AddVm(VmA);
+        vcenter.Disconnect();
+
+        var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => vcenter.Service().GetSnapshots(VmA));
+        Assert.Contains("vcenter.example.test", ex.Message);
     }
 
     #endregion

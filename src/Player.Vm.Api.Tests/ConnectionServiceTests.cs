@@ -430,6 +430,39 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         }
     }
 
+    /// <summary>
+    /// A host removed while its login is still in flight leaves nothing pending: its Load would otherwise
+    /// stop the host, if added back, from loading again until that login returned.
+    /// </summary>
+    [Fact]
+    public async Task RemovingAHostMidLogin_LeavesNoLoadPending()
+    {
+        var login = new TaskCompletionSource<UserSession>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _feed.Client.LoginAsync(Arg.Any<ManagedObjectReference>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>())
+            .Returns(login.Task);
+        var (service, _) = Running();
+        // So the loop gives up waiting on the stalled Load, and gets to the removal, sooner.
+        var options = Options(Host());
+        options.ConnectionTimeoutSeconds = 1;
+        _options.CurrentValue.Returns(options);
+
+        await service.StartAsync(Ct);
+        try
+        {
+            await PollLoop.Until(() => Calls(_feed, nameof(IVimClient.LoginAsync)) == 1, "the login to start");
+
+            _options.CurrentValue.Returns(Options());
+
+            await PollLoop.Until(() => service.GetConnection(Address) == null, "the removed host to be dropped");
+            Assert.False(service._taskDict.ContainsKey(Address));
+        }
+        finally
+        {
+            login.TrySetResult(new UserSession { key = "late" });
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
     #endregion
 
     #region Health
