@@ -558,8 +558,17 @@ public class XApiService : IXApiService
         {
             ["https://crucible.sei.cmu.edu/xapi/extensions/vm-id"] = vm.Id.ToString(),
             ["https://crucible.sei.cmu.edu/xapi/extensions/vm-type"] = vm.Type.ToString(),
-            ["https://crucible.sei.cmu.edu/xapi/extensions/team-ids"] =
-                string.Join(",", vm.VmTeams.Select(team => team.TeamId))
+
+            // The teams the VM itself is shared with. This is a property of the VM and is the same
+            // for every actor, so unlike the actor's own team it belongs on the definition. Sorted
+            // because the definition is keyed on the activity id: unordered teams would make the
+            // definition for one VM differ between statements depending on the order the database
+            // returned the rows in.
+            ["https://crucible.sei.cmu.edu/xapi/extensions/vm-team-ids"] =
+                new JArray(vm.VmTeams
+                    .Select(team => team.TeamId)
+                    .OrderBy(teamId => teamId)
+                    .Select(teamId => teamId.ToString()))
         };
 
         if (!string.IsNullOrWhiteSpace(vm.Name))

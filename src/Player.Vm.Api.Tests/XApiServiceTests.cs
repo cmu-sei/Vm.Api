@@ -22,6 +22,7 @@ namespace Player.Vm.Api.Tests;
 
 public class XApiServiceTests
 {
+    private const string TeamExtension = "https://crucible.sei.cmu.edu/xapi/extensions/vm-team-ids";
     private const string ActiveTeamExtension = "https://crucible.sei.cmu.edu/xapi/extensions/active-team-ids";
 
     [Fact]
@@ -76,6 +77,9 @@ public class XApiServiceTests
             subject.ToString(),
             Assert.Single(team?["member"] as JArray)["account"]?["name"]?.Value<string>());
         Assert.Null(openedStatementJson["object"]?["definition"]?["extensions"]?[ActiveTeamExtension]);
+
+        // The teams the VM is shared with are a property of the VM, so they stay on the definition.
+        Assert.Equal([teamId.ToString()], ReadTeamExtension(openedStatementJson));
 
         var closedStatement = Assert.Single(statements, statement => statement.Verb == "console-closed");
         Assert.Equal(XApiQueueStatus.Pending, closedStatement.Status);
@@ -158,6 +162,11 @@ public class XApiServiceTests
         Assert.True(JToken.DeepEquals(
             statements[0]["object"]?["definition"],
             statements[1]["object"]?["definition"]));
+
+        // Both teams the VM is shared with, in a stable order, on both statements.
+        Assert.Equal(
+            new[] { firstTeamId, secondTeamId }.OrderBy(teamId => teamId).Select(teamId => teamId.ToString()),
+            ReadTeamExtension(statements[0]));
 
         // The team each actor was on stays on their own statement.
         Assert.Equal(
@@ -395,4 +404,9 @@ public class XApiServiceTests
             options,
             queue,
             NullLogger<XApiService>.Instance);
+
+    private static string[] ReadTeamExtension(JObject statement) =>
+        statement["object"]?["definition"]?["extensions"]?[TeamExtension]
+            ?.Select(value => value.Value<string>())
+            .ToArray();
 }
