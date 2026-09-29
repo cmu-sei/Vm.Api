@@ -342,6 +342,36 @@ public class VsphereMachineWatcherTests
         Assert.Equal(["vm-1"], _connection.VmGuids.Keys);
     }
 
+    /// <summary>
+    /// A property the re-read reports it could not read keeps the value it had, where one it simply no
+    /// longer reports is cleared. Losing the first would write empty addresses over the ones on record.
+    /// </summary>
+    [Fact]
+    public async Task Resnapshot_KeepsAPropertyItCouldNotRead_AndClearsOneItNoLongerReports()
+    {
+        var due = false;
+        var reread = Enter("vm-1", A, VirtualMachinePowerState.poweredOn);
+        reread.changeSet = reread.changeSet.Where(x => x.name is not ("guest.net" or "rootSnapshot")).ToArray();
+        reread.missingSet = [new MissingProperty { path = "guest.net", fault = new LocalizedMethodFault { localizedMessage = "denied" } }];
+
+        _feed.Then(() =>
+             {
+                 due = true;
+                 return Page("1", Enter("vm-1", A, VirtualMachinePowerState.poweredOn, ["10.0.0.5"], snapshot: true));
+             })
+             .Then(() =>
+             {
+                 due = false;
+                 return Page("2", reread);
+             });
+
+        await Watch(Watcher(resnapshotInterval: () => due ? TimeSpan.FromTicks(1) : TimeSpan.FromHours(1)));
+
+        Assert.Equal(["", "", "2"], _feed.Versions);
+        Assert.Equal(["10.0.0.5"], _connection.MachineStates[A].IpAddresses);
+        Assert.False(_connection.MachineStates[A].HasSnapshot);
+    }
+
     #endregion
 
     #region Faults
@@ -486,6 +516,32 @@ public class VsphereMachineWatcherTests
     }
 
     /// <summary>
+    /// After the session is lost the watcher backs off, but a new login ends the wait: it is what the
+    /// retry was waiting for. The backoff here is far longer than the test waits, so only the
+    /// replacement can have woken it.
+    /// </summary>
+    [Fact]
+    public async Task SessionLost_ThenReplaced_RebuildsWithoutWaitingOutTheBackoff()
+    {
+        var replacement = new FakeChangeFeed();
+        replacement.Then(Page("1", Enter("vm-1", A, VirtualMachinePowerState.poweredOn)));
+        _feed.ThenThrow(new FaultException<NotAuthenticated>(new NotAuthenticated(), new FaultReason("The session is not authenticated.")));
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+        var run = Watcher(maxBackoff: TimeSpan.FromMinutes(10), initialBackoff: TimeSpan.FromMinutes(10)).RunAsync(cts.Token);
+        await PollLoop.Until(() => Volatile.Read(ref _reconnects) == 1, "the watcher to fail and ask for a new login");
+
+        _ = _connection.Replace(new VsphereSession(replacement.Client, ServiceContent()));
+        await PollLoop.Until(() => replacement.Idle, "the watcher to rebuild on the new session");
+
+        cts.Cancel();
+        await run;
+
+        Assert.Equal("on", _connection.MachineStates[A].State);
+        Assert.Null(_connection.WatcherError);
+    }
+
+    /// <summary>
     /// A vCenter that stops answering during setup cannot hold up a watcher being stopped - on disable,
     /// removal or shutdown - for the whole send timeout.
     /// </summary>
@@ -539,12 +595,13 @@ public class VsphereMachineWatcherTests
     #endregion
 
     private VsphereMachineWatcher Watcher(
-        VsphereConnection connection = null, TimeSpan? maxBackoff = null, Func<TimeSpan> resnapshotInterval = null) =>
+        VsphereConnection connection = null, TimeSpan? maxBackoff = null, Func<TimeSpan> resnapshotInterval = null,
+        TimeSpan? initialBackoff = null) =>
         new(connection ?? _connection, _changed.Enqueue, () => Interlocked.Increment(ref _reconnects),
             () => maxBackoff ?? TimeSpan.FromMilliseconds(20), resnapshotInterval ?? (() => TimeSpan.FromHours(1)),
             NullLogger.Instance)
         {
-            InitialBackoff = TimeSpan.FromMilliseconds(10)
+            InitialBackoff = initialBackoff ?? TimeSpan.FromMilliseconds(10)
         };
 
     // Runs the watcher until it has taken every scripted step and is waiting on the next, then stops it.

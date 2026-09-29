@@ -17,6 +17,9 @@ namespace Player.Vm.Api.Domain.Services.HealthChecks
         public VsphereConnection[] Connections { get; set; }
         public bool StartupCheckComplete { get; set; }
 
+        // Why some machines' state is still unsaved after retrying, or null once every one is saved.
+        public string PersistError { get; set; }
+
         public Task<HealthCheckResult> CheckHealthAsync(
             HealthCheckContext context,
             CancellationToken cancellationToken = default(CancellationToken))
@@ -34,6 +37,11 @@ namespace Player.Vm.Api.Domain.Services.HealthChecks
             if (Connections.Any(x => x.Enabled && x.WatcherError != null))
             {
                 return Task.FromResult(HealthCheckResult.Degraded("One or more enabled hosts are not receiving machine updates."));
+            }
+
+            if (PersistError != null)
+            {
+                return Task.FromResult(HealthCheckResult.Degraded($"vSphere machine state could not be saved: {PersistError}"));
             }
 
             return Task.FromResult(HealthCheckResult.Healthy());

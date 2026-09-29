@@ -1167,7 +1167,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListIsos(Guid? viewId = null)
         {
             var connection = _connectionService.GetAllConnections()
-                .FirstOrDefault(c => c.Enabled && c.Connected && c.Client != null);
+                .FirstOrDefault(c => c.Enabled && c.Connected);
 
             if (connection == null)
             {
@@ -1187,7 +1187,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         {
             var aggregate = await GetVm(vmId);
 
-            if (aggregate?.Connection?.Client == null)
+            if (aggregate?.Connection?.Connected != true)
             {
                 _logger.LogError("Could not resolve a vSphere connection for VM {VmId} to list ISOs.", vmId);
                 return new Dictionary<Guid, IReadOnlyList<IsoListingEntry>>();
@@ -1315,7 +1315,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private List<VsphereConnection> GetEnabledConnections()
         {
             return _connectionService.GetAllConnections()
-                .Where(c => c.Enabled && c.Connected && c.Client != null)
+                .Where(c => c.Enabled && c.Connected)
                 .ToList();
         }
 
@@ -2320,7 +2320,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
             }
 
-            if (connection.Client == null)
+            if (!connection.Connected)
             {
                 return null;
             }

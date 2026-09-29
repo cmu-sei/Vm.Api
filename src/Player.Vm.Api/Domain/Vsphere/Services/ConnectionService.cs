@@ -21,6 +21,7 @@ using Nito.AsyncEx;
 using Player.Vm.Api.Infrastructure.Extensions;
 using Player.Vm.Api.Domain.Services.HealthChecks;
 using System.Threading.Channels;
+using Npgsql;
 
 namespace Player.Vm.Api.Domain.Vsphere.Services;
 
@@ -61,6 +62,19 @@ public class ConnectionService : BackgroundService, IConnectionService
     private readonly Channel<Guid> _dirty = Channel.CreateUnbounded<Guid>(new UnboundedChannelOptions { SingleReader = true });
 
     internal TimeSpan PersistRetryDelay { get; init; } = TimeSpan.FromSeconds(5);
+    internal int MaxPersistAttempts { get; init; } = 5;
+
+    // How often stale machines are retried. Null means every ConnectionRetryIntervalSeconds.
+    internal TimeSpan? StaleRetryInterval { get; init; }
+
+    // Ids named in the log when a batch goes stale; the rest are counted.
+    private const int MaxLoggedIds = 50;
+
+    // Machines whose batch failed MaxPersistAttempts times, with how many one-at-a-time retries each has
+    // failed since, in the order they are retried. Only the persister loop touches these.
+    private readonly Dictionary<Guid, int> _stale = new();
+    private readonly Queue<Guid> _staleOrder = new();
+    private string _staleError;
     internal TimeSpan ShutdownTimeout { get; init; } = TimeSpan.FromSeconds(5);
 
     public ConnectionService(
@@ -255,20 +269,44 @@ public class ConnectionService : BackgroundService, IConnectionService
 
     // Drains whatever is queued in one batch, with no debounce: during a burst the next batch
     // simply collects the ids that arrived while this one was being written. A failed batch is
-    // requeued after a backoff, and retried until it succeeds: nothing else would write a machine
-    // that does not change again.
+    // requeued after a backoff, up to MaxPersistAttempts. After that its machines go stale: they leave
+    // the batches, so a row the database always rejects cannot hold up every other machine, and are
+    // retried one at a time every StaleRetryInterval until each is saved. Nothing is dropped, so this
+    // does not rely on the watcher's periodic re-read.
     private async Task PersistAsync(CancellationToken ct)
     {
         var failures = 0;
         var backoff = PersistRetryDelay;
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        var nextStalePass = TimeSpan.Zero;
 
         try
         {
-            while (await _dirty.Reader.WaitToReadAsync(ct))
+            while (true)
             {
+                if (_stale.Count > 0 && clock.Elapsed >= nextStalePass)
+                {
+                    await PersistStaleAsync(ct);
+                    nextStalePass = clock.Elapsed + StaleInterval();
+                }
+
+                var ready = await WaitForDirtyAsync(_stale.Count > 0 ? nextStalePass - clock.Elapsed : null, ct);
+
+                if (ready == null)
+                    return;
+
+                if (ready == false)
+                    continue;
+
                 var ids = new HashSet<Guid>();
                 while (_dirty.Reader.TryRead(out var id))
                     ids.Add(id);
+
+                // The stale pass writes these, from the latest cached state, whenever it gets to them.
+                ids.ExceptWith(_stale.Keys);
+
+                if (ids.Count == 0)
+                    continue;
 
                 try
                 {
@@ -288,6 +326,27 @@ public class ConnectionService : BackgroundService, IConnectionService
                 catch (Exception ex)
                 {
                     failures++;
+
+                    if (failures >= MaxPersistAttempts)
+                    {
+                        // Only a first stale batch sets the deadline. Resetting it for each one would
+                        // let a run of failing batches put off the retries of those already stale.
+                        if (_stale.Count == 0)
+                            nextStalePass = clock.Elapsed + StaleInterval();
+
+                        foreach (var id in ids)
+                        {
+                            if (_stale.TryAdd(id, 0))
+                                _staleOrder.Enqueue(id);
+                        }
+
+                        _staleError = ex.GetBaseException().Message;
+                        LogStaleBatch(ex, ids, failures);
+                        UpdatePersistHealth();
+                        failures = 0;
+                        backoff = PersistRetryDelay;
+                        continue;
+                    }
 
                     if (failures == 1)
                         _logger.LogError(ex, "Failed to save the state of {Count} vSphere machines. Retrying in {Delay}", ids.Count, backoff);
@@ -309,6 +368,110 @@ public class ConnectionService : BackgroundService, IConnectionService
         {
         }
     }
+
+    private TimeSpan StaleInterval() =>
+        StaleRetryInterval ?? TimeSpan.FromSeconds(Math.Max(1, _optionsMonitor.CurrentValue.ConnectionRetryIntervalSeconds));
+
+    // True once ids are queued, false once the timeout passes first, null if the channel is completed.
+    private async Task<bool?> WaitForDirtyAsync(TimeSpan? timeout, CancellationToken ct)
+    {
+        if (timeout == null)
+            return await _dirty.Reader.WaitToReadAsync(ct) ? true : null;
+
+        if (timeout <= TimeSpan.Zero)
+            return false;
+
+        using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        cts.CancelAfter(timeout.Value);
+
+        try
+        {
+            return await _dirty.Reader.WaitToReadAsync(cts.Token) ? true : null;
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return false;
+        }
+    }
+
+    // Tries each stale machine on its own, in order. The first failure goes to the back and ends the
+    // pass: during an outage that costs one failed call per pass, and a row that is always rejected
+    // holds up the rest for at most one pass.
+    private async Task PersistStaleAsync(CancellationToken ct)
+    {
+        var saved = 0;
+
+        for (var remaining = _staleOrder.Count; remaining > 0; remaining--)
+        {
+            var id = _staleOrder.Peek();
+
+            try
+            {
+                await PersistBatchAsync([id], ct);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                _staleOrder.Enqueue(_staleOrder.Dequeue());
+                var attempts = ++_stale[id];
+                _staleError = ex.GetBaseException().Message;
+                LogStaleFailure(ex, id, attempts);
+                break;
+            }
+
+            _staleOrder.Dequeue();
+            _stale.Remove(id);
+            saved++;
+        }
+
+        if (saved > 0)
+            _logger.LogInformation("Saved the state of {Saved} stale vSphere machines; {Remaining} remain stale", saved, _stale.Count);
+
+        UpdatePersistHealth();
+    }
+
+    private void UpdatePersistHealth()
+    {
+        _connectionServiceHealthCheck.PersistError = _stale.Count == 0
+            ? null
+            : $"{_stale.Count} vSphere machines could not be saved: {_staleError}";
+    }
+
+    private void LogStaleBatch(Exception ex, IReadOnlyCollection<Guid> ids, int attempts)
+    {
+        var logged = string.Join(", ", ids.Take(MaxLoggedIds));
+        if (ids.Count > MaxLoggedIds)
+            logged += $" ...and {ids.Count - MaxLoggedIds} more";
+
+        var pg = PostgresError(ex);
+
+        _logger.LogError(ex,
+            "Could not save the state of {Count} vSphere machines after {Attempts} attempts. " +
+            "Their power state and IP addresses in the database are stale; retrying them one at a time every {Interval} until each is saved. " +
+            "Postgres: {SqlState} {PgMessage} Detail: {PgDetail} Table: {PgTable} Column: {PgColumn} Constraint: {PgConstraint}. Machines: {Ids}",
+            ids.Count, attempts, StaleInterval(),
+            pg?.SqlState, pg?.MessageText, pg?.Detail, pg?.TableName, pg?.ColumnName, pg?.ConstraintName, logged);
+    }
+
+    // Saved on its own, so this names the row at fault. An error the first time, then a warning, so a row
+    // that is always rejected does not fill the log with errors every pass.
+    private void LogStaleFailure(Exception ex, Guid id, int attempts)
+    {
+        var pg = PostgresError(ex);
+
+        _logger.Log(attempts == 1 ? LogLevel.Error : LogLevel.Warning, ex,
+            "Could not save the state of vSphere machine {Id} on its own, retry {Attempt}. {StaleCount} machines are stale; retrying in {Interval}. " +
+            "Postgres: {SqlState} {PgMessage} Detail: {PgDetail} Table: {PgTable} Column: {PgColumn} Constraint: {PgConstraint}",
+            id, attempts, _stale.Count, StaleInterval(),
+            pg?.SqlState, pg?.MessageText, pg?.Detail, pg?.TableName, pg?.ColumnName, pg?.ConstraintName);
+    }
+
+    // Where Postgres rejected the data, its fields name the table, column or constraint at fault.
+    private static PostgresException PostgresError(Exception ex) =>
+        ex as PostgresException ?? ex.GetBaseException() as PostgresException;
 
     internal async Task PersistBatchAsync(IReadOnlyCollection<Guid> ids, CancellationToken ct)
     {

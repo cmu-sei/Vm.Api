@@ -9,6 +9,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using Crucible.Common.EntityEvents.Events;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Logging;
@@ -106,7 +107,7 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         await connection.Load();
 
         Assert.False(connection.Connected);
-        Assert.Null(connection.Client);
+        Assert.Throws<InvalidOperationException>(() => connection.Client);
     }
 
     /// <summary>
@@ -125,11 +126,12 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         var load = connection.Load();
         await PollLoop.Until(() => Calls(_feed, nameof(IVimClient.LoginAsync)) == 1, "the login to start");
         await connection.DisconnectAsync();
+        var changed = connection.WhenSessionChanged();
         login.SetResult(new UserSession { key = "late" });
         await load;
 
         Assert.False(connection.Connected);
-        Assert.False(connection.WhenConnected().IsCompleted);
+        Assert.False(changed.IsCompleted);
         await PollLoop.Until(() => Calls(_feed, nameof(IVimClient.LogoutAsync)) == 1, "the late session to be logged out");
     }
 
@@ -140,31 +142,41 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         var connection = Connection(_ => _feed.Client);
 
         await connection.DisconnectAsync();
+        var changed = connection.WhenSessionChanged();
         await connection.Load();
 
         Assert.True(connection.Connected);
-        Assert.True(connection.WhenConnected().IsCompleted);
+        Assert.True(changed.IsCompleted);
     }
 
     /// <summary>
-    /// The watcher waits on the signal only while there is no session, so the signal must be pending
-    /// exactly then: a completed signal with no session would have it spin without awaiting.
+    /// Every change of session completes the signal taken before it, and a fresh one is pending until
+    /// the next change. One that completed with nothing changed would have the watcher spin without
+    /// awaiting; one a change missed would leave it waiting out a whole retry interval.
     /// </summary>
     [Fact]
-    public void TheLoginSignal_IsCompleteExactlyWhileThereIsASession()
+    public void TheSessionSignal_CompletesOnEveryChangeAndOnlyThen()
     {
         var connection = Connection(_ => _feed.Client);
         var session = new VsphereSession(_feed.Client, ServiceContent());
 
-        Assert.False(connection.WhenConnected().IsCompleted);
-        _ = connection.Replace(session);
-        Assert.True(connection.WhenConnected().IsCompleted);
-        _ = connection.Replace(null);
-        Assert.False(connection.WhenConnected().IsCompleted);
-        _ = connection.Replace(new VsphereSession(_feed.Client, ServiceContent()));
-        Assert.True(connection.WhenConnected().IsCompleted);
-        _ = connection.DisconnectAsync();
-        Assert.False(connection.WhenConnected().IsCompleted);
+        void Changes(System.Action change, bool expected)
+        {
+            var changed = connection.WhenSessionChanged();
+            change();
+            Assert.Equal(expected, changed.IsCompleted);
+            Assert.False(connection.WhenSessionChanged().IsCompleted);
+        }
+
+        Changes(() => _ = connection.Replace(null), false);
+        Changes(() => _ = connection.Replace(session), true);
+        Changes(() => _ = connection.Replace(session), false);
+        Assert.Equal(0, Calls(_feed, nameof(IVimClient.LogoutAsync)));
+        Changes(() => _ = connection.Replace(new VsphereSession(_feed.Client, ServiceContent())), true);
+        Changes(() => _ = connection.Replace(null), true);
+        Changes(() => _ = connection.DisconnectAsync(), false);
+        Changes(() => _ = connection.Replace(session), true);
+        Changes(() => _ = connection.DisconnectAsync(), true);
         Assert.Null(connection.Current);
     }
 
@@ -328,8 +340,8 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
     }
 
     /// <summary>
-    /// A failed write is retried until it succeeds. The machine does not change again, so nothing else
-    /// would ever write it: giving up would leave its row wrong for good.
+    /// A failed write is retried, within MaxPersistAttempts, until it succeeds. The machine does not
+    /// change again, so until the next re-read of vSphere nothing else would write it.
     /// </summary>
     [Fact]
     public async Task RunningService_RetriesAFailedWriteUntilItSucceeds()
@@ -349,6 +361,113 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         }
 
         Assert.Equal(3, _contextsRefused);
+    }
+
+    /// <summary>
+    /// A row the database always rejects goes stale with its batch rather than blocking every machine.
+    /// The rest of the batch is saved by the one-at-a-time pass, a later machine saves as normal, and
+    /// the health check stays degraded for as long as the rejected row is unsaved.
+    /// </summary>
+    [Fact]
+    public async Task RunningService_ARowThatIsAlwaysRejected_DoesNotHoldUpTheOthers()
+    {
+        await Seed(new VmEntity { Id = A, Name = "a" }, new VmEntity { Id = B, Name = "b" }, new VmEntity { Id = C, Name = "c" });
+        await RejectUpdatesTo(A);
+        var logger = new RecordingLogger<ConnectionService>();
+        var service = StaleService(Provider(), logger);
+        var connection = Cache(service, Machine(A, "on"));
+        connection.UpsertMachine(Machine(B, "on"));
+        service.MarkDirty(A);
+        service.MarkDirty(B);
+
+        await service.StartAsync(Ct);
+        try
+        {
+            await UntilWritten(B, PowerState.On);
+            await PollLoop.Until(() => _health.PersistError?.StartsWith("1 vSphere machines could not be saved") == true,
+                "only the rejected row to be reported");
+
+            connection.UpsertMachine(Machine(C, "on"));
+            service.MarkDirty(C);
+            await UntilWritten(C, PowerState.On);
+            Assert.NotNull(_health.PersistError);
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+
+        Assert.NotEqual(PowerState.On, (await Read(A)).PowerState);
+        var rejected = logger.At(LogLevel.Error).First(x => x.Message.StartsWith($"Could not save the state of vSphere machine {A} on its own"));
+        Assert.Contains("P0001", rejected.Message);
+        Assert.Contains("Rejected for the test", rejected.Message);
+    }
+
+    /// <summary>
+    /// A run of batches that keep failing doesn't put off the retry of machines already stale. Each new
+    /// stale batch here comes far sooner than the retry interval, so a deadline each one reset would
+    /// never arrive.
+    /// </summary>
+    [Fact]
+    public async Task RunningService_NewStaleBatches_DoNotPutOffTheStaleRetry()
+    {
+        var bad = Enumerable.Range(0, 150).Select(_ => Guid.NewGuid()).ToArray();
+        await Seed([new VmEntity { Id = A, Name = "a" }, .. bad.Select(x => new VmEntity { Id = x, Name = "bad" })]);
+        await RejectUpdatesTo(bad);
+        var service = StaleService(Provider(), staleRetryMs: 200);
+        var connection = Cache(service, Machine(A, "on"));
+        foreach (var id in bad)
+            connection.UpsertMachine(Machine(id, "on"));
+
+        // A goes stale with the first bad row, then another bad row fails every 20ms.
+        service.MarkDirty(A);
+        service.MarkDirty(bad[0]);
+
+        await service.StartAsync(Ct);
+        try
+        {
+            foreach (var id in bad.Skip(1))
+            {
+                if ((await Read(A)).PowerState == PowerState.On)
+                    return;
+
+                service.MarkDirty(id);
+                await Task.Delay(20, Ct);
+            }
+
+            Assert.Fail("The stale retry never ran while new batches kept going stale.");
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    /// <summary>
+    /// An outage long enough to send a batch stale loses nothing: once the database is back the stale
+    /// pass saves it, and only then does the health check recover.
+    /// </summary>
+    [Fact]
+    public async Task RunningService_AnOutage_IsCaughtUpAfterwards()
+    {
+        await Seed(new VmEntity { Id = A, Name = "a" });
+        var service = StaleService(Provider(refuseContexts: 4));
+        Cache(service, Machine(A, "on"));
+        service.MarkDirty(A);
+
+        await service.StartAsync(Ct);
+        try
+        {
+            await PollLoop.Until(() => _health.PersistError != null, "the batch to go stale");
+            await UntilWritten(A, PowerState.On);
+            await PollLoop.Until(() => _health.PersistError == null, "the health check to recover");
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+
+        Assert.Equal(4, _contextsRefused);
     }
 
     /// <summary>
@@ -395,7 +514,7 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
 
             await PollLoop.Until(() => Calls(_feed, nameof(IVimClient.LogoutAsync)) == 1, "the disabled host to log out");
             Assert.Empty(connection.MachineStates);
-            Assert.Null(connection.Client);
+            Assert.False(connection.Connected);
             Assert.Equal(1, Calls(_feed, nameof(IVimClient.CancelWaitForUpdatesAsync)));
             Assert.Equal(1, Calls(_feed, nameof(IVimClient.DestroyPropertyCollectorAsync)));
             Assert.Same(connection, service.GetConnection(Address));
@@ -481,6 +600,17 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         Assert.Contains("machine updates", result.Description);
     }
 
+    [Fact]
+    public async Task Health_WithAPersistError_IsDegraded()
+    {
+        var health = new ConnectionServiceHealthCheck { StartupCheckComplete = true, Connections = [], PersistError = "boom" };
+
+        var result = await health.CheckHealthAsync(new HealthCheckContext(), Ct);
+
+        Assert.Equal(HealthStatus.Degraded, result.Status);
+        Assert.Contains("could not be saved: boom", result.Description);
+    }
+
     #endregion
 
     private static VsphereOptions Options(params VsphereHost[] hosts) => new()
@@ -502,6 +632,36 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         {
             PersistRetryDelay = TimeSpan.FromMilliseconds(10)
         };
+
+    // Retries quickly, and sends a batch stale after two attempts.
+    private ConnectionService StaleService(IServiceProvider provider, ILogger<ConnectionService> logger = null, int staleRetryMs = 50)
+    {
+        _options.CurrentValue.Returns(Options(Host()));
+
+        return new(_options, logger ?? NullLogger<ConnectionService>.Instance, provider, _health)
+        {
+            PersistRetryDelay = TimeSpan.FromMilliseconds(10),
+            MaxPersistAttempts = 2,
+            StaleRetryInterval = TimeSpan.FromMilliseconds(staleRetryMs)
+        };
+    }
+
+    // A trigger that fails every update of the given Vm rows, as rows Postgres always rejects would.
+    private async Task RejectUpdatesTo(params Guid[] ids)
+    {
+        var vm = Db.Model.FindEntityType(typeof(VmEntity));
+        var table = StoreObjectIdentifier.Table(vm.GetTableName(), vm.GetSchema());
+        var column = vm.FindProperty(nameof(VmEntity.Id)).GetColumnName(table);
+        var name = vm.GetSchema() == null ? $"\"{vm.GetTableName()}\"" : $"\"{vm.GetSchema()}\".\"{vm.GetTableName()}\"";
+
+        // Identifiers can't be parameters; every piece here comes from the model or the test.
+        var sql =
+            "CREATE FUNCTION reject_for_test() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN " +
+            $"IF NEW.\"{column}\" IN ({string.Join(", ", ids.Select(x => $"'{x}'"))}) THEN RAISE EXCEPTION 'Rejected for the test'; END IF; RETURN NEW; END $$; " +
+            $"CREATE TRIGGER reject_for_test BEFORE UPDATE ON {name} FOR EACH ROW EXECUTE FUNCTION reject_for_test();";
+
+        await Db.Database.ExecuteSqlRawAsync(sql, Ct);
+    }
 
     // A fresh context per scope, as production registers it. The first refuseContexts are refused, to
     // fail a write.

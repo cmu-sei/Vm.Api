@@ -18,10 +18,10 @@ namespace Player.Vm.Api.Domain.Vsphere.Models;
 public class VsphereConnection
 {
     private volatile VsphereSession _session;
-    private TaskCompletionSource _connected = NewSignal();
+    private TaskCompletionSource _sessionChanged = NewSignal();
 
-    // Guards the session and the signal together, so the signal is complete exactly while there is a
-    // session. Readers go without it: Current and WhenConnected read one field each.
+    // Guards the session and the signal together, so every change of session completes the signal
+    // taken before it. Readers go without it: Current and WhenSessionChanged read one field each.
     private readonly Lock _gate = new();
 
     // Counts DisconnectAsync calls, so a login begun before one cannot install its session after it.
@@ -50,11 +50,12 @@ public class VsphereConnection
     /// generated client so tests can substitute it. See <see cref="IVimClient"/> for why the
     /// generated VimPortType interface cannot be used here directly.
     /// </summary>
-    public IVimClient Client => _session?.Client;
+    /// <remarks>Throws while disconnected, as <see cref="Sic"/> and <see cref="Props"/> do; check <see cref="Connected"/> first.</remarks>
+    public IVimClient Client => GetRequiredSession().Client;
 
-    public ServiceContent Sic => _session?.Sic;
+    public ServiceContent Sic => GetRequiredSession().Sic;
     public UserSession Session => _session?.Session;
-    public ManagedObjectReference Props => _session?.Sic?.propertyCollector;
+    public ManagedObjectReference Props => GetRequiredSession().Sic.propertyCollector;
     public string Address
     {
         get
@@ -147,10 +148,11 @@ public class VsphereConnection
     #region Connection Handling
 
     /// <summary>
-    /// Completes when a session is next established, or at once while one is. The watcher waits on this
-    /// rather than polling while the host is disconnected.
+    /// Completes the next time <see cref="Current"/> changes: a login, a re-login or a disconnect. Take it
+    /// before reading <see cref="Current"/>, so a change in between completes the signal held. The watcher
+    /// waits on this rather than polling, both while disconnected and after a failure.
     /// </summary>
-    internal Task WhenConnected() => Volatile.Read(ref _connected).Task;
+    internal Task WhenSessionChanged() => Volatile.Read(ref _sessionChanged).Task;
 
     private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
 
@@ -273,26 +275,25 @@ public class VsphereConnection
         return installed;
     }
 
-    // Under _gate. The signal is re-armed before the session goes, so a watcher that finds no session
-    // always holds a signal the next login will complete.
+    // Under _gate. Returns the session replaced, or null when there was none or next is already current,
+    // so that callers never retire the session still in use.
+    //
+    // The order of the writes is what lets readers go without the lock. The session is published before
+    // the new signal, so a reader that sees the new signal (taking it before reading Current) also sees the
+    // new session. The old signal is completed last, so a reader still holding it is woken.
     private VsphereSession Swap(VsphereSession next)
     {
         var old = _session;
 
-        if (next != null)
+        if (ReferenceEquals(old, next))
         {
-            _session = next;
-            _connected.TrySetResult();
+            return null;
         }
-        else
-        {
-            if (_connected.Task.IsCompleted)
-            {
-                Volatile.Write(ref _connected, NewSignal());
-            }
 
-            _session = null;
-        }
+        var changed = _sessionChanged;
+        _session = next;
+        Volatile.Write(ref _sessionChanged, NewSignal());
+        changed.TrySetResult();
 
         return old;
     }

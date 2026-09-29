@@ -41,7 +41,11 @@ public sealed class VsphereMachineWatcher
     private readonly ILogger _logger;
 
     // Property values by moref, as the change feed last reported them.
-    private readonly Dictionary<string, Dictionary<string, object>> _objects = new();
+    private Dictionary<string, Dictionary<string, object>> _objects = new();
+
+    // During a snapshot, the values from before it: a property the snapshot reports it could not read
+    // keeps its previous value from here rather than being lost. Null outside a snapshot.
+    private Dictionary<string, Dictionary<string, object>> _previous;
 
     public VsphereMachineWatcher(
         VsphereConnection connection,
@@ -65,24 +69,25 @@ public sealed class VsphereMachineWatcher
     public async Task RunAsync(CancellationToken ct)
     {
         var backoff = InitialBackoff;
+        var failures = 0;
 
         while (!ct.IsCancellationRequested)
         {
-            // Taken before the session is read, so a login in between completes the signal held here.
-            var connected = _connection.WhenConnected();
+            // Taken before the session is read, so a change in between completes the signal held here.
+            var changed = _connection.WhenSessionChanged();
             var session = _connection.Current;
 
             if (session == null)
             {
                 // The signal is the fast path. The bound means a missed one costs a retry interval, not
                 // the watcher.
-                await WaitAsync(connected, MaxBackoff(), ct);
+                await WaitAsync(changed, MaxBackoff(), ct);
                 continue;
             }
 
             try
             {
-                await WatchAsync(session, () => backoff = InitialBackoff, ct);
+                await WatchAsync(session, () => { backoff = InitialBackoff; failures = 0; }, ct);
             }
             catch (OperationCanceledException) when (ct.IsCancellationRequested)
             {
@@ -105,9 +110,22 @@ public sealed class VsphereMachineWatcher
                     _requestReconnect();
                 }
 
-                _logger.LogWarning(ex, "Machine watcher for {Host} failed. Retrying in {Delay}.", _connection.Address, backoff);
-                await Delay(backoff, ct);
-                backoff = TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, MaxBackoff().Ticks));
+                failures++;
+
+                // Until the watcher recovers, this host's machines are neither cached nor saved, so the
+                // first failure is an error; the retries after it are not.
+                if (failures == 1)
+                    _logger.LogError(ex, "Machine watcher for {Host} failed. Machine state on this host will not update until it recovers. Retrying in {Delay}.", _connection.Address, backoff);
+                else
+                    _logger.LogWarning(ex, "Machine watcher for {Host} failed, attempt {Attempt}. Retrying in {Delay}.", _connection.Address, failures, backoff);
+
+                // A new session (after a vCenter restart, say) ends the wait early: it is what the
+                // retry was waiting for.
+                await WaitAsync(changed, backoff, ct);
+
+                backoff = changed.IsCompleted
+                    ? InitialBackoff
+                    : TimeSpan.FromTicks(Math.Min(backoff.Ticks * 2, MaxBackoff().Ticks));
             }
         }
     }
@@ -133,7 +151,7 @@ public sealed class VsphereMachineWatcher
             collector = await client.CreatePropertyCollectorAsync(session.Sic.propertyCollector).WaitAsync(ct);
             await client.CreateFilterAsync(collector, BuildFilterSpec(view), false).WaitAsync(ct);
 
-            _objects.Clear();
+            StartSnapshot();
             var seen = new HashSet<string>();
             var initial = true;
             var resnapshot = false;
@@ -152,7 +170,7 @@ public sealed class VsphereMachineWatcher
 
                 if (!initial && interval > TimeSpan.Zero && clock.Elapsed - snapshotAt >= interval)
                 {
-                    _objects.Clear();
+                    StartSnapshot();
                     seen = new HashSet<string>();
                     initial = true;
                     resnapshot = true;
@@ -175,6 +193,7 @@ public sealed class VsphereMachineWatcher
                 if (initial)
                 {
                     Prune(seen, resnapshot);
+                    _previous = null;
                     _connection.WatcherError = null;
                     onHealthy();
                     _logger.Log(resnapshot ? LogLevel.Debug : LogLevel.Information,
@@ -226,6 +245,26 @@ public sealed class VsphereMachineWatcher
         return null;
     }
 
+    // A snapshot rebuilds _objects from scratch, so that a property it no longer reports is cleared. What
+    // was known before goes to _previous. A snapshot cut short leaves _previous in place, updated with
+    // anything the partial one had already read, which is newer.
+    private void StartSnapshot()
+    {
+        if (_previous == null)
+        {
+            _previous = _objects;
+        }
+        else
+        {
+            foreach (var (reference, properties) in _objects)
+            {
+                _previous[reference] = properties;
+            }
+        }
+
+        _objects = new();
+    }
+
     private void Apply(UpdateSet update, HashSet<string> seen, bool resnapshot)
     {
         foreach (var filter in update.filterSet ?? [])
@@ -272,6 +311,18 @@ public sealed class VsphereMachineWatcher
         if (!_objects.TryGetValue(reference, out var properties))
         {
             _objects[reference] = properties = new Dictionary<string, object>();
+
+            // A snapshot's first report of this machine. Carry over what it could not read.
+            if (_previous != null && _previous.TryGetValue(reference, out var before))
+            {
+                foreach (var missing in update.missingSet ?? [])
+                {
+                    if (missing.path != null && before.TryGetValue(missing.path, out var value))
+                    {
+                        properties[missing.path] = value;
+                    }
+                }
+            }
         }
 
         var hadId = TryGetId(properties, out var oldId);
@@ -392,17 +443,6 @@ public sealed class VsphereMachineWatcher
         catch (Exception ex)
         {
             _logger.LogDebug(ex, "Machine watcher cleanup on {Host} failed", _connection.Address);
-        }
-    }
-
-    private static async Task Delay(TimeSpan delay, CancellationToken ct)
-    {
-        try
-        {
-            await Task.Delay(delay, ct);
-        }
-        catch (OperationCanceledException)
-        {
         }
     }
 
