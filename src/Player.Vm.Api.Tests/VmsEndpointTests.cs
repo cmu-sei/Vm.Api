@@ -554,8 +554,8 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     public async Task AllInViewReads_ForAViewPlayerApiDoesNotKnow_Are404WithATitle(string route)
     {
         var viewId = Guid.NewGuid();
-        Factory.PlayerApi.GetAllTeamIdsByViewIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns((IEnumerable<Guid>)null);
+        Factory.Views.GetTeamsForView(viewId, true, Arg.Any<CancellationToken>())
+            .Returns((List<Guid>)null);
 
         var response = await Client.GetAsync($"/api/views/{viewId}/{route}", Ct);
 
@@ -695,11 +695,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     {
         var map = Map([Guid.NewGuid()]);
         await Seed(map);
-        Factory.PlayerApi.CanManageMaps(
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<CancellationToken>())
-            .Returns(false);
+        DenyEverything();
 
         var response = await Client.DeleteAsync($"/api/views/maps/{map.Id}", Ct);
 
@@ -814,7 +810,6 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
         await Seed(Vm([teamId]), Map([teamId], viewId));
         Roster(viewId, teamId);
         DenyEverything();
-        Factory.PlayerApi.IsInViewAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(true);
 
         var response = await Client.GetAsync($"/api/views/{viewId}/{route}", Ct);
 
@@ -874,7 +869,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     }
 
     private void Roster(Guid viewId, params Guid[] teamIds) =>
-        Factory.PlayerApi.GetAllTeamIdsByViewIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(teamIds);
+        Factory.Views.GetTeamsForView(viewId, true, Arg.Any<CancellationToken>()).Returns(teamIds.ToList());
 
     private void DenyEverything()
     {
@@ -882,16 +877,9 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
             .Returns(false);
         Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(false);
-        Factory.PlayerApi.CanViewVmsAsMember(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(false);
         Factory.PlayerApi.CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(false);
         Factory.PlayerApi.CanViewMaps(
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<CancellationToken>())
-            .Returns(false);
-        Factory.PlayerApi.CanViewMapsAsMember(
                 Arg.Any<IEnumerable<Guid>>(),
                 Arg.Any<IEnumerable<Guid>>(),
                 Arg.Any<CancellationToken>())
@@ -901,11 +889,17 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
                 Arg.Any<IEnumerable<Guid>>(),
                 Arg.Any<CancellationToken>())
             .Returns(false);
-        Factory.PlayerApi.IsInViewAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            .Returns(false);
         Factory.PlayerApi
             .Can(default, default, default, default, default, Ct)
             .ReturnsForAnyArgs(false);
+        Factory.PlayerApi.GetTeamIdsWithPermissionAsync(
+                Arg.Any<Guid>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<AppSystemPermission[]>(),
+                Arg.Any<AppViewPermission[]>(),
+                Arg.Any<AppTeamPermission[]>(),
+                Arg.Any<CancellationToken>())
+            .Returns(new HashSet<Guid>());
     }
 
     /// <summary>Makes <paramref name="teamId"/> visible to the caller as its own primary team.</summary>

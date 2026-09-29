@@ -19,15 +19,19 @@ namespace Player.Vm.Api.Domain.Services
         Task<Guid?> GetViewIdForTeam(Guid teamId, CancellationToken ct);
         Task<Guid[]> GetViewIdsForTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<TeamInfo[]> GetInfoForTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
-        Task<List<Guid>> GetTeamsForView(Guid viewId, CancellationToken ct);
 
         /// <summary>
-        /// Every Team in the View, fetched with this service's own Player credentials rather than the
-        /// caller's, and never cached. <see cref="GetTeamsForView"/> holds its answer for fifteen
-        /// sliding minutes, so a caller polling it - Steamfitter runs a lookup per task - would never
-        /// see a team added to a running View. Throws <see cref="ApiException"/> 404 for an unknown View.
+        /// The ids of every Team in the View, fetched with this service's own Player credentials rather
+        /// than the caller's, so authorize the caller before handing them the answer. Null for a View
+        /// player.api does not have.
         /// </summary>
-        Task<List<Guid>> GetCurrentTeamsForView(Guid viewId, CancellationToken ct);
+        /// <param name="viewId">The View whose teams to list.</param>
+        /// <param name="bypassCache">
+        /// Skip the fifteen-minute sliding cache and ask player.api. For a caller that polls - Steamfitter
+        /// runs a lookup per task - and so would otherwise never see a team added to a running View.
+        /// </param>
+        /// <param name="ct">Cancels the player.api request.</param>
+        Task<List<Guid>> GetTeamsForView(Guid viewId, bool bypassCache, CancellationToken ct);
     }
 
     public class ViewService : IViewService
@@ -92,21 +96,22 @@ namespace Player.Vm.Api.Domain.Services
             return teamInfoList.ToArray();
         }
 
-        public async Task<List<Guid>> GetTeamsForView(Guid viewId, CancellationToken ct)
+        public async Task<List<Guid>> GetTeamsForView(Guid viewId, bool bypassCache, CancellationToken ct)
         {
-            var teamIds = new List<Guid>();
-            if (!_cache.TryGetValue(viewId, out teamIds))
+            if (!bypassCache && _cache.TryGetValue(viewId, out List<Guid> teamIds))
+                return teamIds;
+
+            try
             {
                 teamIds = (await _playerApiClient.GetViewTeamsAsync(viewId, ct)).Select(x => x.Id).ToList();
-                _cache.Set(viewId, teamIds, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromMinutes(15)));
+            }
+            catch (ApiException ex) when (ex.StatusCode == 404)
+            {
+                return null;
             }
 
+            _cache.Set(viewId, teamIds, new MemoryCacheEntryOptions().SetSlidingExpiration(TimeSpan.FromMinutes(15)));
             return teamIds;
-        }
-
-        public async Task<List<Guid>> GetCurrentTeamsForView(Guid viewId, CancellationToken ct)
-        {
-            return (await _playerApiClient.GetViewTeamsAsync(viewId, ct)).Select(x => x.Id).ToList();
         }
 
         private async Task<TeamInfo> GetInfoForTeam(Guid teamId, CancellationToken ct)

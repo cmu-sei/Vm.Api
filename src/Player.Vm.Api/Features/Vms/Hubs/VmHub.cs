@@ -16,6 +16,24 @@ using Microsoft.EntityFrameworkCore;
 
 namespace Player.Vm.Api.Features.Vms.Hubs
 {
+    /// <summary>
+    /// Two kinds of subscription, checked two different ways.
+    /// <list type="bullet">
+    /// <item>
+    /// Presence - <see cref="JoinView"/>, <see cref="JoinViewUsers"/> and <see cref="JoinUser"/> - is
+    /// gated on team visibility alone. Who is on a team, and which console each of them has open, is
+    /// team information rather than Vm information, so a caller who can see a team receives its
+    /// presence events whether or not it holds any Vm permission there.
+    /// </item>
+    /// <item>
+    /// A single Vm - <see cref="JoinVm"/> and <see cref="SetActiveVirtualMachine"/> - goes through
+    /// <see cref="IVmService.GetAsync"/>, so it takes the same Vm permission as reading that Vm over
+    /// the REST API.
+    /// </item>
+    /// </list>
+    /// So a caller who can see a team but not its Vms can follow its users without being able to join
+    /// any of their Vms.
+    /// </summary>
     public class VmHub : Hub
     {
         private readonly IPlayerService _playerService;

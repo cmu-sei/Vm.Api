@@ -22,6 +22,7 @@ using VmMapEntity = Player.Vm.Api.Domain.Models.VmMap;
 using AppSystemPermission = Player.Vm.Api.Infrastructure.Authorization.AppSystemPermission;
 using AppViewPermission = Player.Vm.Api.Infrastructure.Authorization.AppViewPermission;
 using AppTeamPermission = Player.Vm.Api.Infrastructure.Authorization.AppTeamPermission;
+using AppPermissions = Player.Vm.Api.Infrastructure.Authorization.AppPermissions;
 
 namespace Player.Vm.Api.Tests;
 
@@ -45,9 +46,10 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     private static readonly Guid OtherUser = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
     private readonly IPlayerService _player = Substitute.For<IPlayerService>();
+    private readonly IViewService _views = Substitute.For<IViewService>();
     private readonly INetworkService _networks = Substitute.For<INetworkService>();
 
-    private VmService Service => new(Db, _player, Principal(Caller), TestMapper.Value, _networks);
+    private VmService Service => new(Db, _player, _views, Principal(Caller), TestMapper.Value, _networks);
 
     #region CanAccessVm
 
@@ -60,7 +62,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
             () => Service.CanAccessVm(null, Ct));
     }
 
-    // Seeing a team is no longer enough: reaching its Vms takes one of the Vm permissions.
+    // Seeing a team is not enough: reaching its Vms takes one of the Vm permissions.
     [Fact]
     public async Task CanAccessVm_WithoutVmAccessToItsTeams_IsForbidden()
     {
@@ -428,11 +430,10 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     }
 
     /// <summary>
-    /// A View-level Vm grant covers every team in the View at once, so the per-team checks are skipped
-    /// entirely - otherwise a large View would repeat the same lookup once per team.
+    /// The visible teams' Vm access is asked for in one call, not one permission check per team.
     /// </summary>
     [Fact]
-    public async Task GetByViewId_WithAViewLevelVmGrant_SkipsThePerTeamChecks()
+    public async Task GetByViewId_AsksForTheVisibleTeamsVmAccessInOneCall()
     {
         var viewId = Guid.NewGuid();
         var firstTeam = Guid.NewGuid();
@@ -443,19 +444,18 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Seed(first, second);
 
         View(viewId, VisibilityFor(false, [firstTeam, secondTeam]), teams: [Team(firstTeam), Team(secondTeam)]);
-        CanViewVms(false);
-        _player.CanViewVmsAsMember(
-            Arg.Is<IEnumerable<Guid>>(ids => !ids.Any()),
-            Arg.Is<IEnumerable<Guid>>(ids => ids != null && ids.Contains(viewId)),
-            Arg.Any<CancellationToken>()).Returns(true);
+        CanViewVms(true);
 
         var vms = await Service.GetByViewIdAsync(viewId, null, false, false, Ct);
 
         Assert.Equal(new HashSet<Guid> { first.Id, second.Id }, vms.Select(x => x.Id).ToHashSet());
-        await _player.DidNotReceive().CanViewVmsAsMember(
-            Arg.Is<IEnumerable<Guid>>(ids => ids.Any()),
-            Arg.Any<IEnumerable<Guid>>(),
+        await _player.Received(1).GetTeamIdsWithPermissionAsync(
+            viewId,
+            Arg.Is<IEnumerable<Guid>>(ids => ids.ToHashSet().SetEquals(new[] { firstTeam, secondTeam })),
+            AppPermissions.VmReadSystem, AppPermissions.VmReadView, AppPermissions.VmReadTeam,
             Arg.Any<CancellationToken>());
+        await _player.DidNotReceive().CanViewVms(
+            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>());
     }
 
     [Fact]
@@ -474,23 +474,6 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var vms = await Service.GetByViewIdAsync(viewId, null, false, false, Ct);
 
         Assert.Equal<Guid>([visibleTeam], vms.Single().TeamIds.ToArray());
-    }
-
-    /// <summary>
-    /// The caller's own listing of the View is what they reach as a member of it. A system-level Vm
-    /// permission is not a way in here - GetAllByViewIdAsync is - so an administrator on one team sees
-    /// that team's Vms like anyone else on it, not the whole View's.
-    /// </summary>
-    [Fact]
-    public async Task GetByViewId_IgnoresASystemLevelVmPermission()
-    {
-        var viewId = Guid.NewGuid();
-        var teamId = Guid.NewGuid();
-        await Seed(Vm(teamIds: [teamId], name: "shared"));
-        View(viewId, VisibilityFor(teamId), teamId);
-        CanViewVmsOnlyBySystemPermission();
-
-        Assert.Empty(await Service.GetByViewIdAsync(viewId, null, false, false, Ct));
     }
 
     #endregion
@@ -533,8 +516,8 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task GetAllByViewId_ForAnUnknownView_IsNull()
     {
         var viewId = Guid.NewGuid();
-        _player.GetAllTeamIdsByViewIdAsync(viewId, Arg.Any<CancellationToken>()).Returns((IEnumerable<Guid>)null);
-        CanViewVmsOnlyBySystemPermission();
+        _views.GetTeamsForView(viewId, true, Arg.Any<CancellationToken>()).Returns((List<Guid>)null);
+        CanViewVms(true);
 
         Assert.Null(await Service.GetAllByViewIdAsync(viewId, Ct));
     }
@@ -556,7 +539,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Seed(first, personal, elsewhere);
 
         Roster(viewId, firstTeam, secondTeam);
-        CanViewVmsOnlyBySystemPermission();
+        CanViewVms(true);
 
         var vms = await Service.GetAllByViewIdAsync(viewId, Ct);
 
@@ -574,7 +557,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Seed(vm);
 
         Roster(viewId, inView);
-        CanViewVmsOnlyBySystemPermission();
+        CanViewVms(true);
 
         var vms = await Service.GetAllByViewIdAsync(viewId, Ct);
 
@@ -595,8 +578,8 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task GetAllViewMaps_ForAnUnknownView_IsNull()
     {
         var viewId = Guid.NewGuid();
-        _player.GetAllTeamIdsByViewIdAsync(viewId, Arg.Any<CancellationToken>()).Returns((IEnumerable<Guid>)null);
-        CanViewMapsOnlyBySystemPermission();
+        _views.GetTeamsForView(viewId, true, Arg.Any<CancellationToken>()).Returns((List<Guid>)null);
+        CanViewMaps(true);
 
         Assert.Null(await Service.GetAllViewMapsAsync(viewId, Ct));
     }
@@ -612,12 +595,31 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Seed(teamless, teamScoped, Map(teamIds: [], viewId: Guid.NewGuid()));
 
         Roster(viewId, teamId);
-        CanViewMapsOnlyBySystemPermission();
-        IsInView(false);
+        CanViewMaps(true);
+        CanManageMaps(true);
 
         var maps = await Service.GetAllViewMapsAsync(viewId, Ct);
 
         Assert.Equal(new HashSet<Guid> { teamless.Id, teamScoped.Id }, maps.Select(x => x.Id).ToHashSet());
+    }
+
+    // A teamless Map takes Map management in the View to read, here as everywhere else.
+    [Fact]
+    public async Task GetAllViewMaps_WithoutMapManagement_LeavesOutTheTeamlessMaps()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+
+        var teamScoped = Map(teamIds: [teamId], viewId: viewId);
+        await Seed(Map(teamIds: [], viewId: viewId), teamScoped);
+
+        Roster(viewId, teamId);
+        CanViewMaps(true);
+        CanManageMaps(false);
+
+        var maps = await Service.GetAllViewMapsAsync(viewId, Ct);
+
+        Assert.Equal<Guid>([teamScoped.Id], maps.Select(x => x.Id).ToArray());
     }
 
     #endregion
@@ -655,66 +657,42 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
     #region Maps
 
-    /// <summary>
-    /// A Map assigned to teams takes a Map permission, and belonging to the View is not a substitute -
-    /// the membership fallback below is for teamless Maps only, so it is stubbed true here to prove it
-    /// does not reach this one.
-    /// </summary>
     [Fact]
     public async Task GetMap_WithoutMapAccessToItsTeams_IsForbidden()
     {
         var map = Map(teamIds: [Guid.NewGuid()]);
         await Seed(map);
         CanViewMaps(false);
-        IsInView(true);
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetMapAsync(map.Id, Ct));
     }
 
     /// <summary>
-    /// A Map assigned to no team belongs to the View as a whole, so everyone in the View may read it
-    /// without holding any Map permission. That is a deliberate exception, not the old hole: the old
-    /// behaviour skipped the check for anyone authenticated, including callers with no claim on the View
-    /// at all, which the next test pins as refused.
+    /// A Map assigned to no team is readable only by those who can manage the View's Maps. Permission to
+    /// view Maps is not enough, since a teamless Map is not scoped to any team the caller is on.
     /// </summary>
     [Fact]
-    public async Task GetMap_WithNoTeams_IsReadableByAnyoneInTheView()
-    {
-        var map = Map(teamIds: []);
-        await Seed(map);
-        CanViewMaps(false);
-        IsInView(true);
-
-        Assert.NotNull(await Service.GetMapAsync(map.Id, Ct));
-
-        await _player.Received().IsInViewAsync(map.ViewId, Arg.Any<CancellationToken>());
-    }
-
-    [Fact]
-    public async Task GetMap_WithNoTeams_IsForbiddenForACallerOutsideTheView()
-    {
-        var map = Map(teamIds: []);
-        await Seed(map);
-        CanViewMaps(false);
-        IsInView(false);
-
-        await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetMapAsync(map.Id, Ct));
-    }
-
-    // The other way in: a Map permission held at the View or system level reaches a teamless Map even
-    // without membership of the View, which is how an administrative UI lists it.
-    [Fact]
-    public async Task GetMap_WithNoTeams_IsAllowedByAViewLevelMapPermission()
+    public async Task GetMap_WithNoTeams_IsForbiddenWithoutMapManagement()
     {
         var map = Map(teamIds: []);
         await Seed(map);
         CanViewMaps(true);
-        IsInView(false);
+        CanManageMaps(false);
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetMapAsync(map.Id, Ct));
+    }
+
+    [Fact]
+    public async Task GetMap_WithNoTeams_IsAllowedByViewLevelMapManagement()
+    {
+        var map = Map(teamIds: []);
+        await Seed(map);
+        CanManageMaps(true);
 
         Assert.NotNull(await Service.GetMapAsync(map.Id, Ct));
 
-        await _player.Received().CanViewMaps(
-            Arg.Any<IEnumerable<Guid>>(),
+        await _player.Received().CanManageMaps(
+            Arg.Is<IEnumerable<Guid>>(ids => !ids.Any()),
             Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(map.ViewId)),
             Arg.Any<CancellationToken>());
     }
@@ -737,8 +715,31 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.DeleteMapAsync(map.Id, Ct));
     }
 
-    // The counterpart of the teamless-read case: a Map belonging to the View as a whole takes a
-    // View-level grant to delete, where before it took nothing at all.
+    // Deleting a shared Map takes it from every team it is on, so it takes management of all of them,
+    // the same as moving it off them with an update.
+    [Fact]
+    public async Task DeleteMap_ManagingOnlySomeOfItsTeams_IsForbidden()
+    {
+        var (managed, unmanaged) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map(teamIds: [managed, unmanaged]);
+        await Seed(map);
+        CanManageMapsOnly(managed);
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.DeleteMapAsync(map.Id, Ct));
+    }
+
+    [Fact]
+    public async Task DeleteMap_ManagingEveryOneOfItsTeams_DeletesIt()
+    {
+        var (first, second) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map(teamIds: [first, second]);
+        await Seed(map);
+        CanManageMapsOnly(first, second);
+
+        Assert.True(await Service.DeleteMapAsync(map.Id, Ct));
+    }
+
+    // A Map belonging to the View as a whole takes a View-level grant to delete.
     [Fact]
     public async Task DeleteMap_WithNoTeams_IsForbiddenWithoutAViewLevelMapPermission()
     {
@@ -776,7 +777,6 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
         View(viewId, VisibilityFor(false, [allowedTeam, deniedTeam]), teams: [Team(allowedTeam), Team(deniedTeam)]);
         CanViewMapsOnly(allowedTeam);
-        IsInView(true);
 
         var maps = await Service.GetViewMapsAsync(viewId, Ct);
 
@@ -784,12 +784,13 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     }
 
     /// <summary>
-    /// The listing counterpart of <see cref="GetMap_WithNoTeams_IsReadableByAnyoneInTheView"/>. A View
-    /// member with no Map permission at all still sees the View's teamless Maps, and still does not see
-    /// the ones scoped to a team.
+    /// The listing counterpart of <see cref="GetMap_WithNoTeams_IsForbiddenWithoutMapManagement"/>: the
+    /// View's teamless Maps are listed for a caller who can manage the View's Maps, and for no one else.
     /// </summary>
-    [Fact]
-    public async Task GetViewMaps_IncludesTheTeamlessMapsForAnyViewMember()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task GetViewMaps_IncludesTheTeamlessMapsOnlyForAMapManager(bool canManage)
     {
         var viewId = Guid.NewGuid();
         var teamId = Guid.NewGuid();
@@ -799,48 +800,43 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Seed(teamless, teamScoped);
 
         View(viewId, VisibilityFor(teamId), teams: [Team(teamId)]);
-        CanViewMaps(false);
-        IsInView(true);
+        CanViewMaps(true);
+        CanManageMaps(canManage);
 
         var maps = await Service.GetViewMapsAsync(viewId, Ct);
 
-        Assert.Equal<Guid>([teamless.Id], maps.Select(x => x.Id).ToArray());
+        var expected = canManage ? new HashSet<Guid> { teamless.Id, teamScoped.Id } : [teamScoped.Id];
+        Assert.Equal(expected, maps.Select(x => x.Id).ToHashSet());
     }
 
     /// <summary>
-    /// Every Map in the listing is in the same View, so a View-level Map grant answers for all of them
-    /// and neither the membership check nor any per-Map check is needed.
+    /// Every Map's teams are asked about in one call, not one permission check per Map.
     /// </summary>
     [Fact]
-    public async Task GetViewMaps_WithAViewLevelMapGrant_SkipsThePerMapChecks()
+    public async Task GetViewMaps_AsksForEveryMapsTeamsInOneCall()
     {
         var viewId = Guid.NewGuid();
-        var teamId = Guid.NewGuid();
+        var firstTeam = Guid.NewGuid();
+        var secondTeam = Guid.NewGuid();
 
-        var teamless = Map(teamIds: [], viewId: viewId);
-        var teamScoped = Map(teamIds: [teamId], viewId: viewId);
-        await Seed(teamless, teamScoped);
+        await Seed(Map(teamIds: [firstTeam], viewId: viewId), Map(teamIds: [secondTeam], viewId: viewId));
 
-        View(viewId, VisibilityFor(teamId), teams: [Team(teamId)]);
-        CanViewMaps(false);
-        _player.CanViewMapsAsMember(
-            Arg.Is<IEnumerable<Guid>>(ids => !ids.Any()),
-            Arg.Is<IEnumerable<Guid>>(ids => ids != null && ids.Contains(viewId)),
-            Arg.Any<CancellationToken>()).Returns(true);
+        View(viewId, VisibilityFor(firstTeam), teams: [Team(firstTeam), Team(secondTeam)]);
+        CanViewMaps(true);
 
-        var maps = await Service.GetViewMapsAsync(viewId, Ct);
-
-        Assert.Equal(new HashSet<Guid> { teamless.Id, teamScoped.Id }, maps.Select(x => x.Id).ToHashSet());
-        await _player.DidNotReceive().IsInViewAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
-        await _player.DidNotReceive().CanViewMapsAsMember(
-            Arg.Is<IEnumerable<Guid>>(ids => ids.Any()),
-            Arg.Any<IEnumerable<Guid>>(),
+        Assert.Equal(2, (await Service.GetViewMapsAsync(viewId, Ct)).Length);
+        await _player.Received(1).GetTeamIdsWithPermissionAsync(
+            viewId,
+            Arg.Is<IEnumerable<Guid>>(ids => ids.ToHashSet().SetEquals(new[] { firstTeam, secondTeam })),
+            AppPermissions.MapReadSystem, AppPermissions.MapReadView, AppPermissions.MapReadTeam,
             Arg.Any<CancellationToken>());
+        await _player.DidNotReceive().CanViewMaps(
+            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>());
     }
 
-    // Membership is a property of the View, not of any one Map, so it is asked once for the listing.
+    // Map management is a property of the View, not of any one teamless Map, so it is asked once.
     [Fact]
-    public async Task GetViewMaps_AsksForViewMembershipOnce()
+    public async Task GetViewMaps_AsksForMapManagementOncePerView()
     {
         var viewId = Guid.NewGuid();
         var teamId = Guid.NewGuid();
@@ -848,31 +844,11 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Seed(Map(teamIds: [], viewId: viewId), Map(teamIds: [], viewId: viewId), Map(teamIds: [], viewId: viewId));
 
         View(viewId, VisibilityFor(teamId), teams: [Team(teamId)]);
-        CanViewMaps(false);
-        IsInView(true);
+        CanManageMaps(true);
 
         Assert.Equal(3, (await Service.GetViewMapsAsync(viewId, Ct)).Length);
-        await _player.Received(1).IsInViewAsync(viewId, Arg.Any<CancellationToken>());
-    }
-
-    // As with GetByViewId, a system-level Map permission does not widen the caller's own listing:
-    // a member still sees the teamless Maps and nothing scoped to a team.
-    [Fact]
-    public async Task GetViewMaps_IgnoresASystemLevelMapPermission()
-    {
-        var viewId = Guid.NewGuid();
-        var teamId = Guid.NewGuid();
-
-        var teamless = Map(teamIds: [], viewId: viewId);
-        await Seed(teamless, Map(teamIds: [teamId], viewId: viewId));
-
-        View(viewId, VisibilityFor(teamId), teams: [Team(teamId)]);
-        CanViewMapsOnlyBySystemPermission();
-        IsInView(true);
-
-        var maps = await Service.GetViewMapsAsync(viewId, Ct);
-
-        Assert.Equal<Guid>([teamless.Id], maps.Select(x => x.Id).ToArray());
+        await _player.Received(1).CanManageMaps(
+            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>());
     }
 
     // A map can only be assigned to teams the caller manages, and the view must exist. Both failures are
@@ -919,9 +895,8 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     }
 
     /// <summary>
-    /// Creating a Map with no teams used to be the one write validateViewAndTeams waved through with no
-    /// permission check at all - and the resulting Map was then readable View-wide. It now takes the
-    /// View-level Map permission, asked for with the View id and no teams.
+    /// A Map with no teams belongs to the View as a whole, so creating one takes the View-level Map
+    /// permission, asked for with the View id and no teams.
     /// </summary>
     [Fact]
     public async Task CreateMap_WithNoTeams_IsForbiddenWithoutAViewLevelMapPermission()
@@ -949,6 +924,55 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
             Arg.Is<IEnumerable<Guid>>(ids => !ids.Any()),
             Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(viewId)),
             Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// Managing the teams a Map is moving to is not enough: the caller must also manage the teams it is
+    /// moving off, or someone who manages team B's Maps could take team A's.
+    /// </summary>
+    [Fact]
+    public async Task UpdateMap_MovingAMapOffATeamTheCallerCannotManage_IsForbidden()
+    {
+        var viewId = Guid.NewGuid();
+        var (fromTeam, toTeam) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map(teamIds: [fromTeam], viewId: viewId);
+        await Seed(map);
+        ViewWithTeams(viewId, fromTeam, toTeam);
+        CanManageMapsOnly(toTeam);
+
+        await Assert.ThrowsAsync<ForbiddenException>(
+            () => Service.UpdateMapAsync(UpdateForm(toTeam), map.Id, Ct));
+    }
+
+    // A Map with no teams stands for the View as a whole, so moving it onto a team takes the View-level
+    // grant, whatever the caller holds on the team.
+    [Fact]
+    public async Task UpdateMap_ForATeamlessMap_IsForbiddenWithoutViewLevelMapManagement()
+    {
+        var viewId = Guid.NewGuid();
+        var toTeam = Guid.NewGuid();
+        var map = Map(teamIds: [], viewId: viewId);
+        await Seed(map);
+        ViewWithTeams(viewId, toTeam);
+        CanManageMapsOnly(toTeam);
+
+        await Assert.ThrowsAsync<ForbiddenException>(
+            () => Service.UpdateMapAsync(UpdateForm(toTeam), map.Id, Ct));
+    }
+
+    [Fact]
+    public async Task UpdateMap_ManagingTheOldAndNewTeams_MovesTheMap()
+    {
+        var viewId = Guid.NewGuid();
+        var (fromTeam, toTeam) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map(teamIds: [fromTeam], viewId: viewId);
+        await Seed(map);
+        ViewWithTeams(viewId, fromTeam, toTeam);
+        CanManageMapsOnly(fromTeam, toTeam);
+
+        var updated = await Service.UpdateMapAsync(UpdateForm(toTeam), map.Id, Ct);
+
+        Assert.Equal<Guid>([toTeam], updated.TeamIds);
     }
 
     #endregion
@@ -1065,17 +1089,14 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         new(new ClaimsIdentity([new Claim("sub", userId.ToString())], "test"));
 
     /// <summary>
-    /// A grant the caller holds as a member - team- or View-level - which satisfies both the full check
-    /// and the membership-only one.
+    /// A Vm permission on every team or on none - in the single checks and in the batched one alike.
     /// </summary>
     private void CanViewVms(bool allowed)
     {
         _player.CanViewVms(
             Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
             Arg.Any<CancellationToken>()).Returns(allowed);
-        _player.CanViewVmsAsMember(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<CancellationToken>()).Returns(allowed);
+        TeamsWith(AppPermissions.VmReadTeam, _ => allowed);
     }
 
     private void CanViewMaps(bool allowed)
@@ -1083,44 +1104,54 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         _player.CanViewMaps(
             Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
             Arg.Any<CancellationToken>()).Returns(allowed);
-        _player.CanViewMapsAsMember(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<CancellationToken>()).Returns(allowed);
+        TeamsWith(AppPermissions.MapReadTeam, _ => allowed);
     }
 
     /// <summary>
-    /// A system-level Vm permission and nothing else: the full check passes everywhere, the
-    /// membership-only one nowhere. An administrator who is on none of the View's teams.
+    /// Answers <see cref="IPlayerService.GetTeamIdsWithPermissionAsync"/> for the permission set whose
+    /// team-level half is <paramref name="teamPermissions"/>, keeping the candidates <paramref name="allowed"/>
+    /// accepts. The Vm read, Map read and Map manage sets each have a different team-level half.
     /// </summary>
-    private void CanViewVmsOnlyBySystemPermission()
-    {
-        CanViewVms(false);
-        _player.CanViewVms(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<CancellationToken>()).Returns(true);
-    }
-
-    /// <summary>The Map counterpart of <see cref="CanViewVmsOnlyBySystemPermission"/>.</summary>
-    private void CanViewMapsOnlyBySystemPermission()
-    {
-        CanViewMaps(false);
-        _player.CanViewMaps(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<CancellationToken>()).Returns(true);
-    }
+    private void TeamsWith(AppTeamPermission[] teamPermissions, Func<Guid, bool> allowed) =>
+        _player.GetTeamIdsWithPermissionAsync(
+                Arg.Any<Guid>(), Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<AppSystemPermission[]>(),
+                Arg.Any<AppViewPermission[]>(),
+                Arg.Is<AppTeamPermission[]>(p => p.SequenceEqual(teamPermissions)),
+                Arg.Any<CancellationToken>())
+            .Returns(ci => (IReadOnlySet<Guid>)ci.ArgAt<IEnumerable<Guid>>(1).Where(allowed).ToHashSet());
 
     /// <summary>What GetAllByViewIdAsync and GetAllViewMapsAsync read the View's teams from.</summary>
     private void Roster(Guid viewId, params Guid[] teamIds) =>
-        _player.GetAllTeamIdsByViewIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(teamIds);
+        _views.GetTeamsForView(viewId, true, Arg.Any<CancellationToken>()).Returns(teamIds.ToList());
 
-    private void CanManageMaps(bool allowed) =>
+    private void CanManageMaps(bool allowed)
+    {
         _player.CanManageMaps(
             Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
             Arg.Any<CancellationToken>()).Returns(allowed);
+        TeamsWith([AppTeamPermission.ManageTeamMaps], _ => allowed);
+    }
 
-    /// <summary>Whether the caller belongs to the View - membership, not a permission.</summary>
-    private void IsInView(bool inView) =>
-        _player.IsInViewAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>()).Returns(inView);
+    /// <summary>
+    /// Map management on exactly these teams and nothing View-wide, so a teamless Map is not manageable.
+    /// </summary>
+    private void CanManageMapsOnly(params Guid[] teamIds)
+    {
+        CanManageMaps(false);
+        TeamsWith([AppTeamPermission.ManageTeamMaps], teamIds.Contains);
+    }
+
+    /// <summary>What validateViewAndTeams checks before any permission: the View and its teams exist.</summary>
+    private void ViewWithTeams(Guid viewId, params Guid[] teamIds)
+    {
+        _player.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(new Player.Api.Client.View());
+        foreach (var teamId in teamIds)
+            _player.GetTeamById(teamId).Returns(new Player.Api.Client.Team { Id = teamId, ViewId = viewId });
+    }
+
+    private static VmMapUpdateForm UpdateForm(params Guid[] teamIds) =>
+        new() { Name = "map", Coordinates = [], TeamIds = [.. teamIds] };
 
     /// <summary>
     /// Grants Vm access to exactly these teams and refuses it for every other, which is what a
@@ -1136,11 +1167,9 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
                 Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)),
                 Arg.Any<IEnumerable<Guid>>(),
                 Arg.Any<CancellationToken>()).Returns(true);
-            _player.CanViewVmsAsMember(
-                Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<CancellationToken>()).Returns(true);
         }
+
+        TeamsWith(AppPermissions.VmReadTeam, teamIds.Contains);
     }
 
     /// <summary>The Map counterpart of <see cref="CanViewVmsOnly"/>.</summary>
@@ -1154,11 +1183,9 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
                 Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)),
                 Arg.Any<IEnumerable<Guid>>(),
                 Arg.Any<CancellationToken>()).Returns(true);
-            _player.CanViewMapsAsMember(
-                Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<CancellationToken>()).Returns(true);
         }
+
+        TeamsWith(AppPermissions.MapReadTeam, teamIds.Contains);
     }
 
     private void CanManageTeams(bool allowed) =>
