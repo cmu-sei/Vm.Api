@@ -15,7 +15,7 @@ using Player.Vm.Api.Domain.Vsphere.Services;
 namespace Player.Vm.Api.Features.Files.Providers
 {
     // vSphere ISO storage. Two write modes, chosen with VsphereOptions.IsoUploadViaApi:
-    //  - true: stream to every connected vCenter's datastore over its HTTP file API, landing at
+    //  - true: stream once per ISO storage group through a connected vCenter's HTTP file API, landing at
     //    "[{DsName}] {BaseFolder}/{viewId}/{scopeId}/{filename}" on each host's own datastore. Used by
     //    VMware Cloud on AWS SDDCs, which have no NFS datastore.
     //  - false (the default): write into {IsoRoot}/{viewId}/{scopeId} on a share the hosts mount, which
@@ -85,15 +85,19 @@ namespace Player.Vm.Api.Features.Files.Providers
         }
 
         // Stream the staged ISO to the datastore for each target scope in parallel. Each scope's
-        // UploadIso internally fans out across all enabled+connected hosts and returns per-host counts.
+        // UploadIso fans out across configured storage groups and returns per-destination counts.
         private async Task<IsoOperationOutcome> UploadToDatastore(IsoUploadRequest request, CancellationToken ct)
         {
             // RequiresStagedFile is true in this mode, so IsoService always hands us a file.
             if (request.StagedFilePath == null)
                 throw new InvalidOperationException("The vSphere datastore upload path requires a staged file.");
 
+            // Every folder must exist before any PUT starts; see VsphereService.PrepareIsoFolders.
+            var viewId = request.ViewId.ToString();
+            await _vsphereService.PrepareIsoFolders(viewId, request.ScopeIds, ct);
+
             var outcomes = await Task.WhenAll(request.ScopeIds.Select(scopeId =>
-                _vsphereService.UploadIso(request.ViewId.ToString(), scopeId, request.FileName, request.StagedFilePath)));
+                _vsphereService.UploadIso(viewId, scopeId, request.FileName, request.StagedFilePath, ct)));
 
             return new IsoOperationOutcome
             {
@@ -142,7 +146,7 @@ namespace Player.Vm.Api.Features.Files.Providers
         {
             if (IsoUploadViaApi)
             {
-                return await _vsphereService.DeleteIso(viewId.ToString(), scopeId, filename);
+                return await _vsphereService.DeleteIso(viewId.ToString(), scopeId, filename, ct);
             }
 
             // Share path: best-effort delete; a missing file is treated as success (idempotent).
