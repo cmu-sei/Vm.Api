@@ -3,8 +3,8 @@
 
 namespace Player.Vm.Api.Features.Files.Models
 {
-    // Result of a datastore ISO operation (upload or delete) across all targeted hosts. Carries only
-    // counts - the per-host failure detail (host addresses/reasons) is logged server-side and
+    // Result of a datastore ISO operation (upload or delete) across all targeted destinations. Carries only
+    // counts (one per vSphere storage group per scope) - attempt details are logged server-side and
     // deliberately not surfaced to callers so it cannot leak to app users.
     public class IsoOperationOutcome
     {

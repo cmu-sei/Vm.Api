@@ -15,8 +15,8 @@ namespace Player.Vm.Api.Features.Files.Providers
     // providers enabled at once (a View routinely holds both vSphere and Proxmox VMs), so IsoService
     // fans upload/delete/list out across every enabled provider rather than picking one.
     //
-    // Per-provider *host* fan-out stays inside the implementation: VsphereIsoProvider writes to all
-    // connected vCenters itself, which is why the outcome counts it returns are per-host.
+    // Per-provider destination fan-out stays inside the implementation: vSphere writes once per
+    // configured ISO storage group, with fallback between its connected members.
     //
     // Nothing here exposes WHICH deployment a provider talks to. A provider host or cluster address is
     // privileged deployment detail; it belongs in that provider's own server-side logs, never in a
