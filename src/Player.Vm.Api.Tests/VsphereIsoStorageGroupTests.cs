@@ -78,16 +78,12 @@ public class VsphereIsoStorageGroupTests
                             propSet = [new DynamicProperty { name = "name", val = host.DsName }]
                         }
                     ]));
-                var connection = new VsphereConnection(host, Options, NullLogger.Instance)
+                var connection = new VsphereConnection(host, Options, NullLogger.Instance);
+                _ = connection.Replace(new VsphereSession(client, new ServiceContent
                 {
-                    Client = client,
-                    Connected = true,
-                    Sic = new ServiceContent
-                    {
-                        rootFolder = new ManagedObjectReference { type = "Folder", Value = "root" },
-                        fileManager = new ManagedObjectReference { type = "FileManager", Value = "files" }
-                    }
-                };
+                    rootFolder = new ManagedObjectReference { type = "Folder", Value = "root" },
+                    fileManager = new ManagedObjectReference { type = "FileManager", Value = "files" }
+                }));
                 Members[host.Address] = connection;
                 Connections.GetConnection(host.Address).Returns(connection);
             }
@@ -109,7 +105,7 @@ public class VsphereIsoStorageGroupTests
         }
 
         public void Disconnect(string address) =>
-            Members[address].Connected = false;
+            _ = Members[address].Replace(null);
 
         public Task<IsoOperationOutcome> Write(bool upload = true, CancellationToken ct = default) =>
             upload

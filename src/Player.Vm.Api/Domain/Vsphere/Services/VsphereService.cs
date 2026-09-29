@@ -56,7 +56,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         Task<Dictionary<Guid, string>> BulkShutdown(Guid[] ids);
         Task<Dictionary<Guid, string>> BulkReboot(Guid[] ids);
         Task<Dictionary<Guid, PowerState>> GetPowerState(IEnumerable<Guid> machineIds);
-        Task<IEnumerable<Event>> GetEvents(EventFilterSpec filterSpec, VsphereConnection connection);
         Task RevertToCurrentSnapshot(Guid vmId);
         Task<List<VmSnapshot>> GetSnapshots(Guid vmId);
         Task RevertToSnapshot(Guid vmId, string snapshotMoRefValue);
@@ -184,7 +183,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             try
             {
-                var vmReference = await connection.Client.FindByUuidAsync(connection.Sic.searchIndex, null, id.ToString(), true, false);
+                var session = connection.GetRequiredSession();
+                var vmReference = await session.Client.FindByUuidAsync(session.Sic.searchIndex, null, id.ToString(), true, false);
 
                 if (vmReference != null)
                 {
@@ -645,8 +645,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             // instead, failing a whole multi-select on one unreachable host, so the fault stops here.
             try
             {
-                RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
-                    aggregate.Connection.Props,
+                RetrievePropertiesResponse response = await aggregate.Connection.RetrievePropertiesAsync(
                     VmFilter(vmReference, "summary.runtime.powerState"));
 
                 return GetPowerState(response);
@@ -686,8 +685,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 var connection = connections.Where(x => x.Address == kvp.Key).FirstOrDefault();
 
                 // retrieve the properties specified
-                RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(
-                    connection.Props,
+                RetrievePropertiesResponse response = await connection.RetrievePropertiesAsync(
                     VmFilter(kvp.Value, "summary.runtime.powerState config.uuid"));
 
                 powerStates.Add(GetPowerStateMultiple(response));
@@ -765,8 +763,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
 
             //retrieve the properties specificied
-            RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
-                aggregate.Connection.Props,
+            RetrievePropertiesResponse response = await aggregate.Connection.RetrievePropertiesAsync(
                 VmFilter(vmReference));
 
             return GetVmToolsStatus(response);
@@ -791,8 +788,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
 
             //retrieve the properties specificied
-            RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
-                aggregate.Connection.Props,
+            RetrievePropertiesResponse response = await aggregate.Connection.RetrievePropertiesAsync(
                 VmFilter(vmReference));
 
             VimClient.ObjectContent[] oc = response.returnval;
@@ -829,7 +825,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     var fileTransferUrl = aggregate.Connection.Client.InitiateFileTransferToGuestAsync(fileManager, vmReference, credentialsAuth, filepath, fileAttributes, fileStream.Length, true).Result;
 
                     // Replace IP address with hostname
-                    RetrievePropertiesResponse hostResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(aggregate.Connection.Props, HostFilter(vmSummary.runtime.host, "name"));
+                    RetrievePropertiesResponse hostResponse = await aggregate.Connection.RetrievePropertiesAsync(HostFilter(vmSummary.runtime.host, "name"));
                     string hostName = hostResponse.returnval[0].propSet[0].val as string;
 
                     if (!fileTransferUrl.Contains(hostName))
@@ -867,8 +863,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             }
 
             //retrieve the properties specificied
-            RetrievePropertiesResponse response = await aggregate.Connection.Client.RetrievePropertiesAsync(
-                aggregate.Connection.Props,
+            RetrievePropertiesResponse response = await aggregate.Connection.RetrievePropertiesAsync(
                 VmFilter(vmReference));
 
             VimClient.ObjectContent[] oc = response.returnval;
@@ -905,7 +900,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                     var fileTransferUrl = fileTransferInfo.url;
 
                     // Replace IP address with hostname
-                    RetrievePropertiesResponse hostResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(aggregate.Connection.Props, HostFilter(vmSummary.runtime.host, "name"));
+                    RetrievePropertiesResponse hostResponse = await aggregate.Connection.RetrievePropertiesAsync(HostFilter(vmSummary.runtime.host, "name"));
                     string hostName = hostResponse.returnval[0].propSet[0].val as string;
 
                     if (!fileTransferUrl.Contains(hostName))
@@ -1010,8 +1005,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         private async Task<TaskInfo> GetVimTaskInfo(ManagedObjectReference task, VsphereConnection connection)
         {
-            RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(
-                connection.Props,
+            RetrievePropertiesResponse response = await connection.RetrievePropertiesAsync(
                 TaskFilter(task));
 
             // A task that has not yet been registered in the property collector (or a transient empty
@@ -1175,7 +1169,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         public async Task<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>> ListIsos(Guid? viewId = null)
         {
             var connection = _connectionService.GetAllConnections()
-                .FirstOrDefault(c => c.Enabled && c.Connected && c.Client != null);
+                .FirstOrDefault(c => c.Enabled && c.Connected);
 
             if (connection == null)
             {
@@ -1195,7 +1189,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         {
             var aggregate = await GetVm(vmId);
 
-            if (aggregate?.Connection?.Client == null)
+            if (aggregate?.Connection?.Connected != true)
             {
                 _logger.LogError("Could not resolve a vSphere connection for VM {VmId} to list ISOs.", vmId);
                 return new Dictionary<Guid, IReadOnlyList<IsoListingEntry>>();
@@ -1283,7 +1277,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         public int GetEnabledConnectionCount()
         {
             return _connectionService.GetAllConnections()
-                .Count(c => c.Enabled && c.Connected && c.Client != null);
+                .Count(c => c.Enabled && c.Connected);
         }
 
         private enum IsoGroupKind { Shared, Named, Individual }
@@ -1308,7 +1302,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private VsphereConnection GetUsableConnection(VsphereHost host)
         {
             var connection = _connectionService.GetConnection(host.Address);
-            return connection != null && connection.Enabled && connection.Connected && connection.Client != null
+            return connection != null && connection.Enabled && connection.Connected
                 ? connection
                 : null;
         }
@@ -1531,10 +1525,12 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         private async Task EnsureDatastoreDirectory(VsphereConnection connection, DatacenterInfo datacenter, string dsName, string folderPath)
         {
             var datastorePath = $"[{dsName}] {folderPath}";
+            var session = connection.GetRequiredSession();
+
             try
             {
-                await connection.Client.MakeDirectoryAsync(
-                    connection.Sic.fileManager,
+                await session.Client.MakeDirectoryAsync(
+                    session.Sic.fileManager,
                     datastorePath,
                     datacenter.Reference,
                     true /* createParentDirectories */);
@@ -1607,6 +1603,8 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
         // traversal scaffolding lives in one place.
         private async Task<VimClient.ObjectContent[]> LoadInventoryTree(VsphereConnection connection, PropertySpec[] props)
         {
+            var session = connection.GetRequiredSession();
+
             var plan = new TraversalSpec
             {
                 name = "FolderTraverseSpec",
@@ -1639,7 +1637,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
             ObjectSpec objectspec = new ObjectSpec
             {
-                obj = connection.Sic.rootFolder,
+                obj = session.Sic.rootFolder,
                 selectSet = new SelectionSpec[] { plan }
             };
 
@@ -1650,7 +1648,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             };
 
             PropertyFilterSpec[] filters = new PropertyFilterSpec[] { filter };
-            RetrievePropertiesResponse response = await connection.Client.RetrievePropertiesAsync(connection.Props, filters);
+            RetrievePropertiesResponse response = await session.Client.RetrievePropertiesAsync(session.Sic.propertyCollector, filters);
 
             return response.returnval;
         }
@@ -1807,29 +1805,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             return state;
         }
 
-        public async Task<IEnumerable<Event>> GetEvents(EventFilterSpec filterSpec, VsphereConnection connection)
-        {
-            var events = new List<Event>();
-            const int maxCount = 1000; // maximum allowable by vsphere api
-
-            if (connection.Client != null)
-            {
-                var collector = await connection.Client.CreateCollectorForEventsAsync(connection.Sic.eventManager, filterSpec);
-                int resultCount;
-
-                do
-                {
-                    var response = await connection.Client.ReadNextEventsAsync(collector, maxCount);
-                    events.AddRange(response.returnval);
-                    resultCount = response.returnval.Length;
-                }
-                while (resultCount != 0);
-                await connection.Client.DestroyCollectorAsync(collector);
-            }
-
-            return events;
-        }
-
         public async Task RevertToCurrentSnapshot(Guid vmId)
         {
             var aggregate = await this.GetVm(vmId);
@@ -1845,8 +1820,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             var aggregate = await this.GetVm(vmId);
             var machineReference = aggregate.MachineReference;
 
-            RetrievePropertiesResponse propertiesResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(
-                aggregate.Connection.Props,
+            RetrievePropertiesResponse propertiesResponse = await aggregate.Connection.RetrievePropertiesAsync(
                 VmFilter(machineReference, "snapshot"));
 
             VimClient.ObjectContent vm = propertiesResponse.returnval.FirstOrDefault();
@@ -2101,13 +2075,11 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             var url = transferInfo.url;
 
             // Replace IP with hostname when needed (mirrors UploadFileToVm)
-            var summaryResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(
-                aggregate.Connection.Props,
+            var summaryResponse = await aggregate.Connection.RetrievePropertiesAsync(
                 VmFilter(aggregate.MachineReference));
             var vmSummary = (VirtualMachineSummary)summaryResponse.returnval[0].propSet[0].val;
 
-            var hostResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(
-                aggregate.Connection.Props,
+            var hostResponse = await aggregate.Connection.RetrievePropertiesAsync(
                 HostFilter(vmSummary.runtime.host, "name"));
             var hostName = hostResponse.returnval[0].propSet[0].val as string;
 
@@ -2348,8 +2320,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             var machineReference = aggregate.MachineReference;
 
             // retrieve all machine properties we need
-            RetrievePropertiesResponse propertiesResponse = await aggregate.Connection.Client.RetrievePropertiesAsync(
-                aggregate.Connection.Props,
+            RetrievePropertiesResponse propertiesResponse = await aggregate.Connection.RetrievePropertiesAsync(
                 VmFilter(machineReference, "name summary.guest.toolsStatus summary.runtime.host summary.runtime.powerState config.hardware.device snapshot"));
 
             VimClient.ObjectContent vm = propertiesResponse.returnval.FirstOrDefault();
@@ -2402,7 +2373,7 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 }
             }
 
-            if (connection.Client == null)
+            if (!connection.Connected)
             {
                 return null;
             }

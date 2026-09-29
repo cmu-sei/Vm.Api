@@ -76,7 +76,9 @@ namespace Player.Vm.Api.Features.Vms.EventHandlers
             }
 
             var groupIds = await this.GetGroups(vmEntity, cancellationToken);
-            var vm = _mapper.Map<Vm>(vmEntity);
+
+            // The last await before the sends, so nothing announced after this read can reach a client first.
+            var vm = _mapper.Map<Vm>(await ToAnnounce(vmEntity, cancellationToken));
             var tasks = new List<Task>();
 
             foreach (var groupId in groupIds)
@@ -86,6 +88,10 @@ namespace Player.Vm.Api.Features.Vms.EventHandlers
 
             await Task.WhenAll(tasks);
         }
+
+        /// <summary>The Vm whose state is sent, once its teams are loaded.</summary>
+        protected virtual Task<Domain.Models.Vm> ToAnnounce(Domain.Models.Vm vmEntity, CancellationToken cancellationToken) =>
+            Task.FromResult(vmEntity);
     }
 
     public class VmCreatedSignalRHandler : VmBaseSignalRHandler, INotificationHandler<EntityCreated<Domain.Models.Vm>>
@@ -99,6 +105,23 @@ namespace Player.Vm.Api.Features.Vms.EventHandlers
         public async Task Handle(EntityCreated<Domain.Models.Vm> notification, CancellationToken cancellationToken)
         {
             await base.HandleCreateOrUpdate(notification.Entity, VmHubMethods.VmCreated, null, cancellationToken);
+        }
+
+        // Handlers run in no guaranteed order, so another handler may already have written state to the new row
+        // (the vSphere persister does) and announced it as an update. Sending the event's copy would then overwrite
+        // that on the client, so the create sends the committed row instead. Untracked, because this context holds
+        // the event's copy and a tracked query would return it. A row already gone keeps the event's values.
+        protected override async Task<Domain.Models.Vm> ToAnnounce(Domain.Models.Vm vmEntity, CancellationToken cancellationToken)
+        {
+            var committed = await _db.Vms
+                .AsNoTracking()
+                .SingleOrDefaultAsync(x => x.Id == vmEntity.Id, cancellationToken);
+
+            if (committed == null)
+                return vmEntity;
+
+            committed.VmTeams = vmEntity.VmTeams;
+            return committed;
         }
     }
 

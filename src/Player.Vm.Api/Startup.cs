@@ -332,9 +332,6 @@ public class Startup
         services.AddSingleton<TaskService>();
         services.AddSingleton<IHostedService>(x => x.GetService<TaskService>());
         services.AddSingleton<ITaskService>(x => x.GetService<TaskService>());
-        services.AddSingleton<MachineStateService>();
-        services.AddSingleton<IHostedService>(x => x.GetService<MachineStateService>());
-        services.AddSingleton<IMachineStateService>(x => x.GetService<MachineStateService>());
 
         // Proxmox Services
         services.AddScoped<IProxmoxService, ProxmoxService>();

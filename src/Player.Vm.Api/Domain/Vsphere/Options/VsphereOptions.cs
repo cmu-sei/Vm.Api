@@ -6,7 +6,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Options
     public class VsphereOptions
     {
         public int ConnectionRetryIntervalSeconds { get; set; }
-        public int ConnectionRefreshIntervalMinutes { get; set; }
         public int LoadCacheAfterIterations { get; set; }
         public int LoadCacheAfterMinutes { get; set; }
         public int ConnectionTimeoutSeconds { get; set; }

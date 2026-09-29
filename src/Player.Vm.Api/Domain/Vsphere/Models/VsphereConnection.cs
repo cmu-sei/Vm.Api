@@ -6,6 +6,7 @@ using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.ServiceModel;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 using Player.Vm.Api.Domain.Vsphere.Extensions;
@@ -16,23 +17,45 @@ namespace Player.Vm.Api.Domain.Vsphere.Models;
 
 public class VsphereConnection
 {
+    private volatile VsphereSession _session;
+    private TaskCompletionSource _sessionChanged = NewSignal();
+
+    // Guards the session and the signal together, so every change of session completes the signal
+    // taken before it. Readers go without it: Current and WhenSessionChanged read one field each.
+    private readonly Lock _gate = new();
+
+    // Counts DisconnectAsync calls, so a login begun before one cannot install its session after it.
+    private int _disconnects;
+
+    /// <summary>The current login, or null while there is none. Replaced whole by <see cref="Replace"/>.</summary>
+    internal VsphereSession Current => _session;
+
+    /// <summary>
+    /// <see cref="Current"/> for a call that needs more than one of its parts, so they all come from one
+    /// login. Throws while there is none, where reading the parts one by one would throw a
+    /// NullReferenceException.
+    /// </summary>
+    internal VsphereSession GetRequiredSession() =>
+        _session ?? throw new InvalidOperationException($"Not connected to vCenter {Host.Address}");
+
+    /// <summary>RetrieveProperties through the current session's own property collector.</summary>
+    internal Task<RetrievePropertiesResponse> RetrievePropertiesAsync(PropertyFilterSpec[] specSet)
+    {
+        var session = GetRequiredSession();
+        return session.Client.RetrievePropertiesAsync(session.Sic.propertyCollector, specSet);
+    }
+
     /// <summary>
     /// The vSphere SOAP operations, typed as <see cref="IVimClient"/> rather than the concrete
     /// generated client so tests can substitute it. See <see cref="IVimClient"/> for why the
     /// generated VimPortType interface cannot be used here directly.
     /// </summary>
-    public IVimClient Client;
+    /// <remarks>Throws while disconnected, as <see cref="Sic"/> and <see cref="Props"/> do; check <see cref="Connected"/> first.</remarks>
+    public IVimClient Client => GetRequiredSession().Client;
 
-    /// <summary>
-    /// The same object as <see cref="Client"/>, kept concretely typed because connection lifecycle -
-    /// CommunicationState, CloseAsync, Dispose - lives on ClientBase and not on the interface. Set and
-    /// cleared together with Client; null exactly when Client is null.
-    /// </summary>
-    private VimPortClient _clientBase;
-
-    public ServiceContent Sic;
-    public UserSession Session;
-    public ManagedObjectReference Props;
+    public ServiceContent Sic => GetRequiredSession().Sic;
+    public UserSession Session => _session?.Session;
+    public ManagedObjectReference Props => GetRequiredSession().Sic.propertyCollector;
     public string Address
     {
         get
@@ -48,7 +71,7 @@ public class VsphereConnection
         }
     }
 
-    public bool Connected { get; internal set; }
+    public bool Connected => _session != null;
 
     public VsphereHost Host;
     public VsphereOptions Options;
@@ -56,10 +79,26 @@ public class VsphereConnection
     private bool _forceReload = false;
     private DateTime? LastCacheUpdate;
 
-    public ConcurrentDictionary<Guid, ManagedObjectReference> MachineCache = new ConcurrentDictionary<Guid, ManagedObjectReference>();
+    // Creates the client for a new login. Replaceable so tests can drive Connect() without a vCenter.
+    internal Func<VsphereHost, IVimClient> ClientFactory = CreateClient;
+
+    // WaitForUpdatesEx holds a call open for up to maxWaitSeconds (30) plus server processing time,
+    // which the generated binding's one-minute default does not always cover.
+    internal static readonly TimeSpan SendTimeout = TimeSpan.FromSeconds(120);
+
     public ConcurrentDictionary<string, List<Network>> NetworkCache = new ConcurrentDictionary<string, List<Network>>();
     public ConcurrentDictionary<string, Datastore> DatastoreCache = new ConcurrentDictionary<string, Datastore>();
     public ConcurrentDictionary<string, Guid> VmGuids = new ConcurrentDictionary<string, Guid>();
+
+    /// <summary>
+    /// The latest state VsphereMachineWatcher has seen for each machine on this host, including its
+    /// moref. <see cref="VmGuids"/> is the reverse index; <see cref="UpsertMachine"/> and
+    /// <see cref="RemoveMachine"/> keep the two in step.
+    /// </summary>
+    public ConcurrentDictionary<Guid, VsphereVirtualMachine> MachineStates = new ConcurrentDictionary<Guid, VsphereVirtualMachine>();
+
+    /// <summary>The watcher's last failure, or null while it is receiving updates.</summary>
+    public string WatcherError { get; internal set; }
 
     public VsphereConnection(VsphereHost host, VsphereOptions options, ILogger logger)
     {
@@ -68,10 +107,8 @@ public class VsphereConnection
         _logger = logger;
     }
 
-    public async Task<IEnumerable<VsphereVirtualMachine>> Load()
+    public async Task Load()
     {
-        var machineCache = Enumerable.Empty<VsphereVirtualMachine>();
-
         try
         {
             _logger.LogInformation("Starting Connect Loop for {Host} at {Time}", Host.Address, DateTime.UtcNow);
@@ -83,13 +120,12 @@ public class VsphereConnection
             else
             {
                 var connected = await Connect();
-                this.Connected = connected;
 
-                if (connected && LastCacheUpdate == null || (DateTime.UtcNow - LastCacheUpdate.Value).TotalMinutes >= Options.LoadCacheAfterMinutes || _forceReload)
+                if (connected && (LastCacheUpdate == null || (DateTime.UtcNow - LastCacheUpdate.Value).TotalMinutes >= Options.LoadCacheAfterMinutes || _forceReload))
                 {
                     try
                     {
-                        machineCache = await LoadCache();
+                        await LoadCache();
                         LastCacheUpdate = DateTime.UtcNow;
                     }
                     catch (Exception ex)
@@ -100,123 +136,211 @@ public class VsphereConnection
                     _forceReload = false;
                 }
 
-                _logger.LogInformation($"Finished Connect Loop for {Host.Address} at {DateTime.UtcNow} with {MachineCache.Count()} Machines");
+                _logger.LogInformation($"Finished Connect Loop for {Host.Address} at {DateTime.UtcNow} with {MachineStates.Count} Machines");
             }
         }
         catch (Exception ex)
         {
-            this.Connected = false;
             _logger.LogError(ex, "Exception encountered in ConnectionService loop");
         }
-
-        return machineCache;
     }
 
     #region Connection Handling
 
+    /// <summary>
+    /// Completes the next time <see cref="Current"/> changes: a login, a re-login or a disconnect. Take it
+    /// before reading <see cref="Current"/>, so a change in between completes the signal held. The watcher
+    /// waits on this rather than polling, both while disconnected and after a failure.
+    /// </summary>
+    internal Task WhenSessionChanged() => Volatile.Read(ref _sessionChanged).Task;
+
+    private static TaskCompletionSource NewSignal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    // One session per host, kept for as long as vCenter honours it. VsphereMachineWatcher's
+    // long-poll keeps it from idling out, so it is replaced only when the probe below says it is gone.
     private async Task<bool> Connect()
     {
-        // check whether session is expiring
-        if (Session != null && (DateTime.Compare(DateTime.UtcNow, Session.lastActiveTime.AddMinutes(Options.ConnectionRefreshIntervalMinutes)) >= 0))
-        {
-            _logger.LogDebug("Connect():  Session is more than {ConnectionRefreshIntervalMinutes} minutes old", Options.ConnectionRefreshIntervalMinutes);
+        var epoch = Volatile.Read(ref _disconnects);
+        var current = _session;
 
-            // renew session because it expires at 30 minutes (maybe 120 minutes on newer vc)
-            _logger.LogInformation($"Connect():  renewing connection to {Host.Address}...[{Host.Username}]");
-            try
-            {
-                var client = new VimPortClient(VimPortTypeClient.EndpointConfiguration.VimPort, $"https://{Host.Address}/sdk");
-                var sic = await client.RetrieveServiceContentAsync(new ManagedObjectReference { type = "ServiceInstance", Value = "ServiceInstance" });
-                var props = sic.propertyCollector;
-                var session = await client.LoginAsync(sic.sessionManager, Host.Username, Host.Password, null);
-
-                var oldClient = _clientBase;
-                Client = client;
-                _clientBase = client;
-                Sic = sic;
-                Props = props;
-                Session = session;
-
-                await oldClient.CloseAsync();
-                oldClient.Dispose();
-            }
-            catch (Exception ex)
-            {
-                // no connection: Failed with Object reference not set to an instance of an object
-                _logger.LogError(0, ex, $"Connect():  Failed with " + ex.Message);
-                _logger.LogError(0, ex, $"Connect():  User: " + Host.Username);
-                Disconnect();
-            }
-        }
-
-        if (_clientBase != null && _clientBase.State == CommunicationState.Opened)
-        {
-            _logger.LogDebug("Connect():  CommunicationState.Opened");
-            ServiceContent sic = Sic;
-            UserSession session = Session;
-            bool isNull = false;
-
-            if (Sic == null)
-            {
-                sic = await ConnectToHost(Client);
-                isNull = true;
-            }
-
-            if (Session == null)
-            {
-                session = await ConnectToSession(Client, sic);
-                isNull = true;
-            }
-
-            if (isNull)
-            {
-                Session = session;
-                Props = sic.propertyCollector;
-                Sic = sic;
-            }
-
-            try
-            {
-                var x = await Client.RetrieveServiceContentAsync(new ManagedObjectReference { type = "ServiceInstance", Value = "ServiceInstance" });
-                return true;
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error checking vcenter connection. Disconnecting.");
-                Disconnect();
-            }
-        }
-
-        if (_clientBase != null && _clientBase.State == CommunicationState.Faulted)
+        if (current?.ClientBase?.State == CommunicationState.Faulted)
         {
             _logger.LogDebug($"Connect():  https://{Host.Address}/sdk CommunicationState is Faulted.");
-            Disconnect();
+            _ = Replace(null);
+            current = null;
         }
 
-        if (Client == null)
+        if (current != null)
         {
             try
             {
-                _logger.LogDebug($"Connect():  Instantiating client https://{Host.Address}/sdk");
-                var client = new VimPortClient(VimPortTypeClient.EndpointConfiguration.VimPort, $"https://{Host.Address}/sdk");
-                _logger.LogDebug($"Connect():  client: [{Client}]");
+                if (await HasSession(current.Client, current.Sic))
+                {
+                    return true;
+                }
 
-                var sic = await ConnectToHost(client);
-                var session = await ConnectToSession(client, sic);
-
-                Session = session;
-                Props = sic.propertyCollector;
-                Sic = sic;
-                Client = client;
-                _clientBase = client;
+                _logger.LogWarning("Connect():  session on {Host} is no longer authenticated. Logging in again.", Host.Address);
             }
             catch (Exception ex)
             {
-                _logger.LogError(0, ex, $"Connect():  Failed with " + ex.Message);
+                _logger.LogError(ex, "Error checking vcenter connection. Reconnecting.");
             }
         }
 
-        return Client != null;
+        IVimClient newClient = null;
+
+        try
+        {
+            _logger.LogDebug($"Connect():  Instantiating client https://{Host.Address}/sdk");
+            newClient = ClientFactory(Host);
+            var newSic = await ConnectToHost(newClient);
+            var session = await ConnectToSession(newClient, newSic);
+            return Install(new VsphereSession(newClient, newSic, session), epoch);
+        }
+        catch (Exception ex)
+        {
+            (newClient as VimPortClient)?.Abort();
+
+            // no connection: Failed with Object reference not set to an instance of an object
+            _logger.LogError(0, ex, $"Connect():  Failed with " + ex.Message);
+            _logger.LogError(0, ex, $"Connect():  User: " + Host.Username);
+            _ = Replace(null);
+            return false;
+        }
+    }
+
+    // RetrieveServiceContent answers without a session, so it cannot tell a live session from an
+    // expired one. SessionManager.currentSession is null, or the call faults, once the session is gone.
+    private static async Task<bool> HasSession(IVimClient client, ServiceContent sic)
+    {
+        var response = await client.RetrievePropertiesAsync(sic.propertyCollector, [
+            new PropertyFilterSpec
+            {
+                propSet = [new PropertySpec { type = "SessionManager", pathSet = ["currentSession"] }],
+                objectSet = [new ObjectSpec { obj = sic.sessionManager }]
+            }
+        ]);
+
+        return response?.returnval?.FirstOrDefault()?.GetProperty("currentSession") is UserSession;
+    }
+
+    private static IVimClient CreateClient(VsphereHost host)
+    {
+        var client = new VimPortClient(VimPortTypeClient.EndpointConfiguration.VimPort, $"https://{host.Address}/sdk");
+        client.Endpoint.Binding.SendTimeout = SendTimeout;
+        return client;
+    }
+
+    /// <summary>
+    /// Makes <paramref name="next"/> the current session, or drops the session when it is null, and
+    /// retires the one it replaces in the background. Returns that retirement, which callers other
+    /// than <see cref="DisconnectAsync"/> do not await: an unreachable vCenter would hold the connection
+    /// loop for the whole send timeout.
+    /// </summary>
+    internal Task Replace(VsphereSession next)
+    {
+        VsphereSession old;
+
+        lock (_gate)
+        {
+            old = Swap(next);
+        }
+
+        return old == null ? Task.CompletedTask : RetireAsync(old);
+    }
+
+    // A login that outlived a DisconnectAsync - a Load still running when its host was disabled, removed
+    // or shut down - would otherwise install a session nothing logs out. It is logged out instead.
+    private bool Install(VsphereSession next, int epoch)
+    {
+        VsphereSession old;
+        bool installed;
+
+        lock (_gate)
+        {
+            installed = _disconnects == epoch;
+            old = installed ? Swap(next) : next;
+        }
+
+        if (!installed)
+        {
+            _logger.LogInformation("Connect():  {Host} was disconnected during the login. Logging the new session out.", Host.Address);
+        }
+
+        if (old != null)
+        {
+            _ = RetireAsync(old);
+        }
+
+        return installed;
+    }
+
+    // Under _gate. Returns the session replaced, or null when there was none or next is already current,
+    // so that callers never retire the session still in use.
+    //
+    // The order of the writes is what lets readers go without the lock. The session is published before
+    // the new signal, so a reader that sees the new signal (taking it before reading Current) also sees the
+    // new session. The old signal is completed last, so a reader still holding it is woken.
+    private VsphereSession Swap(VsphereSession next)
+    {
+        var old = _session;
+
+        if (ReferenceEquals(old, next))
+        {
+            return null;
+        }
+
+        var changed = _sessionChanged;
+        _session = next;
+        Volatile.Write(ref _sessionChanged, NewSignal());
+        changed.TrySetResult();
+
+        return old;
+    }
+
+    private async Task RetireAsync(VsphereSession session)
+    {
+        try
+        {
+            if (session.Sic != null)
+            {
+                await session.Client.LogoutAsync(session.Sic.sessionManager);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Logout of replaced session on {Host} failed", Host.Address);
+        }
+
+        try
+        {
+            if (session.ClientBase != null)
+            {
+                await session.ClientBase.CloseAsync();
+            }
+        }
+        catch
+        {
+            session.ClientBase.Abort();
+        }
+    }
+
+    /// <summary>
+    /// Drops the current session and logs it out. Called by ConnectionService when the host is disabled
+    /// or removed, and when the service stops.
+    /// </summary>
+    public Task DisconnectAsync()
+    {
+        _logger.LogInformation("Disconnecting from {Host}", Host.Address);
+        VsphereSession old;
+
+        lock (_gate)
+        {
+            _disconnects++;
+            old = Swap(null);
+        }
+
+        return old == null ? Task.CompletedTask : RetireAsync(old);
     }
 
     private async Task<ServiceContent> ConnectToHost(IVimClient client)
@@ -234,22 +358,15 @@ public class VsphereConnection
         return session;
     }
 
-    public void Disconnect()
-    {
-        _logger.LogInformation($"Disconnect()");
-        _clientBase.Dispose();
-        _clientBase = null;
-        Client = null;
-        Sic = null;
-        Session = null;
-    }
-
     #endregion
 
     #region Cache Setup
 
-    private async Task<IEnumerable<VsphereVirtualMachine>> LoadCache()
+    // Networks and datastores. Machines are kept current by VsphereMachineWatcher instead.
+    private async Task LoadCache()
     {
+        var session = _session ?? throw new InvalidOperationException($"No session for {Host.Address}");
+
         var plan = new TraversalSpec
         {
             name = "FolderTraverseSpec",
@@ -325,12 +442,6 @@ public class VsphereConnection
 
                 new PropertySpec
                 {
-                    type = "VirtualMachine",
-                    pathSet = new string[] { "name", "config.uuid", "summary.runtime.powerState", "guest.net", "snapshot" }
-                },
-
-                new PropertySpec
-                {
                     type = "Datastore",
                     pathSet = new string[] { "name", "browser" }
                 }
@@ -338,7 +449,7 @@ public class VsphereConnection
 
         ObjectSpec objectspec = new ObjectSpec
         {
-            obj = Sic.rootFolder,
+            obj = session.Sic.rootFolder,
             selectSet = new SelectionSpec[] { plan }
         };
 
@@ -351,12 +462,8 @@ public class VsphereConnection
         PropertyFilterSpec[] filters = new PropertyFilterSpec[] { filter };
 
         _logger.LogInformation($"Starting RetrieveProperties at {DateTime.UtcNow}");
-        RetrievePropertiesResponse response = await Client.RetrievePropertiesAsync(Props, filters);
+        RetrievePropertiesResponse response = await session.Client.RetrievePropertiesAsync(session.Sic.propertyCollector, filters);
         _logger.LogInformation($"Finished RetrieveProperties at {DateTime.UtcNow}");
-
-        _logger.LogInformation($"Starting LoadMachineCache at {DateTime.UtcNow}");
-        var machineCache = LoadMachineCache(response.returnval.FindType("VirtualMachine"));
-        _logger.LogInformation($"Finished LoadMachineCache at {DateTime.UtcNow}");
 
         _logger.LogInformation($"Starting LoadNetworkCache at {DateTime.UtcNow}");
         LoadNetworkCache(
@@ -367,75 +474,39 @@ public class VsphereConnection
         _logger.LogInformation($"Starting LoadDatastoreCache at {DateTime.UtcNow}");
         LoadDatastoreCache(response.returnval.FindType("Datastore"));
         _logger.LogInformation($"Finished LoadDatastoreCache at {DateTime.UtcNow}");
-
-        return machineCache;
     }
 
-    private IEnumerable<VsphereVirtualMachine> LoadMachineCache(VimClient.ObjectContent[] virtualMachines)
+    /// <summary>
+    /// Records a machine's latest state in every cache that maps it. Called only by this host's
+    /// VsphereMachineWatcher.
+    /// </summary>
+    internal void UpsertMachine(VsphereVirtualMachine machine)
     {
-        IEnumerable<Guid> existingMachineIds = MachineCache.Keys;
-        List<Guid> currentMachineIds = new List<Guid>();
-        List<VsphereVirtualMachine> vsphereVirtualMachines = new List<VsphereVirtualMachine>();
+        // Every live moref keeps its mapping, even when two share a uuid (a copied VM), so tasks on
+        // either still resolve. A moref that goes away is dropped by its leave, or by the next snapshot.
+        VmGuids[machine.Reference.Value] = machine.Id;
+        MachineStates[machine.Id] = machine;
+    }
 
-        foreach (var vm in virtualMachines)
+    /// <summary>
+    /// Forgets a machine, but only while it is still mapped to <paramref name="reference"/>, so a stale
+    /// moref's removal cannot take out a newer mapping for the same uuid.
+    /// </summary>
+    internal void RemoveMachine(Guid id, string reference)
+    {
+        VmGuids.TryRemove(new KeyValuePair<string, Guid>(reference, id));
+
+        if (MachineStates.TryGetValue(id, out var state) && state.Reference.Value == reference)
         {
-            string name = string.Empty;
-
-            try
-            {
-                name = vm.GetProperty("name") as string;
-
-                var idObj = vm.GetProperty("config.uuid");
-
-                if (idObj == null)
-                {
-                    _logger.LogError($"Unable to load machine {name} - {vm.obj.Value}. Invalid UUID");
-                    continue;
-                }
-
-                var snapshots = vm.GetProperty("snapshot") as VirtualMachineSnapshotInfo;
-
-                var toolsStatus = vm.GetProperty("summary.guest.toolsStatus") as Nullable<VirtualMachineToolsStatus>;
-                VirtualMachineToolsStatus vmToolsStatus = VirtualMachineToolsStatus.toolsNotRunning;
-                if (toolsStatus != null)
-                {
-                    vmToolsStatus = toolsStatus.Value;
-                }
-
-                var guid = Guid.Parse(idObj as string);
-                var virtualMachine = new VsphereVirtualMachine
-                {
-                    //HostReference = ((ManagedObjectReference)vm.GetProperty("summary.runtime.host")).Value,
-                    Id = guid,
-                    Name = name,
-                    Reference = vm.obj,
-                    State = (VirtualMachinePowerState)vm.GetProperty("summary.runtime.powerState") == VirtualMachinePowerState.poweredOn ? "on" : "off",
-                    VmToolsStatus = vmToolsStatus,
-                    IpAddresses = ((GuestNicInfo[])vm.GetProperty("guest.net")).Where(x => x.ipAddress != null).SelectMany(x => x.ipAddress).ToArray(),
-                    HasSnapshot = snapshots == null ? false : snapshots.rootSnapshotList.Any()
-                };
-
-                vsphereVirtualMachines.Add(virtualMachine);
-
-                MachineCache.AddOrUpdate(virtualMachine.Id, virtualMachine.Reference, (k, v) => v = virtualMachine.Reference);
-                currentMachineIds.Add(virtualMachine.Id);
-                VmGuids.AddOrUpdate(vm.obj.Value, guid, (k, v) => (v = guid));
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, $"Error refreshing Virtual Machine {name} - {vm.obj.Value}");
-            }
+            MachineStates.TryRemove(new KeyValuePair<Guid, VsphereVirtualMachine>(id, state));
         }
+    }
 
-        foreach (Guid existingId in existingMachineIds.Except(currentMachineIds))
-        {
-            if (MachineCache.TryRemove(existingId, out ManagedObjectReference stale))
-            {
-                _logger.LogDebug($"removing stale cache entry {stale.Value}");
-            }
-        }
-
-        return vsphereVirtualMachines;
+    internal void ClearMachines()
+    {
+        VmGuids.Clear();
+        MachineStates.Clear();
+        WatcherError = null;
     }
 
     private void LoadNetworkCache(VimClient.ObjectContent[] distributedSwitches, VimClient.ObjectContent[] networks)

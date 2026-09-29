@@ -13,6 +13,7 @@ using NSubstitute;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Services;
+using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vms.Hubs;
 using Player.Vm.Api.Tests.Infrastructure;
 using Xunit;
@@ -44,6 +45,7 @@ namespace Player.Vm.Api.Tests;
 public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBase(fixture)
 {
     private readonly IViewService _views = Substitute.For<IViewService>();
+    private readonly IConnectionService _connections = Substitute.For<IConnectionService>();
     private readonly HubContextHarness<VmHub> _hub = new();
 
     private ServiceProvider _provider;
@@ -64,6 +66,7 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
         services.AddMediatR(cfg =>
             cfg.RegisterServicesFromAssemblies(typeof(Player.Vm.Api.Startup).Assembly));
         services.AddSingleton(_views);
+        services.AddSingleton(_connections);
         services.AddSingleton(_hub.Context);
         services.AddSingleton(TestMapper.Value);
 
@@ -89,6 +92,36 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
         }
 
         await base.DisposeAsync();
+    }
+
+    /// <summary>
+    /// A new Vm is queued for the vSphere persister once its row has committed, so the persister's query
+    /// can see it. Queued inside the transaction, the write could run first and find nothing.
+    /// </summary>
+    [Fact]
+    public async Task CreatingAVm_MarksItDirtyOnlyAfterCommit()
+    {
+        var vm = new VmEntity { Id = Guid.NewGuid(), Name = "new" };
+        await using var transaction = await App.Database.BeginTransactionAsync(Ct);
+        App.Add(vm);
+        await App.SaveChangesAsync(Ct);
+
+        _connections.DidNotReceive().MarkDirty(Arg.Any<Guid>());
+
+        await transaction.CommitAsync(Ct);
+
+        _connections.Received(1).MarkDirty(vm.Id);
+    }
+
+    [Fact]
+    public async Task ARolledBackCreation_MarksNothingDirty()
+    {
+        await using var transaction = await App.Database.BeginTransactionAsync(Ct);
+        App.Add(new VmEntity { Id = Guid.NewGuid(), Name = "rolled-back" });
+        await App.SaveChangesAsync(Ct);
+        await transaction.RollbackAsync(Ct);
+
+        _connections.DidNotReceive().MarkDirty(Arg.Any<Guid>());
     }
 
     /// <summary>
