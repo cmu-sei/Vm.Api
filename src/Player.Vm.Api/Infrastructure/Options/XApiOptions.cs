@@ -13,6 +13,13 @@ public class XApiOptions
     public string Platform { get; set; }
     public string ApiUrl { get; set; }
     public string PlayerApiUrl { get; set; }
+
+    // Home page for the team accounts on context.team. This is the Player UI, not the VM UI, and it
+    // has to be the same value Player API sends for its own XApiOptions.UiUrl, because the account
+    // identifies the team in the LRS: a different home page makes one team look like two accounts
+    // and splits team level reporting. Named for the application it points at, like PlayerApiUrl,
+    // because the UI this application serves is the VM UI.
+    public string PlayerUiUrl { get; set; }
     public int RetentionDays { get; set; } = 7;
     public int ProcessingDelaySeconds { get; set; } = 5;
 }

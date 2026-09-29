@@ -286,18 +286,29 @@ public class XApiService : IXApiService
             .Where(teamId => teamId != Guid.Empty)
             .Distinct()
             .ToArray();
-        var teamIds = activeTeamIdArray.Length > 0
-            ? activeTeamIdArray
-            : vm.VmTeams.Select(team => team.TeamId).ToArray();
-        var viewId = (await _viewService.GetViewIdsForTeams(teamIds, ct)).FirstOrDefault();
-        var activity = BuildConsoleActivity(vm, activeTeamIdArray);
+
+        Guid viewId;
+        Guid? actorTeamId = null;
+        string actorTeamName = null;
+
+        if (activeTeamIdArray.Length > 0)
+        {
+            (viewId, actorTeamId, actorTeamName) = await ResolveActorTeamAsync(activeTeamIdArray, ct);
+        }
+        else
+        {
+            var teamIds = vm.VmTeams.Select(team => team.TeamId).ToArray();
+            viewId = (await _viewService.GetViewIdsForTeams(teamIds, ct)).FirstOrDefault();
+        }
+
+        var activity = BuildConsoleActivity(vm);
 
         var statement = new Statement
         {
             actor = actor,
             verb = CreateVerb(verbId, verbDisplay),
             target = activity,
-            context = BuildContext(viewId)
+            context = BuildContext(viewId, actor, actorTeamId, actorTeamName, activeTeamIdArray)
         };
 
         await _queue.EnqueueAsync(new XApiQueuedStatementEntity
@@ -307,6 +318,32 @@ public class XApiService : IXApiService
             ActivityId = activity.id,
             ViewId = viewId == Guid.Empty ? null : viewId
         }, ct);
+    }
+
+    // The team named on context.team and the view on registration and contextActivities.parent have
+    // to describe the same team, so they are resolved together. Player API returns no view for a team
+    // it cannot find, and those teams are passed over here rather than silently shifting the view to
+    // one team while context.team names another.
+    private async Task<(Guid ViewId, Guid TeamId, string TeamName)> ResolveActorTeamAsync(
+        IReadOnlyList<Guid> activeTeamIds,
+        CancellationToken ct)
+    {
+        foreach (var teamId in activeTeamIds)
+        {
+            // One team per call: GetInfoForTeams carries no team id on its results and drops teams
+            // that share a view, so a batch call cannot say which name belongs to which team. The
+            // results are cached, so this costs the same lookups the view id alone used to cost.
+            var teamInfo = (await _viewService.GetInfoForTeams([teamId], ct)).FirstOrDefault();
+
+            if (teamInfo?.ViewId is not null)
+            {
+                return (teamInfo.ViewId.Value, teamId, teamInfo.TeamName);
+            }
+        }
+
+        // No team resolved to a view, so there is nothing to register against. Name the first team
+        // anyway: the actor was working as it whether or not Player API can place it.
+        return (Guid.Empty, activeTeamIds[0], null);
     }
 
     private async Task TrackVmActionAsync(
@@ -461,15 +498,9 @@ public class XApiService : IXApiService
         };
     }
 
-    private Activity BuildConsoleActivity(VmEntity vm, IReadOnlyCollection<Guid> activeTeamIds)
+    private Activity BuildConsoleActivity(VmEntity vm)
     {
         var extensions = BuildVmExtensions(vm);
-
-        if (activeTeamIds.Count > 0)
-        {
-            extensions["https://crucible.sei.cmu.edu/xapi/extensions/active-team-ids"] =
-                string.Join(",", activeTeamIds);
-        }
 
         var name = new LanguageMap();
         name.Add("en-US", $"{vm.Name ?? vm.Id.ToString()} Console");
@@ -545,7 +576,12 @@ public class XApiService : IXApiService
         return extensions;
     }
 
-    private Context BuildContext(Guid viewId)
+    private Context BuildContext(
+        Guid viewId,
+        Agent actor = null,
+        Guid? actorTeamId = null,
+        string actorTeamName = null,
+        IReadOnlyCollection<Guid> activeTeamIds = null)
     {
         var context = new Context
         {
@@ -576,8 +612,59 @@ public class XApiService : IXApiService
             ];
         }
 
+        AddActorTeams(context, actor, actorTeamId, actorTeamName, activeTeamIds);
+
         return context;
     }
+
+    // The actor's team belongs on the statement rather than on the activity definition. The console
+    // activity id is the same for every user of a VM, and an LRS may keep the definition it received
+    // most recently, so per actor data written there is whatever the last participant sent.
+    private void AddActorTeams(
+        Context context,
+        Agent actor,
+        Guid? actorTeamId,
+        string actorTeamName,
+        IReadOnlyCollection<Guid> activeTeamIds)
+    {
+        // Not every statement knows the team the actor was working as. Only the console path is told,
+        // so the rest carry no context.team rather than guessing from the VM's own teams.
+        if (actorTeamId is null || !TryGetTeamHomePage(_options, out var homePage))
+        {
+            return;
+        }
+
+        context.team = new Group
+        {
+            name = actorTeamName,
+            account = new AgentAccount
+            {
+                homePage = homePage,
+                name = actorTeamId.Value.ToString()
+            },
+            // An empty list rather than no list when there is no actor, matching CITE and Gallery.
+            // The standard makes member optional on an identified group, so either conforms.
+            member = actor is null ? [] : [actor]
+        };
+
+        // A user can be active on more than one team when the VM is shared across views they belong
+        // to. context.team can only name one of them, so the full set goes in "other".
+        if (activeTeamIds is { Count: > 1 })
+        {
+            context.contextActivities.other = activeTeamIds
+                .Select(teamId => new Activity
+                {
+                    id = $"{_options.PlayerApiUrl.TrimEnd('/')}/teams/{teamId}"
+                })
+                .ToList();
+        }
+    }
+
+    // The home page of a team's account. It has to be the value Player API sends, or the LRS holds
+    // one team as two accounts and team rollups split between the two applications. Callers that run
+    // per statement stay quiet when it is missing; XApiBackgroundService reports it once instead.
+    public static bool TryGetTeamHomePage(XApiOptions options, out Uri homePage) =>
+        Uri.TryCreate(options.PlayerUiUrl, UriKind.Absolute, out homePage);
 
     private static Verb CreateVerb(string id, string display)
     {

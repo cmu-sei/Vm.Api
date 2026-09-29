@@ -23,6 +23,7 @@ public class XApiBackgroundService : BackgroundService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<XApiBackgroundService> _logger;
     private DateTime _lastCleanup = DateTime.MinValue;
+    private bool _reportedMissingPlayerUiUrl;
 
     public XApiBackgroundService(
         IServiceScopeFactory scopeFactory,
@@ -47,6 +48,15 @@ public class XApiBackgroundService : BackgroundService
                 {
                     await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken);
                     continue;
+                }
+
+                // Reported here rather than from XApiService, which would say it again on every
+                // console open. Statements still send; they just carry no team.
+                if (!_reportedMissingPlayerUiUrl && !XApiService.TryGetTeamHomePage(options, out _))
+                {
+                    _reportedMissingPlayerUiUrl = true;
+                    _logger.LogWarning(
+                        "XApiOptions.PlayerUiUrl is not an absolute URL, so statements will omit context.team. Set it to the same value Player API sends for its UiUrl, or the LRS cannot match a team across the two applications.");
                 }
 
                 var queue = scope.ServiceProvider.GetRequiredService<IXApiQueueService>();
