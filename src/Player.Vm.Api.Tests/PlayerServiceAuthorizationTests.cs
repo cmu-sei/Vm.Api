@@ -393,6 +393,38 @@ public class PlayerServiceAuthorizationTests
         Assert.False(await _service.CanViewVms([], [viewId], Ct));
     }
 
+    /// <summary>
+    /// The Map read check asked with a View and no teams is what a teamless Map takes. The view
+    /// permissions pass it at the View and system level - management is not needed to read.
+    /// </summary>
+    [Theory]
+    [InlineData(nameof(AppViewPermission.ViewViewMaps), null)]
+    [InlineData(null, nameof(AppSystemPermission.ViewMaps))]
+    public async Task CanViewMaps_ForAView_AcceptsAViewOrSystemLevelViewPermission(string viewPermission, string systemPermission)
+    {
+        var viewId = Guid.NewGuid();
+        var ownTeam = Guid.NewGuid();
+
+        SystemPermissions(systemPermission is null ? [] : [systemPermission]);
+        UserViewTeams(viewId, ViewTeam(ownTeam, isMember: true));
+        TeamPermissions(viewId, TeamClaim(ownTeam, isPrimary: true, direct: viewPermission));
+
+        Assert.True(await _service.CanViewMaps([], [viewId], Ct));
+    }
+
+    // Even managing one team's Maps reaches none of the View's teamless ones.
+    [Fact]
+    public async Task CanViewMaps_ForAView_RefusesATeamScopedPermission()
+    {
+        var viewId = Guid.NewGuid();
+        var ownTeam = Guid.NewGuid();
+
+        UserViewTeams(viewId, ViewTeam(ownTeam, isMember: true));
+        TeamPermissions(viewId, TeamClaim(ownTeam, isPrimary: true, direct: nameof(AppTeamPermission.ManageTeamMaps)));
+
+        Assert.False(await _service.CanViewMaps([], [viewId], Ct));
+    }
+
     #endregion
 
     #region Teams with a permission

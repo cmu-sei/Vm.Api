@@ -147,7 +147,8 @@ namespace Player.Vm.Api.Domain.Services
 
         /// <summary>
         /// Whether the caller may see these teams' Maps, or every Map in these Views. Manage implies
-        /// view. A Map with no teams takes <see cref="CanManageMaps"/> to read, not this.
+        /// view. Asked with no teams, only a View- or system-level permission passes - which is what
+        /// reading a Map assigned to no team takes.
         /// </summary>
         public async Task<bool> CanViewMaps(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct)
         {
