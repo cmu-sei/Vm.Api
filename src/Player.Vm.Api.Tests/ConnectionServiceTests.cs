@@ -215,7 +215,7 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
             var player = Substitute.For<IPlayerService>();
             player.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns(true);
             var principal = new ClaimsPrincipal(new ClaimsIdentity([new Claim("sub", Guid.NewGuid().ToString())], "test"));
-            var vms = new VmService(Db, player, principal, TestMapper.Value, Substitute.For<INetworkService>());
+            var vms = new VmService(Db, player, Substitute.For<IViewService>(), principal, TestMapper.Value, Substitute.For<INetworkService>());
 
             var created = await vms.CreateAsync(new VmCreateForm { Id = A, Name = "new", TeamIds = [Guid.NewGuid()] }, Ct);
             Assert.Equal(PowerState.Unknown, created.PowerState);
