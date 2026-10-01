@@ -1,4 +1,4 @@
-// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
+﻿// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
@@ -191,15 +191,15 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     }
 
     /// <summary>
-    /// Team visibility, which <c>GetVm</c> delegates to <c>VmService.CanAccessVm</c> - the same check the
+    /// Vm visibility, which <c>GetVm</c> delegates to <c>VmService.CanAccessVm</c> - the same check the
     /// ordinary Vm routes make. Asserted on one route rather than twenty-one because the twenty-one have
     /// already been shown to go through it.
     /// </summary>
     [Fact]
-    public async Task WhenTheCallerCannotSeeTheVmsTeams_Is403()
+    public async Task WhenTheCallerCannotSeeTheTeamsVms_Is403()
     {
         var vm = await SeedVsphereVm();
-        Factory.PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns(false);
 
         var response = await Client.GetAsync(Route(vm.Id), Ct);
@@ -263,7 +263,7 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
 
     /// <summary>
     /// The routes that change what the Vm is doing or reach into its guest OS, all of which go through
-    /// <c>GetVmForEditing</c>. Only the edit permission is denied here, so a 403 can have come from
+    /// <c>GetVmForEditing</c>. Only the Vm-control permission is denied here, so a 403 can have come from
     /// nowhere else.
     /// </summary>
     [Theory]
@@ -276,10 +276,10 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     [InlineData("POST", "/actions/validate-credentials")]
     [InlineData("POST", "/actions/run-guest-process")]
     [InlineData("POST", "/actions/run-guest-process-fast")]
-    public async Task EditingRoutes_WithoutEditPermission_Is403(string method, string suffix)
+    public async Task EditingRoutes_WithoutVmControlPermission_Is403(string method, string suffix)
     {
         var vm = await SeedVsphereVm();
-        Deny(AppViewPermission.EditView);
+        Deny(AppViewPermission.ControlViewVms);
 
         var response = await Send(method, suffix, vm.Id);
 

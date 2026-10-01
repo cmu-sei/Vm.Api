@@ -183,7 +183,7 @@ namespace Player.Vm.Api.Domain.Services
         private async Task<ActiveViewConsoles> GetActiveConsoleCount(Guid viewId, IViewService viewService, CancellationToken ct)
         {
             var activeViewConsoles = new ActiveViewConsoles();
-            var teamIds = await viewService.GetTeamsForView(viewId, ct);
+            var teamIds = await viewService.GetTeamsForView(viewId, bypassCache: false, ct) ?? [];
             var consoles = _activeVirtualMachines.Where(x => x.Value.TeamIds.Any(y => teamIds.Contains(y))).ToList();
             activeViewConsoles.Count = consoles.Count();
             activeViewConsoles.Names = consoles.Select(x => _vmNames[x.Value.VmId]).ToList();

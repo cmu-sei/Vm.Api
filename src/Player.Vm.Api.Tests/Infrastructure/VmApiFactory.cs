@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -333,11 +334,24 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
     /// </remarks>
     public void AllowEverything()
     {
-        PlayerApi.CanViewTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(true);
-        PlayerApi.CanEditTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(true);
         PlayerApi.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+        PlayerApi.CanViewVms(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
+        PlayerApi.CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
+            .Returns(true);
+        PlayerApi.CanViewMaps(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
+        PlayerApi.CanManageMaps(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<CancellationToken>())
             .Returns(true);
         PlayerApi.Can(
                 Arg.Any<IEnumerable<Guid>>(),
@@ -347,6 +361,14 @@ public class VmApiFactory(DatabaseFixture database) : WebApplicationFactory<Star
                 Arg.Any<AppTeamPermission[]>(),
                 Arg.Any<CancellationToken>())
             .Returns(true);
+        PlayerApi.GetTeamIdsWithPermissionAsync(
+                Arg.Any<Guid>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<AppSystemPermission[]>(),
+                Arg.Any<AppViewPermission[]>(),
+                Arg.Any<AppTeamPermission[]>(),
+                Arg.Any<CancellationToken>())
+            .Returns(ci => (IReadOnlySet<Guid>)ci.ArgAt<IEnumerable<Guid>>(1).ToHashSet());
     }
 
     /// <summary>

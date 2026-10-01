@@ -30,7 +30,6 @@ namespace Player.Vm.Api.Domain.Services
         Task<VisibilityContext> GetVisibilityContextAsync(Guid viewId, CancellationToken ct);
         Task<VisibilityContext> GetVisibilityContextForTeamAsync(Guid teamId, CancellationToken ct);
         Task<bool> IsTeamInViewAsync(Guid teamId, Guid viewId, CancellationToken ct);
-        Task<bool> IsTeamVisibleAsync(Guid teamId, CancellationToken ct);
         Task<Guid?> GetGroupIdForViewAsync(Guid viewId, CancellationToken ct);
         Task<View> GetViewByIdAsync(Guid viewId, CancellationToken ct);
 
@@ -45,14 +44,35 @@ namespace Player.Vm.Api.Domain.Services
 
         Task<IEnumerable<Guid>> GetGroupIdsForViewAsync(Guid viewId, CancellationToken ct);
         Task<bool> CanManageTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
-        Task<bool> CanViewTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
-        Task<bool> CanEditTeams(IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<bool> CanViewVms(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct);
+        Task<bool> CanControlVms(IEnumerable<Guid> teamIds, CancellationToken ct);
+        Task<bool> CanViewMaps(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct);
+        Task<bool> CanManageMaps(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct);
         Task<bool> HasViewNetworkAccess(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<bool> HasManageNetworkAccess(IEnumerable<Guid> teamIds, CancellationToken ct);
         Task<IEnumerable<Guid>> GetUserTeamIds(IEnumerable<Guid> teamIds, CancellationToken ct);
 
+        /// <summary>
+        /// The caller's system permissions, cached per user for a minute. Values this build does not
+        /// recognize are dropped.
+        /// </summary>
+        Task<IReadOnlySet<AppSystemPermission>> GetSystemPermissionsAsync(CancellationToken ct);
+
         Task<bool> Can(IEnumerable<Guid> teamIds,
                        IEnumerable<Guid> viewIds,
+                       AppSystemPermission[] requiredSystemPermissions,
+                       AppViewPermission[] requiredViewPermissions,
+                       AppTeamPermission[] requiredTeamPermissions,
+                       CancellationToken ct);
+
+        /// <summary>
+        /// Of <paramref name="teamIds"/>, all teams in <paramref name="viewId"/>, the ones on which the
+        /// caller holds a permission satisfying <see cref="Can"/> - answered from one read of the View's
+        /// team claims rather than one <see cref="Can"/> per team. A system or View-level grant covers
+        /// every team, so it returns them all.
+        /// </summary>
+        Task<IReadOnlySet<Guid>> GetTeamIdsWithPermissionAsync(Guid viewId,
+                       IEnumerable<Guid> teamIds,
                        AppSystemPermission[] requiredSystemPermissions,
                        AppViewPermission[] requiredViewPermissions,
                        AppTeamPermission[] requiredTeamPermissions,
@@ -94,20 +114,66 @@ namespace Player.Vm.Api.Domain.Services
                 ct);
         }
 
-        public async Task<bool> CanViewTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
+        /// <summary>
+        /// Whether the caller may see the Vms of these teams, or every Vm in these Views. Control
+        /// implies view — a caller who can interact with a Vm can obviously look at it — so either
+        /// permission satisfies this.
+        /// </summary>
+        public async Task<bool> CanViewVms(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct)
+        {
+            return await Can(
+                teamIds,
+                viewIds,
+                AppPermissions.VmReadSystem,
+                AppPermissions.VmReadView,
+                AppPermissions.VmReadTeam,
+                ct);
+        }
+
+        /// <summary>
+        /// Whether the caller may interact with the Vms of these teams — console input, power
+        /// operations, mounting ISOs, and anything else that changes a Vm's state.
+        /// </summary>
+        public async Task<bool> CanControlVms(IEnumerable<Guid> teamIds, CancellationToken ct)
         {
             return await Can(
                 teamIds,
                 null,
-                [AppSystemPermission.ViewViews, AppSystemPermission.ManageViews],
-                [AppViewPermission.ViewView, AppViewPermission.ManageView],
-                [AppTeamPermission.ViewTeam, AppTeamPermission.ManageTeam],
+                [AppSystemPermission.ControlVms],
+                [AppViewPermission.ControlViewVms],
+                [AppTeamPermission.ControlTeamVms],
                 ct);
         }
 
-        public async Task<bool> CanEditTeams(IEnumerable<Guid> teamIds, CancellationToken ct)
+        /// <summary>
+        /// Whether the caller may see these teams' Maps, or every Map in these Views. Manage implies
+        /// view. Asked with no teams, only a View- or system-level permission passes - which is what
+        /// reading a Map assigned to no team takes.
+        /// </summary>
+        public async Task<bool> CanViewMaps(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct)
         {
-            return await Can(teamIds, null, [AppSystemPermission.EditViews], [AppViewPermission.EditView], [AppTeamPermission.EditTeam], ct);
+            return await Can(
+                teamIds,
+                viewIds,
+                AppPermissions.MapReadSystem,
+                AppPermissions.MapReadView,
+                AppPermissions.MapReadTeam,
+                ct);
+        }
+
+        /// <summary>
+        /// Whether the caller may create, edit, or delete these teams' Maps, or — for a Map with no
+        /// teams — Maps in these Views.
+        /// </summary>
+        public async Task<bool> CanManageMaps(IEnumerable<Guid> teamIds, IEnumerable<Guid> viewIds, CancellationToken ct)
+        {
+            return await Can(
+                teamIds,
+                viewIds,
+                [AppSystemPermission.ManageMaps],
+                [AppViewPermission.ManageViewMaps],
+                [AppTeamPermission.ManageTeamMaps],
+                ct);
         }
 
         public async Task<bool> HasViewNetworkAccess(IEnumerable<Guid> teamIds, CancellationToken ct)
@@ -155,18 +221,7 @@ namespace Player.Vm.Api.Domain.Services
             requiredViewPermissions ??= [];
             requiredTeamPermissions ??= [];
 
-            ICollection<string> systemPermissions;
-
-            if (!_cache.TryGetValue(_userId, out systemPermissions))
-            {
-                systemPermissions = await _playerApiClient.GetMyPermissionsAsync(ct);
-                _cache.Set(_userId, systemPermissions, new MemoryCacheEntryOptions().SetAbsoluteExpiration(TimeSpan.FromMinutes(1)));
-            }
-
-            var appSystemPermissions = (systemPermissions ?? [])
-                .Select(x => Enum.TryParse<AppSystemPermission>(x, out var p) ? p : (AppSystemPermission?)null)
-                .Where(p => p.HasValue)
-                .Select(p => p.Value);
+            var appSystemPermissions = await GetSystemPermissionsAsync(ct);
 
             if (requiredSystemPermissions.Any() && appSystemPermissions.Intersect(requiredSystemPermissions).Any())
                 return true;
@@ -201,12 +256,12 @@ namespace Player.Vm.Api.Domain.Services
                         .Select(x => x.Key)
                         .ToArray();
 
-                    if (targetTeamIds.Any() && HasViewPermission(teamPermissionsClaims, targetTeamIds, requiredViewPermissions))
+                    if (targetTeamIds.Any() && HasPermission(teamPermissionsClaims, targetTeamIds, requiredViewPermissions))
                         return true;
 
                     var directTeamIds = await GetDirectTeamIdsByViewIdAsync(viewId, ct);
 
-                    if (directTeamIds.Any() && HasViewPermission(teamPermissionsClaims, directTeamIds, requiredViewPermissions))
+                    if (directTeamIds.Any() && HasPermission(teamPermissionsClaims, directTeamIds, requiredViewPermissions))
                         return true;
                 }
 
@@ -217,12 +272,51 @@ namespace Player.Vm.Api.Domain.Services
                         .Select(x => x.Key)
                         .ToArray();
 
-                    if (targetTeamIds.Any() && HasTeamPermission(teamPermissionsClaims, targetTeamIds, requiredTeamPermissions))
+                    if (targetTeamIds.Any() && HasPermission(teamPermissionsClaims, targetTeamIds, requiredTeamPermissions))
                         return true;
                 }
             }
 
             return false;
+        }
+
+        public async Task<IReadOnlySet<Guid>> GetTeamIdsWithPermissionAsync(Guid viewId,
+                       IEnumerable<Guid> teamIds,
+                       AppSystemPermission[] requiredSystemPermissions,
+                       AppViewPermission[] requiredViewPermissions,
+                       AppTeamPermission[] requiredTeamPermissions,
+                       CancellationToken ct)
+        {
+            var candidateTeamIds = (teamIds ?? []).Where(x => x != Guid.Empty).ToHashSet();
+            requiredSystemPermissions ??= [];
+            requiredViewPermissions ??= [];
+            requiredTeamPermissions ??= [];
+
+            if (candidateTeamIds.Count == 0)
+                return candidateTeamIds;
+
+            var appSystemPermissions = await GetSystemPermissionsAsync(ct);
+
+            if (appSystemPermissions.Overlaps(requiredSystemPermissions))
+                return candidateTeamIds;
+
+            var teamPermissionsClaims = await GetTeamPermissionsByViewIdAsync(viewId, ct);
+
+            // The same order as Can: a View permission on the caller's own teams covers the whole View;
+            // otherwise each team needs a View or team permission on its own claim.
+            if (requiredViewPermissions.Any())
+            {
+                var directTeamIds = await GetDirectTeamIdsByViewIdAsync(viewId, ct);
+
+                if (directTeamIds.Any() && HasPermission(teamPermissionsClaims, directTeamIds, requiredViewPermissions))
+                    return candidateTeamIds;
+            }
+
+            return candidateTeamIds
+                .Where(teamId =>
+                    HasPermission(teamPermissionsClaims, [teamId], requiredViewPermissions) ||
+                    HasPermission(teamPermissionsClaims, [teamId], requiredTeamPermissions))
+                .ToHashSet();
         }
 
         public async Task<IEnumerable<Team>> GetTeamsByViewIdAsync(Guid viewId, CancellationToken ct)
@@ -324,8 +418,8 @@ namespace Player.Vm.Api.Domain.Services
             // AuthorizationService.GetPrimaryVisibilityContext, which decides visibility from the
             // primary team's DIRECT permissions only - permissions scoped in from another team must
             // not widen what that team can see.
-            var directViewPermissions = ParsePermissions<AppViewPermission>(primaryPermission.DirectPermissionValues);
-            var directTeamPermissions = ParsePermissions<AppTeamPermission>(primaryPermission.DirectPermissionValues);
+            var directViewPermissions = AppPermissions.Parse<AppViewPermission>(primaryPermission.DirectPermissionValues);
+            var directTeamPermissions = AppPermissions.Parse<AppTeamPermission>(primaryPermission.DirectPermissionValues);
             var canViewAllTeams =
                 directViewPermissions.Contains(AppViewPermission.ViewView) ||
                 directViewPermissions.Contains(AppViewPermission.ManageView);
@@ -356,12 +450,6 @@ namespace Player.Vm.Api.Domain.Services
         {
             var teamViewId = await _viewService.GetViewIdForTeam(teamId, ct);
             return teamViewId == viewId;
-        }
-
-        public async Task<bool> IsTeamVisibleAsync(Guid teamId, CancellationToken ct)
-        {
-            var visibility = await GetVisibilityContextForTeamAsync(teamId, ct);
-            return visibility.TeamIds.Contains(teamId);
         }
 
         public async Task<VisibilityContext> GetVisibilityContextForTeamAsync(Guid teamId, CancellationToken ct)
@@ -424,6 +512,17 @@ namespace Player.Vm.Api.Domain.Services
             return teams ?? [];
         }
 
+        public async Task<IReadOnlySet<AppSystemPermission>> GetSystemPermissionsAsync(CancellationToken ct)
+        {
+            if (!_cache.TryGetValue(_userId, out ICollection<string> systemPermissions))
+            {
+                systemPermissions = await _playerApiClient.GetMyPermissionsAsync(ct);
+                _cache.Set(_userId, systemPermissions, new MemoryCacheEntryOptions().SetAbsoluteExpiration(TimeSpan.FromMinutes(1)));
+            }
+
+            return AppPermissions.Parse<AppSystemPermission>(systemPermissions);
+        }
+
         // The caller's own teams in the View - membership or primary only, excluding teams reachable
         // solely through a scoped permission grant.
         private async Task<HashSet<Guid>> GetDirectTeamIdsByViewIdAsync(Guid viewId, CancellationToken ct)
@@ -435,38 +534,13 @@ namespace Player.Vm.Api.Domain.Services
                 .ToHashSet();
         }
 
-        private static bool HasViewPermission(ICollection<TeamPermissionsClaim> claims, IEnumerable<Guid> teamIds, AppViewPermission[] requiredPermissions)
-        {
-            return claims
-                .Where(x => teamIds.Contains(x.TeamId))
-                .SelectMany(x => x.PermissionValues ?? [])
-                .Select(x => Enum.TryParse<AppViewPermission>(x, out var p) ? p : (AppViewPermission?)null)
-                .Where(p => p.HasValue)
-                .Select(p => p.Value)
-                .Intersect(requiredPermissions)
-                .Any();
-        }
-
-        private static HashSet<TPermission> ParsePermissions<TPermission>(IEnumerable<string> permissionValues)
+        private static bool HasPermission<TPermission>(ICollection<TeamPermissionsClaim> claims, IEnumerable<Guid> teamIds, TPermission[] requiredPermissions)
             where TPermission : struct, Enum
         {
-            return (permissionValues ?? [])
-                .Select(x => Enum.TryParse<TPermission>(x, out var permission) ? permission : (TPermission?)null)
-                .Where(p => p.HasValue)
-                .Select(p => p.Value)
-                .ToHashSet();
-        }
-
-        private static bool HasTeamPermission(ICollection<TeamPermissionsClaim> claims, IEnumerable<Guid> teamIds, AppTeamPermission[] requiredPermissions)
-        {
-            return claims
-                .Where(x => teamIds.Contains(x.TeamId))
-                .SelectMany(x => x.PermissionValues ?? [])
-                .Select(x => Enum.TryParse<AppTeamPermission>(x, out var p) ? p : (AppTeamPermission?)null)
-                .Where(p => p.HasValue)
-                .Select(p => p.Value)
-                .Intersect(requiredPermissions)
-                .Any();
+            return AppPermissions.Parse<TPermission>(claims
+                    .Where(x => teamIds.Contains(x.TeamId))
+                    .SelectMany(x => x.PermissionValues ?? []))
+                .Overlaps(requiredPermissions);
         }
     }
 

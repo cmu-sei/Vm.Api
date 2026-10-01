@@ -224,7 +224,7 @@ namespace Player.Vm.Api.Features.Vms
                 }
                 else
                 {
-                    return await _playerService.CanEditTeams(vm.VmTeams.Select(x => x.TeamId), cancellationToken);
+                    return await _playerService.CanControlVms(vm.VmTeams.Select(x => x.TeamId), cancellationToken);
                 }
             }
         }

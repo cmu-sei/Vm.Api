@@ -124,6 +124,31 @@ namespace Player.Vm.Api.Features.Vms
         }
 
         /// <summary>
+        /// Gets every Vm in the specified View
+        /// </summary>
+        /// <remarks>
+        /// Returns every Vm on any of the View's teams, personal Vms included, regardless of the caller's own team memberships.
+        /// <para />
+        /// Accessible to a User with the ViewVms or ControlVms system permission, or the ViewViewVms or ControlViewVms permission in the View
+        /// </remarks>
+        /// <param name="viewId">The Id of the View</param>
+        /// <param name="ct"></param>
+        /// <returns></returns>
+        [HttpGet("views/{viewId}/vms/all")]
+        [ProducesResponseType(typeof(IEnumerable<Vm>), (int)HttpStatusCode.OK)]
+        [ProducesResponseType((int)HttpStatusCode.NotFound)]
+        [SwaggerOperation(OperationId = "getAllViewVms")]
+        public async Task<IActionResult> GetAllByViewId([FromRoute] Guid viewId, CancellationToken ct)
+        {
+            var vms = await _vmService.GetAllByViewIdAsync(viewId, ct);
+
+            if (vms == null)
+                return NotFound(new { title = "View not found", status = 404 });
+
+            return Ok(vms);
+        }
+
+        /// <summary>
         /// Creates a new Virtual Machine
         /// </summary>
         /// <remarks>
@@ -334,6 +359,30 @@ namespace Player.Vm.Api.Features.Vms
         public async Task<IActionResult> GetViewMaps([FromRoute] Guid viewId, CancellationToken ct)
         {
             var maps = await _vmService.GetViewMapsAsync(viewId, ct);
+
+            if (maps == null)
+                return NotFound(new { title = "View not found", status = 404 });
+
+            return Ok(maps);
+        }
+
+        /// <summary>
+        /// Get every map in a view
+        /// </summary>
+        /// <remarks>
+        /// Returns every map in the View regardless of the caller's own team memberships.
+        /// <para />
+        /// Accessible to a User with the ViewMaps or ManageMaps system permission, or the ViewViewMaps or ManageViewMaps permission in the View
+        /// </remarks>
+        /// <param name="viewId">The Id of the View</param>
+        /// <param name="ct"></param>
+        [HttpGet("views/{viewId}/maps/all")]
+        [ProducesResponseType(typeof(IEnumerable<VmMap>), (int)HttpStatusCode.OK)]
+        [ProducesResponseType((int)HttpStatusCode.NotFound)]
+        [SwaggerOperation(OperationId = "getAllViewMaps")]
+        public async Task<IActionResult> GetAllViewMaps([FromRoute] Guid viewId, CancellationToken ct)
+        {
+            var maps = await _vmService.GetAllViewMapsAsync(viewId, ct);
 
             if (maps == null)
                 return NotFound(new { title = "View not found", status = 404 });

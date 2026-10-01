@@ -292,8 +292,8 @@ public class ViewServiceTests
                 new Team { Id = second, Name = "Blue Team", ViewId = viewId },
             });
 
-        var teams = await _service.GetTeamsForView(viewId, Ct);
-        var again = await _service.GetTeamsForView(viewId, Ct);
+        var teams = await _service.GetTeamsForView(viewId, bypassCache: false, Ct);
+        var again = await _service.GetTeamsForView(viewId, bypassCache: false, Ct);
 
         Assert.Equal<Guid>([first, second], teams);
         Assert.Equal<Guid>([first, second], again);
@@ -310,24 +310,47 @@ public class ViewServiceTests
         var viewId = Guid.NewGuid();
         _http.Answers($"api/views/{viewId}/teams", Array.Empty<Team>());
 
-        Assert.Empty(await _service.GetTeamsForView(viewId, Ct));
-        Assert.Empty(await _service.GetTeamsForView(viewId, Ct));
+        Assert.Empty(await _service.GetTeamsForView(viewId, bypassCache: false, Ct));
+        Assert.Empty(await _service.GetTeamsForView(viewId, bypassCache: false, Ct));
 
         Assert.Single(_http.Sent);
     }
 
     /// <summary>
-    /// Not found is not forgiven on this route, unlike the team lookup: the caller gets the exception. Its
-    /// one caller is inside the telemetry path, whose exceptions are swallowed by the hub's caller, so this
-    /// asymmetry has never been visible.
+    /// Bypassing the cache asks player.api every time, and still refreshes the cache for the callers that
+    /// do not bypass it.
     /// </summary>
     [Fact]
-    public async Task GetTeamsForView_ForAViewPlayerDoesNotHave_Throws()
+    public async Task GetTeamsForView_BypassingTheCache_AsksEveryTimeAndRefreshesTheCache()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+        _http.Answers(
+            $"api/views/{viewId}/teams",
+            new[] { new Team { Id = teamId, Name = "Red Team", ViewId = viewId } });
+
+        await _service.GetTeamsForView(viewId, bypassCache: true, Ct);
+        await _service.GetTeamsForView(viewId, bypassCache: true, Ct);
+        var cached = await _service.GetTeamsForView(viewId, bypassCache: false, Ct);
+
+        Assert.Equal<Guid>([teamId], cached);
+        Assert.Equal(2, _http.Sent.Count);
+    }
+
+    /// <summary>
+    /// A View player.api does not have is null rather than an exception, so the all-in-View listings can
+    /// answer 404. Null is not cached: the View may yet be created.
+    /// </summary>
+    [Fact]
+    public async Task GetTeamsForView_ForAViewPlayerDoesNotHave_IsNullAndNotCached()
     {
         var viewId = Guid.NewGuid();
         _http.Answers($"api/views/{viewId}/teams", HttpStatusCode.NotFound);
 
-        await Assert.ThrowsAsync<ApiException>(() => _service.GetTeamsForView(viewId, Ct));
+        Assert.Null(await _service.GetTeamsForView(viewId, bypassCache: false, Ct));
+        Assert.Null(await _service.GetTeamsForView(viewId, bypassCache: false, Ct));
+
+        Assert.Equal(2, _http.Sent.Count);
     }
 
     #endregion

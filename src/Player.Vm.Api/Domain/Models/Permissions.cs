@@ -13,6 +13,7 @@ public enum Permissions
 
 public class VmPermissionResult
 {
+    public AppSystemPermission[] SystemPermissions { get; set; }
     public AppViewPermission[] ViewPermissions { get; set; }
     public AppTeamPermission[] TeamPermissions { get; set; }
 }
