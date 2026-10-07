@@ -4,19 +4,19 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 1,451 tests across 52 test classes. All of them run today; nothing is skipped.
+The suite contains 1,716 tests. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
-Docker: no network, no vCenter and no Proxmox cluster. The 562 unit tests need not even that.
+Docker: no network, no vCenter and no Proxmox cluster. The unit tests need not even that.
 
-Twenty-five of the fifty-two classes are isolated unit tests. They construct the thing under test
+Many of the classes are isolated unit tests. They construct the thing under test
 directly and substitute its collaborators. `VsphereIsoProviderTests` and `VsphereServiceCommandTests`
 are the largest and most important of them: they drive `VsphereService` and its ISO provider through a
 substituted `IVimClient`, which is the only seam between those and a live vCenter.
 
 Six of them are the Proxmox driver, and they are substituted a layer lower than that. `ProxmoxService`
 builds its own `PveClient` in its constructor out of `IHttpClientFactory.CreateClient("proxmox")`, so
-the seam available is the socket rather than an interface, and `Infrastructure/FakeProxmoxCluster.cs` is
+the seam available is the socket rather than an interface, and `Support/FakeProxmoxCluster.cs` is
 a cluster that answers requests: the client's route building, its `{"data": ...}` envelope, its typed
 model binding and its task waiting all run for real, and a test asserts the request Proxmox would
 actually have received. `ProxmoxServiceCommandTests` (power commands, the cluster-wide reads and the NIC
@@ -27,7 +27,7 @@ class, `ProxmoxServiceVmLookupTests`, is database-backed rather than isolated, b
 that read one. That every other class passes a **null** `VmContext` is itself the assertion that the
 rest do not.
 
-Twelve classes host the application in process and send real HTTP requests through it. Everything between
+Thirteen classes host the application in process and send real HTTP requests through it. Everything between
 the request and the hypervisor client is production wiring - routing, model binding, the authorization
 policy, the MediatR pipeline behaviors, the handlers, AutoMapper and EF Core against real PostgreSQL -
 and only the edges are replaced.
@@ -165,7 +165,7 @@ spinner, the progress bar and the power indicator, and until recently none of th
 other class in the suite substitutes them away, because a `BackgroundService` whose loop returns nothing
 and signals nothing is not assertable from outside.
 
-`Infrastructure/PollLoop.cs` is what makes one assertable, and reading it first is worth more than reading
+`Support/PollLoop.cs` is what makes one assertable, and reading it first is worth more than reading
 any of the four classes. It is the `IServiceProvider` the loop resolves its per-pass scope from, so a pass
 is one `CreateScope` - which makes passes countable, and makes a pass asked for past its allowance
 refusable with an exception each service's own `catch` already swallows. That refusal is a barrier: the
@@ -177,7 +177,7 @@ minute - four orders of magnitude, so swapping the two in the service fails by t
 hair. `ProxmoxStateService` is the one poller that cannot be given that margin, because it floors its own
 interval at one second: its interval tests are a second against a minute, and the short arm is asserted
 with a lower bound on elapsed time rather than only an upper one, so a service that stopped honouring the
-floor and slept for nothing would still fail. `Infrastructure/PollLoopSmokeTests` tests the harness itself
+floor and slept for nothing would still fail. `Support/PollLoopSmokeTests` tests the harness itself
 and nothing about any service.
 
 - `TaskServiceTests` covers vSphere's `TaskService`: the property filter it builds, the notification it
@@ -257,7 +257,7 @@ call to player.api over HTTP, and it is the input every one of these names is co
 
 Four classes cover the things every other class substitutes: the clients that talk out of this process, to
 player.api and to the identity provider. They are the only classes in the suite whose seam is the socket
-rather than an interface - a substituted `HttpMessageHandler`, `Infrastructure/TestHttpHandler.cs`,
+rather than an interface - the shared `StubHttpMessageHandler`'s route rules, with `RefusesUnmatched()`,
 described below - so the generated `PlayerApiClient`'s routes and deserialization, IdentityModel's token
 request and Polly's retry policy all run for real, and what is asserted is the request that went out and
 what was made of the answer.
@@ -291,7 +291,7 @@ what was made of the answer.
   a `VmContext` per event out of `IServiceScopeFactory`, and the factory is hand-written rather than
   substituted so that each scope disposes the context it handed out.
 
-`Infrastructure/DatabaseHarnessTests` tests the harness itself. Each of its assertions guards a
+`Support/DatabaseHarnessTests` tests the harness itself. Each of its assertions guards a
 property the rest of the suite silently relies on and which would otherwise degrade without failing
 anything: that the provider really is Npgsql, that every migration is applied, that snake_case casing
 and store-generated UUIDs reached the schema, that foreign keys are enforced, that a test sees only its
@@ -301,33 +301,46 @@ second database of its own rather than the same one with more tables in it.
 # Running the tests
 
 ```bash
-dotnet test
+dotnet test src/Player.Vm.Api.Tests                                  # needs Docker
+dotnet test src/Player.Vm.Api.Tests -- xUnit.DiagnosticMessages=true # prints the provider banner
+dotnet test src/Player.Vm.Api.Tests --filter "FullyQualifiedName~.VsphereServiceCommandTests"
+dotnet test src/Player.Vm.Api.Tests --collect:"XPlat Code Coverage" # cobertura under TestResults/
 ```
 
 **Docker must be running.** PostgreSQL is the only database these tests use, and there is deliberately
 no in-memory or SQLite fallback - a fallback that quietly swaps the provider reports a green run that
-never touched what production uses. Without Docker the 889 database tests fail, each naming the reason;
-the other 562 still pass, because the container is started by the first test that asks for a database
-rather than at assembly load.
+never touched what production uses. Without Docker every database test fails, each naming the reason;
+the rest still pass, because the containers are started by the first test that asks for a database
+rather than at assembly load. With `-- xUnit.DiagnosticMessages=true` the run prints
+`[Player.Vm.Api.Tests] database provider: PostgreSQL (postgres:16-alpine, real migrations)`, which is what
+CI greps for. Never set `diagnosticMessages` in `xunit.runner.json`: the run then hangs after the last test.
 
-A single class or a single test can be run with a filter:
+The leading dot in a filter (`~.VmsEndpointTests`) keeps a class name from also matching every class that
+ends with it.
 
-```bash
-dotnet test --filter "FullyQualifiedName~VsphereServiceCommandTests"
-dotnet test --filter "FullyQualifiedName~VsphereServiceCommandTests.PowerOn_WhenAlreadyOn_ReportsItAndSendsNothing"
-```
+A full run takes about thirty seconds, container start and both sets of migrations included. About five
+of those are one test: `CallbackBackgroundServiceTests.WhenTheFirstAttemptFails_TheEventIsKeptAndRetried`
+waits out the real first retry delay, which is the shortest one the service has.
 
-A full run takes about twenty seconds, container start and both sets of migrations included. About five of
-those are one test: `CallbackBackgroundServiceTests.WhenTheFirstAttemptFails_TheEventIsKeptAndRetried` waits
-out the real first retry delay, which is the shortest one the service has.
-
-A plain run collects no coverage. `scripts/coverage.sh` is the opt-in way to get it, and nothing gates
-on the figure it produces - see Coverage below for what it is for and why it has no threshold.
+A plain run collects no coverage. `--collect:"XPlat Code Coverage"` turns the collector on with the
+exclusions in `src/Player.Vm.Api.Tests/coverlet.runsettings` (applied to every run through
+`RunSettingsFilePath`), and `scripts/coverage.sh` adds the HTML report and the ranking; nothing gates on
+the figure - see Coverage below.
 
 # Build settings
 
-`Directory.Build.props` sets `TreatWarningsAsErrors` for every project, which is what enforces the
-xUnit analyzers that ship with `xunit.v3`. These fail the build:
+The test project follows the Crucible API test standard (`agent-docs/api-testing/` in the workspace; its
+`README.md` is the description of the shared parts, and `CONVENTIONS.md` is how tests are written). Three
+files in `src/Player.Vm.Api.Tests` are copied from it byte for byte and are not edited here:
+`Directory.Build.props` (imports the repository's own, then sets `TreatWarningsAsErrors` and keeps the
+NuGet restore warnings as warnings), `xunit.runner.json` and `coverlet.runsettings`. The pinned test
+packages (`xunit.v3` 3.2.2, `xunit.runner.visualstudio` 3.1.5, `Microsoft.NET.Test.Sdk` 18.8.1,
+`coverlet.collector` 10.0.1, `NSubstitute` 6.0.0, `Testcontainers.PostgreSql` 4.15.0,
+`Microsoft.AspNetCore.Mvc.Testing` 10.0.1) live in `Directory.Packages.props`. The suite runs in VSTest mode
+of `dotnet test`, as every Crucible API does; the standard's README says why.
+
+`TreatWarningsAsErrors` is what enforces the xUnit analyzers that ship with `xunit.v3`. These fail the
+build:
 
 - xUnit1013 - A public method on a test class with no `[Fact]`.
 - xUnit1026 - A `[Theory]` parameter the test does not use.
@@ -360,233 +373,244 @@ Everything else is transitive and cannot be fixed in a project file in this repo
 `KubernetesClient` and the OpenTelemetry packages arrive through `Crucible.Common.ServiceDefaults`,
 `Microsoft.OpenApi` through Swashbuckle, `SQLitePCLRaw` through the EF SQLite provider,
 `Microsoft.NETCore.App` 2.1.0 through `VimClient`, and `System.Drawing.Common` and
-`System.Security.Cryptography.Xml` through the health-check UI packages.
-
-Unlike the compiler warnings, that is a real backlog rather than a set of findings that can never be
-acted on. Check where it stands when bumping a dependency:
+`System.Security.Cryptography.Xml` through the health-check UI packages. Check where it stands when
+bumping a dependency:
 
 ```bash
 dotnet list package --vulnerable --include-transitive
 ```
 
-Package versions live in `Directory.Packages.props`. Every `PackageReference` in the repository takes
-its version from there, and `CentralPackageVersionOverrideEnabled` is false so that a project cannot
-pin itself to a different version of a shared package. Two entries are versioned against the application
-rather than against the test tools around them, because both have to agree with the framework the
-application is built on rather than with each other: `Microsoft.AspNetCore.Mvc.Testing`, which has to
-build the host the application's own framework reference expects, and
-`Microsoft.AspNetCore.SignalR.Client`, which has to speak the protocol the hosted server negotiates.
-Both track the ASP.NET Core version.
+Package versions live in `Directory.Packages.props`, and `CentralPackageVersionOverrideEnabled` is false
+so that a project cannot pin itself to a different version of a shared package.
+`Microsoft.AspNetCore.Mvc.Testing` and `Microsoft.AspNetCore.SignalR.Client` (an app extra, for
+`HubConnectionTests`) track the ASP.NET Core version rather than the test tools around them.
 
 # How the harness works
 
-`Infrastructure/VmApiFactory.cs` is a `WebApplicationFactory<Startup>`. Its own doc comment is the
-authoritative description of what is real and what is not; the shape of it is:
+## Layout
+
+The test project mirrors `Player.Vm.Api`: a test of `Features/Vms/VmController` lives in
+`Features/Vms/`, of `Domain/Proxmox/Services/ProxmoxService` in `Domain/Proxmox/Services/`, of
+`Infrastructure/HttpHandlers/AuthenticatingHandler` in `Infrastructure/HttpHandlers/`, each in the
+matching `Player.Vm.Api.Tests.<folder>` namespace. (Inside those namespaces `Domain.` and `Features.`
+resolve to the test project's folders, so references to production types are written in full,
+`Player.Vm.Api.Domain.Models.Vm`, or through an alias such as `VmEntity`.) `Support/` holds the harness:
+
+- `Support/Shared/` - the standard's shared files, byte-identical in every Crucible API and never edited
+  here: `PostgresTestDatabase`, `ITestDatabase`, `TestDatabaseScope`, `DatabaseTestBase<TContext>`,
+  `ApiTestBase<TContext>`, `TestAuthHandler`, `HubRecorder`, `HubHarness`, `StubHttpMessageHandler`,
+  `RecordingLogger`, `Waits` (namespace `Crucible.Api.Testing`). `agent-docs/api-testing/sync.sh --check`
+  reports any difference.
+- `Support/` - the files built from the standard's templates: `DatabaseFixture`, `VmContextFactory`,
+  `VmAppFactory`, `TestConfiguration`, `DatabaseTestBase`, `ApiTestBase`, `TestActor`, `TestData`,
+  `ClaimsPrincipalBuilder`, `AuthorizationHarness`, `TestMapper`, and the harness self-tests
+  `DatabaseHarnessTests`, `HttpHarnessTests` and `TestActorTests`.
+- `Support/` also holds vm.api's own extras, each named for what it fakes: `FakeProxmoxCluster` (a PVE
+  cluster at the socket), `FakeChangeFeed` (vCenter's property collector), `PollLoop` (a counted turn of a
+  polling `BackgroundService`, with `PollLoopSmokeTests`), `PlayerPermissions` (what the substituted
+  player.api answers), `RecordingHubHarness` and `HubContextHarness` (below).
+
+## The database
+
+`Support/DatabaseFixture.cs` owns the databases for the whole run, as an assembly fixture declared in
+`AssemblyFixtures.cs`. It is a thin wrapper over two shared `PostgresTestDatabase` instances, because
+production has two databases: `VmContext` reads `ConnectionStrings:PostgreSQL`, and `VmLoggingContext`
+reads `VmUsageLogging:PostgreSql`, a separate connection string with its own migration history and, as
+often as not, a separate server. Each instance starts its own `postgres:16-alpine` container on the first
+test that asks for a database, migrates a template (`vm_template`, `vm_logging_template`) with the real
+migrations (both live in the API assembly, so no migrations assembly is named), and hands each test a
+clone made with `CREATE DATABASE ... TEMPLATE`, a file-level copy that costs milliseconds. A session is
+the pair: `ITestDatabaseSession<VmContext>` for the shared bases, and also
+`ITestDatabaseSession<VmLoggingContext>`, which is how a request resolves the usage log and how
+`NewLoggingContext()` reaches it. `DatabaseHarnessTests` asserts the separation from both ends.
+
+The shared `PostgresTestDatabase` clears only the template's connection pool after migrating
+(`CREATE DATABASE ... TEMPLATE` fails while any session is connected to the template, and a disposed
+`NpgsqlConnection` returns to the pool rather than closing), and drops each test's database
+`WITH (FORCE)` afterwards. Isolation is a database per test rather than a rolled-back transaction on
+purpose: the `EntityEventInterceptor` publishes entity events on `TransactionCommitted` and discards them
+on rollback, so a transaction per test would silently stop every entity event.
+
+Tests reach this through `Support/DatabaseTestBase.cs`: `Db` (a context over the test's own database),
+`NewContext()` for re-reading through a cold change tracker, `Seed(...)`, `Mediator` (the substituted
+mediator the test's own contexts publish entity events to), `Ct`, `WaitUntil`, and `NewLoggingContext()`
+for the usage log, deliberately not a `Db` of its own because almost no test needs it.
+
+## The host
+
+`Support/VmAppFactory.cs` is a `WebApplicationFactory<Startup>` in the standard's **per-class** variant:
+one host per test class, through `IClassFixture<VmAppFactory>`, because the tests arrange and assert on
+the NSubstitute doubles the host resolves. Its doc comment is the authoritative list of what is real; the
+shape of it is:
 
 - **Substituted**: `IVsphereService` and `IProxmoxService` (the hypervisors), `IPlayerService`,
   `IViewService` and `IPlayerApiClient` (player.api, reached over HTTP for authorization decisions and
   for the View a SignalR notification is addressed to), `ITaskService` / `IProxmoxTaskService` (the
   pollers the `CheckTasks` pipeline behaviors poke after a power command), `ICallbackBackgroundService`
   (the webhook send queue) and `IIsoProvider` (ISO storage on a hypervisor).
+- **Replaced**: token validation (the shared `TestAuthHandler`), `IHttpClientFactory` (the shared
+  `StubHttpClientFactory` over `Factory.OutboundHttp`), and the `VmContext` and `VmLoggingContext`
+  registrations (below).
 - **Removed**: every `IHostedService`. The background pollers would otherwise start dialing a vCenter
   that is not there, on their own schedule, in the middle of unrelated tests.
-- **Real**: everything else, including `VmService.CanAccessVm` and the handlers' own permission gates.
-  `IPlayerService` is the only authorization substitute.
+- **Real**: everything else, including `VmService.CanAccessVm`, the handlers' own permission gates and
+  the SignalR hub contexts (`HubConnectionTests` connects real clients to them).
 
-Two of those are worth knowing the reason for, because neither is about avoiding the network:
+A substitute is safe in a per-class host because one class's tests run one after another, so no other
+class's request reaches it. Its state does persist across those tests, so each endpoint class clears what
+it arranges in `InitializeAsync` (`BulkPowerOperationEndpointTests` calls `ClearSubstitute()` on each and
+then `AllowEverything()`): a `Received()` assertion in a class that did not clear can be satisfied by an
+earlier test's request. A run-wide host would need recorders instead, which is the standard's default and
+the reason it is not used here.
+
+Two of the substitutes are worth knowing the reason for, because neither is about avoiding the network:
 
 - `ICallbackBackgroundService` is substituted because the real one is a `BackgroundService` that builds
   its `ActionBlock` in its **constructor**. Removing the `IHostedService` registrations does not stop it:
   handing it an event still starts processing, on a thread pool thread, outside any request - so it
   resolves the host's own `VmContext` and races the test asserting on the row it just wrote.
-  `CallbackBackgroundServiceTests` is what covers the real one, outside the host, with a scope factory of
-  its own - which is the same problem solved the only way it can be rather than avoided.
+  `CallbackBackgroundServiceTests` covers the real one, outside the host, with a scope factory of its own.
 - `IIsoProvider` replaces only the storage. `IsoService` itself is left real, because the scope
   resolution, the permission gates, the filename sanitizing and the cross-provider merge are the parts
-  worth running. The real pair of providers is removed rather than substituted one for one, since
-  `IsoService` takes providers as a set: what a test needs to say is "one hypervisor stores ISOs, and
-  here is what it holds", not which two happen to be registered. The substitute starts *disabled*, which
-  is what an install with no ISO storage configured looks like and is what a test with nothing to do with
-  ISOs should see; `EnableIsoProvider()` turns it into a plausible hypervisor.
+  worth running. The substitute starts *disabled*, which is what an install with no ISO storage
+  configured looks like; `EnableIsoProvider()` turns it into a plausible hypervisor.
 
-`AllowEverything()` grants the substituted player.api every permission the endpoints gate on, and a test
-that cares about a denial re-stubs the one call it is denying. It is deliberately not exhaustive over
-`IPlayerService`: the visibility calls are left unstubbed, because a default that made every team visible
-would hide the difference between holding a permission and a team's membership of a View.
+The host runs in the `Production` environment, so `ExceptionMiddleware` answers a 500 as deployed: the
+exception message in `detail`, the title "A server error occurred.". (It writes the `ProblemDetails` as
+`application/json`, so the shared `AssertProblem` is not used here; tests read `title` and `detail`
+themselves.) The configuration it layers over `appsettings.json` is `Support/TestConfiguration.cs`, with a
+comment per key: the health-check UI off, `IsoUpload:MaxFileSize` small enough that a test can exceed it
+(it is at once the ceiling `UploadIso` enforces and the multipart body limit `Startup` hands the form
+reader), and `Proxmox:Host` set to `pve.test`, the provider instance id every Proxmox `ViewNetwork` row is
+keyed on. What varies per host is set by the factory itself through `UseSetting`: the databases,
+`VmUsageLogging:Enabled` and `Authorization:AuthorizationScope`.
 
-Two configuration values the factory writes are asserted on rather than merely set, and both are
-exposed as constants for that reason. `MaxIsoFileSize` is at once the ISO size ceiling `UploadIso`
-enforces and the multipart body limit `Startup` hands Kestrel, so it is small enough that a test can
-exceed it without moving gigabytes. `ProxmoxHost` is not only an address: it is the provider instance id
-every Proxmox `ViewNetwork` row is keyed on, so a test seeding one has to agree with it. It is
-deliberately not the empty string `appsettings.json` ships, which is also `ProviderInstanceId`'s default
-and would let a row belonging to no cluster in particular match. Nothing dials either, since
-`IProxmoxService` is substituted and no `PveClient` is ever built.
+One subclass exists for a setting the application reads at **startup**, which no test can flip:
+`VmUsageLoggingEnabledFactory` runs with `VmUsageLogging:Enabled` true. `Startup.ConfigureServices` reads it
+once to choose which `IVmUsageLoggingService` to register, and `VmUsageLoggingSessionController` captures
+`IOptionsMonitor.CurrentValue` in its constructor, so rewriting configuration mid-run would prove nothing
+about a deployment. The default host keeps what `appsettings.json` ships, so every other class tests the
+shipped configuration.
 
-`Infrastructure/TestMapper.cs` is the application's real AutoMapper configuration, for the tests that
-construct a service directly instead of going over HTTP. It is built the way `Startup` builds it -
-`AddAutoMapper(typeof(Startup))` over the whole assembly - rather than by registering the profiles a
-test happens to need, so a broken profile or a resolver whose dependency goes unregistered fails in
-those tests too. `ConsoleUrlOptions` has to be registered alongside it because `ConsoleUrlResolver`
-takes it as a constructor dependency, and its values are deliberately recognizable: a test asserting on
-a console URL should be reading it from `TestMapper`, not matching a hostname left in a config file.
-
-`Infrastructure/HubHarness.cs` is what lets a hub method be called at all outside a connection. A `Hub`
-reads its caller from `Context`, `Clients` and `Groups`, all three of which SignalR sets after
-constructing it, so the harness builds a `HubCallerContext` with a connection id and a `sub` claim and
-attaches them with `Attach(hub)`. It then records what the hub did: `Added` and `Removed` are the group
-names in order, `AddedChanges` pairs each name with the connection id it was added for, and `Sends`
-holds the groups, method name and arguments of every broadcast. The two collaborators are faked
-differently on purpose. `IGroupManager` is hand-written, because the group names *are* the subject - a
-test wants the whole ordered set, and recording the connection id is what shows a hub adding its own
-connection rather than someone else's. `IHubCallerClients` is substituted, because it has a dozen members
-that shift between framework versions and only `Group` and `Groups` are ever reached.
-
-`Infrastructure/HubContextHarness.cs` is the other end of the same idea: what something *outside* a hub
-broadcasts through an `IHubContext<THub>`, which is how the entity-event handlers and the task pollers reach
-a group. It records the group name, method and arguments of every send and exposes them three ways -
-`Sends` in order, `Of(method)`, and `Recipients(method)` deduplicated - because "which groups were told" and
-"how many messages were sent" are different questions and both have tests. `Clients.All` is recorded under
-a sentinel group name rather than in a list of its own, since a fallback that tells everyone is an answer to
-who was told, and `VmDeletedSignalRHandler` has one.
-
-`Infrastructure/TestHttpHandler.cs` is the seam under the out-of-process clients, and the only place in
-the suite where what is replaced is the socket rather than an interface. Everything above it is production
-code - the generated `PlayerApiClient`, IdentityModel's token request, the `HttpClient` pipeline and
-whatever `DelegatingHandler`s are wrapped around it - which is the whole reason those tests are worth
-having: a route the client builds, a name its deserializer looks for and a status code its error handling
-keys off are all things this repository consumes rather than declares. Rules are matched by path in the
-order they were added, a rule can be one-shot so that a later one answers the retry, `Throws` fails the way
-a refused connection fails rather than with a status code, and every request is recorded with its method,
-path, query, `Authorization` header and body. A request nothing stubbed **throws**, naming the path asked
-for and every path that is stubbed: a 404 would be swallowed by the very error handling several of these
-tests are about, so an arrangement that has drifted from the route the client builds has to fail loudly.
-Bodies are serialized with System.Text.Json and no options, because the `Player.Api.Client` types carry
-`[JsonPropertyName]` on every property and so serializing one produces the names its own deserializer
-looks for; hand-written JSON is used only where the payload is not a type this repository has - the OAuth
-token response, and the webhook payloads player.api sends as a string.
-
-`Infrastructure/TestAuthHandler.cs` stands in for the JWT bearer handler so no identity server is
-needed. A request carrying `X-Test-User` authenticates as that user; a request without it presents no
-credentials, which is what keeps the 401 path testable. The scopes come from the factory rather than
-being hardcoded, because `Startup` builds its default authorization policy out of
-`Authorization:AuthorizationScope`.
-
-A request carrying `X-Test-Privileged` additionally gets the scope behind
-`Authorization:PrivilegedScope`, which `CallbacksController` is the only route gated on. That is a
-separate opt-in rather than another entry in the ordinary scope list on purpose: the machine-to-machine
-callers are the only ones that hold it, and granting it to every test principal would make the 403 on
-`CallbacksController` untestable. `ApiTestBase` exposes all three principals - `Client`,
-`AnonymousClient` and `PrivilegedClient`.
-
-## The database
-
-`Infrastructure/DatabaseFixture.cs` owns the database for the whole run. It starts `postgres:16-alpine`
-in a container - the same image player.api's suite uses, so the two are not proving things against
-different servers - and migrates two **template** databases. Each test then gets a pair of its own,
-created with `CREATE DATABASE ... TEMPLATE`, which is a file-level copy and costs milliseconds where
-re-running the migrations costs seconds. It is declared once for the assembly in `AssemblyFixtures.cs`.
-
-Two templates because production has two databases. `VmContext` reads
-`ConnectionStrings:PostgreSQL`; `VmLoggingContext` reads `VmUsageLogging:PostgreSql`, a separate
-connection string with its own migration history, and in a real deployment as often as not a separate
-server. Pointing both at one database would let a usage log test pass against a schema production does
-not have, which is why `DatabaseHarnessTests` asserts the separation from both ends rather than trusting
-it. The container creates only the database it was built with, so the second template is created
-explicitly before it is migrated.
-
-Two non-obvious things hold that together, both established by experiment:
-
-- **Nothing may hold a connection to the template.** `CREATE DATABASE ... TEMPLATE` fails while any
-  session is connected to it, and disposing an `NpgsqlConnection` returns it to the pool rather than
-  closing the socket - so a single `await using` against the template makes every later clone fail. The
-  fixture calls `NpgsqlConnection.ClearAllPools()` after migrating, and the hosted application is given
-  a throwaway database of its own rather than being pointed at the template.
-- **Concurrent clones need no lock.** PostgreSQL serializes concurrent clones of an idle template
-  itself; eight simultaneous callers were verified against this template. What breaks cloning is a
-  connection, not a concurrent clone.
-
-Isolation is a database per test rather than a rolled-back transaction on purpose. The
-`EntityEventInterceptor` publishes entity events on `TransactionCommitted` and discards its tracked
-state on `TransactionRolledBack`, so wrapping each test in a transaction would silently stop entity
-events from firing.
-
-Tests reach this through `Infrastructure/DatabaseTestBase.cs`, which gives each test `Db` (a context
-over its own database), `NewContext()` for re-reading through a cold change tracker, `Seed(...)` and
-`Ct`. `NewLoggingContext()` is the usage log's equivalent, and is deliberately not a `Db` of its own:
-almost no test needs it, and creating one per test would cost every test a connection to a database it
-never reads. `Infrastructure/ApiTestBase.cs` adds the HTTP side.
+The privileged caller of `CallbackController` (player.api's webhook) needs no host of its own:
+`CallbacksEndpointTests` sends its requests as an actor whose client carries the shared `X-Test-Scope`
+header with the ordinary scopes plus `Authorization:PrivilegedScope`, and asserts the 403 for `Root`, whose
+token carries the ordinary scopes only.
 
 ## How a request finds its database
 
-`AddEventPublishingDbContextFactory` pools one set of `DbContextOptions` when the container is built,
-with one connection string baked in, so there is no point at which the application's own registration
-could choose a database per request. `VmApiFactory` therefore replaces the scoped `VmContext`
-registration with one that reads an `X-Test-Session` header and looks the test up in
-`Infrastructure/TestDatabaseScope.cs`. `ApiTestBase` sets that header on every client it hands out.
-`VmLoggingContext` is replaced the same way and for the same reason - `AddDbContextPool` bakes in one
-connection string too - and both resolve through one `SessionFor` helper, so a request cannot end up
-reading one test's application database and another's usage log.
+`AddEventPublishingDbContextFactory` and `AddDbContextPool` bake one connection string into pooled
+options when the container is built, so the application's own registrations cannot choose a database per
+request. The factory replaces both with a scoped registration that resolves the test's session through
+the shared `TestDatabaseScope.Resolve`, keyed on the `X-Test-Session` header every client from
+`ApiTestBase` carries; the request scope is the context's `ServiceProvider`, as in production, so entity
+events reach the real handlers. A header rather than an `AsyncLocal`: a lookup that misses fails loudly
+and names the request it could not route.
 
-A header rather than an `AsyncLocal`: a lookup that misses fails loudly and names the request it could
-not route, where an ambient value that failed to flow across a thread hop would silently resolve some
-other test's database.
+Both registrations are the shared two-argument `TestDatabaseScope.ReplaceRegistration`, given
+`() => _started ? null : _hostSession`. `Program.Main` matches neither convention `HostFactoryResolver` looks
+for, so `WebApplicationFactory` invokes `Main` on a background thread, and `Main` calls `InitializeDatabase`,
+which resolves both contexts with no request in flight and migrates them. So the host gets a pair of
+throwaway databases cloned from the templates (the migration is then a no-op), and a resolution outside a
+request reaches them until `CreateHost` returns; after that it throws. `HttpHarnessTests` asserts that a
+request never lands there, that a request with no session header is refused, and that a context resolved
+outside a request after startup throws.
 
-The limit of that mechanism is the hubs. A hub invocation is not an HTTP request - the headers belong to
-the connection, and the invocation arrives over it - so a hub method resolving a `VmContext` gets the
-host's own throwaway database rather than the calling test's. That is why `VmHub` is driven by direct
-invocation over the test's own context and only `ProgressHub`, which touches no database, is driven over
-a live connection in `HubConnectionTests`. Making a hub routable would mean keying `TestDatabaseScope` on
-the connection id at negotiation time, which is worth doing only if `VmHub` ever needs to be tested from
-the client's side.
+The limit of that mechanism is the hubs. A hub invocation is not an HTTP request, so a hub method
+resolving a `VmContext` gets the host's own throwaway database rather than the calling test's. That is
+why `VmHub` is driven by direct invocation over the test's own context and only `ProgressHub`, which
+touches no database, is driven over a live connection in `HubConnectionTests`.
 
-The one place a context is legitimately resolved with no request in flight is startup.
-`Program.Main` matches neither convention `HostFactoryResolver` looks for, so `WebApplicationFactory`
-invokes `Main` on a background thread - and `Main` calls `InitializeDatabase`, which resolves a
-`VmContext` and calls `Migrate` on it. Nothing gates that off, so the host is given a clone of the
-already-migrated template, which makes the migrate a no-op. `DatabaseHarnessTests` asserts that no
-request ever lands there. The host gets a throwaway usage log database as well, because
-`InitializeDatabase` migrates that one too when the feature is enabled.
+## Callers and permissions
 
-## Three things a new endpoint test has to respect
+vm.api keeps no users or permissions of its own: every decision is a question to player.api through
+`IPlayerService`, which the factory substitutes. So an actor (`Support/TestActor.cs`) is the identity a
+request carries, the `sub` and `name` claims the shared `TestAuthHandler` mints from `X-Test-User` and
+`X-Test-Name`, and what it may do is what the substitute answers:
 
-- `VmApiFactory` is a **class** fixture, so its substitutes are shared across the class, but the
-  database is not - it is per test. Clear the substitutes in `InitializeAsync`;
-  `BulkPowerOperationEndpointTests` calls `ClearSubstitute()` on each and then `AllowEverything()`.
-  Clearing matters more than it looks: a substitute retains both its stubs and its received calls, so a
-  `Received()` assertion in a class that did not clear can be satisfied by an earlier test's request.
-- It is deliberately not an assembly fixture. Tests both arrange return values on and assert
-  `Received()` against its NSubstitute doubles, and NSubstitute keeps assertion state per thread, so
-  one shared set would lose and cross-attribute calls once classes ran in parallel. The cost is about a
-  second of host startup per endpoint test class; when that starts to hurt, the answer is hand-written
-  session-keyed fakes, not a shared host.
-- A setting the application reads at **startup** cannot be flipped by a test, and needs a subclass of
-  the factory instead. `VmUsageLoggingEnabledFactory` is the worked example, and one boolean is enough to
-  need it: `Startup.ConfigureServices` reads `VmUsageLogging:Enabled` once to choose which
-  `IVmUsageLoggingService` to register, and `VmUsageLoggingSessionController` captures
-  `IOptionsMonitor.CurrentValue` in its constructor rather than per request. Rewriting configuration
-  mid-run would leave the first of those stale and prove nothing about a real deployment. Cover both
-  sides with one class each rather than one host per test, and leave the default as what
-  `appsettings.json` ships, so that every other class keeps testing the shipped configuration.
+- `Root` (`ApiTestBase`) is the factory's `UserId`, holding whatever the class arranged:
+  `Factory.AllowEverything()` answers yes to every permission question the endpoints ask, and leaves the
+  visibility calls unstubbed, because a default that made every team visible would hide the difference
+  between a permission and a team's membership of a View.
+- `Actor().Holding(new PlayerPermissions()...).SeedAsync()` makes the substitute answer every permission
+  question from exactly those grants, the way the real `PlayerService.Can` would: a system permission
+  everywhere, a View permission for that View (or a team placed in it with `InView`), a team permission
+  for that team. This is what a denied test's near miss is made of: the caller holds the permission next
+  to the one the gate asks for, or the right one on another team or View, and because every question is
+  answered from the same grants, a gate that asked the wrong question would let it through. The substitute
+  is one per host, so the grants answer for every caller of the test that seeds them. `TestActorTests`
+  pins the shapes.
+- `Client()` carries no identity, for the 401 cases.
+
+Each gate is then tested from both sides with an actor: allowed for a caller holding exactly the
+permission it asks for on the resource's own team or View (`Get_is_allowed_for_a_caller_holding_exactly_ViewTeamVms_on_the_Vms_team`),
+and refused for one holding that permission on another team or View, or its read-only neighbour
+(`Delete_is_forbidden_for_a_caller_holding_ManageTeam_only_on_another_team_and_leaves_the_row`). Older
+denials that re-stub one question false on top of `AllowEverything` (`Deny(...)` in the route classes)
+remain beside them; they show which question a route asks, and the actor tests show it asks about the
+right team.
+
+Service tests that construct a service directly substitute `IPlayerService` themselves and use the same
+model (`new PlayerPermissions()...AnswerFor(_player)`, as `VmServiceAuthorizationTests.Holding` does), or
+build a principal with `Support/ClaimsPrincipalBuilder.cs`. The real `PlayerService` is covered by
+`PlayerServiceAuthorizationTests`, constructed through `AuthorizationHarness.CreatePlayerService`.
+
+## The fakes that are not in the standard
+
+- The out-of-process clients (the generated `PlayerApiClient`, IdentityModel's token request, `PveClient`
+  through `Support/FakeProxmoxCluster.cs`) run over the shared `StubHttpMessageHandler`, one per test,
+  arranged with its route rules (`Answers`, `AnswersOnce`, `AnswersJson`, `Throws`) and
+  `RefusesUnmatched()`: a request nothing arranged **throws**, because a 404 would be swallowed by the error
+  handling several of these tests are about. It replaced vm.api's own `RoutedHttpHandler`.
+- The hub tests use the shared `HubHarness` (`JoinedGroups`, `LeftGroups`, a connection id of the test's
+  choosing). `Support/RecordingHubHarness.cs` remains for `VmHubPresenceTests` alone: it keeps one ordered
+  log of every send with the list of groups it was addressed to, because the presence tests assert the
+  first and last `ActiveVirtualMachine` across groups and whether one send named several groups, which the
+  shared per-group proxies and `Sent<T>` do not express.
+- `Support/HubContextHarness.cs` records what something outside a hub (an entity-event handler, a task
+  poller) sends through an `IHubContext<THub>`. It remains beside the shared `HubRecorder`, which has its
+  `Recipients` and `FailsFor`, because these tests also read what the recorder does not keep: one ordered log
+  of every send with its group and arguments (`Sends`, asserted empty for "nothing was sent at all"), every
+  send of one method across groups (`Of`, counted for "announced twice"), and `Clients.All` among the
+  recipients. A `HubRecorder` reader for the ordered log would let it go. The host itself keeps the real
+  hub contexts.
+- `Support/TestMapper.cs` is the application's real AutoMapper configuration, built through DI as
+  `Startup` builds it (`ConsoleUrlResolver` needs `ConsoleUrlOptions`, registered with recognizable urls).
+
+## The harness self-tests
+
+`Support/DatabaseHarnessTests`, `HttpHarnessTests` and `TestActorTests` check what the rest of the suite
+assumes: two tests inserting the same network id into `view_networks`' unique
+`(view_id, provider_type, provider_instance_id, network_id)` index do not see each other (and a second
+insert in one test is refused, which proves the index), explicit ids survive, saving publishes entity
+events, the real migration history and snake_case naming are in force, the usage log is a second migrated
+database, foreign keys are enforced, a request with no identity is a 401 and a caller with no permissions
+a 403, a request reaches its test's database and never the host's, and each actor shape answers as it
+promises. When the harness breaks, these fail instead of a hundred unrelated tests.
 
 # Adding a test
 
-1. Put the file next to the ones covering the same area. The unit tests are named after the type
-   under test (`ProxmoxIsoStorageServiceTests`, `VsphereServiceCommandTests`); the harness lives in
-   `Infrastructure/`.
+The rules are the standard's `CONVENTIONS.md` (`agent-docs/api-testing/` in the workspace), which the
+reviewer judges against; what follows is how they land in this repository.
+
+1. Put the file where the code under test lives, mirroring `Player.Vm.Api` (see Layout above), in the
+   matching `Player.Vm.Api.Tests.<folder>` namespace. The harness and its self-tests live in `Support/`.
 2. Prefer a unit test with substituted collaborators for anything below the HTTP layer. Derive from
    `DatabaseTestBase` when the assertion is about what was stored, and from `ApiTestBase` (plus
-   `IClassFixture<VmApiFactory>`) when it is a contract that has to survive the handler, the serializer
-   and the wire - a status code, a response body shape, an authorization outcome. Both cost a database;
-   a unit test does not. For a hub method, attach `HubHarness` and invoke it directly, whatever base class
-   the assertion needs: the group names are what a hub test is about, and only the hub's edge - its
-   mapping, its authorization, a round trip - is worth a live connection. For an entity-event handler,
-   construct it over `Db` with a `HubContextHarness` and call `Handle` with the notification a real save
-   published - `DatabaseTestBase.Mediator` has recorded them - rather than with one written by hand, so
-   that what EF says changed is what the handler is given. For anything whose subject is a call *out* of
-   this process, put `TestHttpHandler` under the real client instead of substituting the client: what is
-   worth asserting there is the request that went out, and a substitute at the interface asserts only that
-   the test and the production code agree about a method signature.
+   `IClassFixture<VmAppFactory>`, or one of its subclasses) when it is a contract that has to survive the
+   handler, the serializer and the wire - a status code, a response body shape, an authorization outcome:
+   `public class XTests(DatabaseFixture fixture, VmAppFactory factory) : ApiTestBase(fixture, factory), IClassFixture<VmAppFactory>`.
+   Both cost a database; a unit test does not. A denied test's caller is a near miss seeded with
+   `Actor().Holding(...)`, never a caller holding nothing, and its name says what the caller holds
+   (`DeleteMap_is_forbidden_for_a_caller_holding_only_ViewTeamMaps_and_leaves_the_row`). For a hub method,
+   attach the shared `HubHarness` and invoke it directly: the group names are what a hub test is about,
+   and only the hub's edge - its mapping, its authorization, a round trip - is worth a live connection.
+   For an entity-event handler, construct it over `Db` with a `HubContextHarness` and call `Handle` with
+   the notification a real save published - `DatabaseTestBase.Mediator` has recorded them - rather than
+   with one written by hand. For anything whose subject is a call *out* of this process, put
+   a `StubHttpMessageHandler` of the test's own (with `RefusesUnmatched()`) under the real client instead of
+   substituting the client: what is worth asserting
+   there is the request that went out.
 3. Name the method as a sentence. The failure summary is all a reader of CI output gets.
 4. Pass a cancellation token to anything awaited, including inside private helpers - `Ct` on the two
    base classes, `TestContext.Current.CancellationToken` elsewhere. xUnit1051 only sees test methods,
@@ -600,13 +624,16 @@ request ever lands there. The host gets a throwaway usage log database as well, 
    and an undisposed context keeps its pooled connection checked out until the process exits.
 6. Do not add Arrange, Act and Assert comments. A blank line already shows the shape of a test.
    Comments should explain what a test pins and why it matters, not what the next line does.
-7. For an authorization test, substitute `IPlayerService` and construct the service directly, with
-   `TestMapper.Value` for the mapper. Make the substitute model the rule rather than the answer where
-   the rule is what is in question - `NetworkServiceTests.Holding` returns true when any one of the
-   permissions the call site *asked for* is held, which is what lets one test show that view rights
-   allow a read and another show that they do not allow a write. A substitute that returns a flat
+7. For an authorization test of a service, substitute `IPlayerService` and construct the service
+   directly, with `TestMapper.Mapper` for the mapper. Make the substitute model the rule rather than the
+   answer - `PlayerPermissions.AnswerFor` (or `NetworkServiceTests.Holding`) returns true when the caller
+   holds one of the permissions the call site *asked for*, which is what lets one test show that view
+   rights allow a read and another show that they do not allow a write. A substitute that returns a flat
    true or false per method cannot tell those apart.
-8. Break the production code and check the test fails, then restore it with `git checkout`. A test that
+8. Break the production code and check the test fails, then restore it (copy the file aside first, or
+   `git checkout -- <file>` only if it was unmodified). For an authorization gate this is the standard's
+   broken-gate check (`CONVENTIONS.md` section 5): break the gate at that endpoint's call site so it always
+   allows, every copy where the path checks it more than once. A test that
    passes the first time it is run has not been shown to assert anything, and every class here has been
    through it. Three things learned that way are now written into the tests themselves:
    `GetByViewId_OnlyMine_PutsThePrimaryTeamsVmFirst` passed with the ordering it exists to protect
@@ -675,264 +702,18 @@ request ever lands there. The host gets a throwaway usage log database as well, 
    arrangement never produced rather than one anybody decided to leave out. It found four of those, all
    since covered; they are listed under Coverage below, along with what each turned out to be.
 
-Bugs and deliberate oddities found while writing a test are characterized, not fixed. The test
-asserts the current behaviour and says why it is that way.
-`VsphereServiceCommandTests` is the worked example: it pins a contract that reads as sloppy error
-handling and is not. The VM UI lets a user multi-select machines and hit power on, so one machine
-that is already on - or one whose host is unreachable - must not surface as an error for the whole
-selection, which is why the service reports outcomes as opaque strings and swallows some faults on
-purpose. Several of those assertions would look wrong to someone reading them as "what good code
-does"; the comments are what carry that intent through the next refactor.
+A defect found while writing a test is characterized by an ordinary passing test of the current
+behaviour, and described in the app's defect document, `agent-docs/api-test-bugs/vm.api.md` in the
+workspace (outside this repository): the test, the production file and line, what the caller sees, the
+proposed fix and the test to flip once it lands. The test itself carries at most a one-line `<summary>`
+stating the current behaviour, and no defect note in any comment; `agent-docs/api-testing/verify.sh`
+checks both. Behaviour that may be intended goes under the document's "Needs a decision".
 
-Where a test would turn red once a real bug is fixed, say so in `<remarks>`, so that whoever makes
-the fix knows the failure is expected. Several tests are there for that reason alone, and are the reason
-this convention is worth following rather than skipping the awkward case:
-
-- `HealthEndpointTests.Ready_WhenUnhealthy_StillAnswers200`. These are controller actions, not the
-  health check middleware, and `UIResponseWriter.WriteHealthCheckUIResponse` writes the report without
-  setting a status code - so an unhealthy readiness check answers **200** with a body saying
-  `"Unhealthy"`, and a probe configured on the status code alone never fires. The `<remarks>` says the
-  fix is to assert 503 here.
-- `FilesEndpointTests.Upload_WithABodyOverTheLimit_IsRefusedByTheFormReaderNotTheHandler`. One
-  configured value is both the ISO size ceiling and the multipart body length limit, so a body over the
-  limit is refused by the form reader while MVC is still building value providers - and `UploadIso`'s own
-  `file.Length` check, the authoritative one, is unreachable. Both answers are 400s, so the assertion is
-  on the body, which is the only thing that tells them apart.
-- `VsphereEndpointTests.ChangeNetwork_WithNoNetworkNamed_Is500`. `Vsphere/ChangeNetwork` has no
-  blank-argument guard, so a request naming no network puts a null into `Dictionary.ContainsKey` and the
-  `ArgumentNullException` reaches the middleware unmapped. It is reachable by any caller who may change a
-  network at all, and it logs as an unhandled exception. `Proxmox/ChangeNetwork` answers the same request
-  400 "An adapter and target network are required"; the `<remarks>` says that is the fix, and nothing is
-  reconfigured either way.
-- `VsphereEndpointTests.ForAProxmoxVm_AVsphereRouteIsNotRefused`. There is no provider guard on the
-  vSphere routes, so a Proxmox VM addressed through one is powered on by `IVsphereService` rather than
-  refused. The `<remarks>` argues it both ways - vSphere needs no per-VM connection detail out of the
-  database, so there is nothing at the edge to dereference and the real service fails on its own
-  connection cache instead - and the cost is only the error the caller gets. If the guard is ever added,
-  this is the test that will say so.
-
-The usage log adds a cluster of these rather than one or two, which is what a feature that has never
-had a test in front of it looks like. Four are worth knowing about before touching it:
-
-- `Report_WithoutCredentials_Is500`. `GetVmUsageReport.Handler` reads the caller's id in its
-  constructor, and `ClaimsPrincipalExtensions.GetId` hands `Guid.Parse` a null when neither the `sub` nor
-  the `nameidentifier` claim is there - the `catch` around the first parse does not cover the second. On
-  an `[AllowAnonymous]` controller that makes the report the one route an anonymous caller cannot use.
-- `Download_ReplacesAnythingOutsideAsciiWithAQuestionMark`. The CSV is written with
-  `Encoding.ASCII.GetBytes`, so an accent in a Vm or user name is lost - and not hypothetically for the
-  timestamps, since .NET separates the time from AM/PM with a narrow no-break space. Every date in every
-  file the endpoint has ever produced has a question mark in it.
-- `Download_WithANullSessionName_Is500` and `Download_WithANullIpAddress_Is500`. Both columns are
-  nullable and both are used without a check - `SessionName.Length` for the filename fallback,
-  `IpAddress.Replace` for the column flattening.
-- `Download_WhenDisabled_Is406`. `[Produces("text/csv")]` narrows content negotiation to a media type no
-  formatter can write, so on a host with logging off the download answers 406 with an empty body where
-  the other seven routes answer 404 with a reason.
-
-The rest of that class's characterizations are permission and query behaviour, and are `<remarks>`ed in
-place: the class-level `[AllowAnonymous]`, the not-found check preceding the permission check on all five
-id routes, an edit authorizing against the View the session is *already* in, a session created with no
-View being stored against `Guid.Empty`, and the report matching its window against whole sessions rather
-than against when the activity happened.
-
-The hubs add four of their own, and the first is the one to read before changing anything there:
-
-- `ProgressHubTests.Join_ForAVmTheCallerCannotSee_IsNotRefused`. `ProgressHub` requires authentication
-  and then checks nothing at all - it takes a string, never looks at it and never asks who the caller is -
-  so any authenticated caller can subscribe to the task progress of any Vm in the system by naming its id.
-  What that leaks is a task's type, name, state and progress, and so the fact that a Vm exists under that
-  id and what is being done to it. The fix is the check every route that names a Vm already makes: load
-  the Vm and put it through `IVmService.CanAccessVm`, refusing with a `HubException` as `VmHub.JoinUser`
-  does.
-- `VmHubGroupTests.LeaveView_WhenVisibilityNarrowed_LeavesOnlyWhatIsStillVisible`. Leaving is computed
-  from the caller's *current* visibility rather than from what the connection joined, so a caller who
-  loses a team keeps receiving that team's traffic until the connection drops.
-- `VmHubGroupTests.JoinVm_ForATeamMember_AlsoSubscribesTeamsTheVmIsNotOn`. For a caller who is not a view
-  admin, `JoinVm` unions in every team they can see in the view rather than only the teams the Vm is on.
-  Over-broad rather than a leak - reaching the union at all needs one of the Vm's teams to be visible
-  already - and the narrower rule would be `visibility.TeamIds.Intersect(vm.TeamIds)`.
-- `VmUsageLoggingServiceTests.Create_TwiceForTheSameVm_LeavesTwoOpenVisitsThatBothGetClosed`. Nothing
-  closes an open visit before opening another, and `VmHub.SetActiveVirtualMachine` writes an entry every
-  time a console is opened - so a reconnecting client leaves two open rows that a later close stamps with
-  the same instant, and the report counts the time twice. Switching between two Vms is the worse half of
-  the same bug: a close only ever names the Vm being left, so the first Vm's row stays open forever and
-  the report drops it. Both are fixed in the same place. This is the one of the four with a figure a user
-  sees attached to it.
-
-The entity-event handlers add three more, and the last is the reason the group names are asserted directly
-rather than through a request:
-
-- `EntityEventBroadcastTests.CreatingAVmOnATeam_AnnouncesItTwiceToEachGroup`. Creating a Vm writes the Vm
-  and its team rows in one save, so two handlers announce it: `VmCreatedSignalRHandler` sends `VmCreated`
-  with the Vm and a modified-property list, and `VmTeamCreatedSignalRHandler` sends `VmCreated` with the Vm
-  alone. Every group hears the same create twice, in two argument shapes. Harmless at the client - the
-  second message carries the same Vm, and SignalR passes a missing argument as the parameter's default -
-  but neither handler can easily know about the other, since each is told only about its own row.
-- `VmSignalRHandlerTests.Created_ForAVmOnNoTeam_TellsNobody`, read against
-  `Deleted_ForAVmWhoseTeamsWereNeverLoaded_TellsEveryone`. Two opposite answers to the same absence: with
-  no teams to compute a group from, a create or an update reaches nobody at all, and a delete falls back to
-  `Clients.All`. Both are defensible on their own - nobody can have joined a group for a team the Vm is not
-  on, and a delete carries only an id - and the comment on the fallback is the only place either is written
-  down.
-- `EntityEventBroadcastTests.WhenAHandlerThrows_TheSaveStillSucceedsAndNobodyIsTold`.
-  `VmContext.PublishEventsAsync` catches and logs each event's exception, so a handler that fails leaves the
-  row written, the request answered and the clients never told. What a user sees is a Vm list quietly out of
-  date until the page is reloaded, and `IViewService` calling player.api over HTTP is a realistic way to get
-  there. Nothing else in the suite would notice, which is why these classes assert group by group rather
-  than that a message was sent.
-
-Smaller ones are `<remarks>`ed in place: the Vm in every broadcast carrying the id of every team it is on,
-whichever group the message went to; the two team handlers loading their Vm with a `FirstOrDefaultAsync()`
-that takes no cancellation token; and a team removal whose Vm has already gone telling the team but not the
-view.
-
-The out-of-process clients add four, and they are the kind that only a test at the socket can find - each
-one is a decision the interface these classes sit behind does not express:
-
-- `CallbackBackgroundServiceTests.ViewCreated_WhenPlayerFails_ClonesTheMapsWithNoTeamsAndDiscardsTheEvent`.
-  `CloneMaps` catches `ApiException`, returns on a 404 and swallows everything else - then carries on into
-  the loop that builds the clones with both team sets empty. So a 502 from a restarting player.api does not
-  become a retry, which the surrounding machinery exists for and which would fix it; it becomes a set of
-  maps nobody can see and an administrator has to reassign by hand, indistinguishable from a parent team
-  that genuinely has no namesake in the child. Rethrowing anything that is not a 404 is a one-line change.
-- `AuthenticationServiceTests.GetToken_ForATokenNotOutlivingTheThreshold_AsksEveryTime`, read against
-  `GetToken_NeverRenewsATokenItStillHolds`. `ValidateToken` compares the lifetime the provider *stated*
-  against `TokenRefreshSeconds`, which is not a countdown, so the comparison has the same answer for the
-  life of the process: a deployment either renews on every single call - a full token request in front of
-  every outgoing call to player.api, serialized on one lock - or never renews at all. What makes the second
-  safe is `AuthenticatingHandler` treating a 401 as "get another one and retry", and nothing reports the
-  first as anything but latency.
-- `AuthenticatingHandlerTests.SendAsync_WhenNoTokenCanBeHad_ThrowsRatherThanSending`. `Authenticate`
-  dereferences the token response for `IsError` without checking it for null, so a null one fails every
-  outgoing request with a `NullReferenceException` naming nothing to do with authentication. Its only
-  possible producer is `AuthenticationService.RenewToken`'s catch-all, and
-  `AuthenticationServiceTests.GetToken_WhenTheProviderCannotBeReached_ReturnsAnErrorResponseAndNotNull` is
-  the evidence that IdentityModel turns a transport failure into an error response instead - so the pair of
-  tests is what says this is unreachable today and one refactor of either class away from not being.
-- `ViewServiceTests.GetInfoForTeams_ForATeamPlayerDoesNotHave_ReturnsAnEmptyEntry`. A team player.api does
-  not have still produces a `TeamInfo`, with a null view id, because the list is deduplicated by view id
-  and nothing else has claimed null - and the method's only caller,
-  `ActiveVirtualMachineService.SetViewActiveConsolesTelemetry`, casts that to `Guid` unchecked. Reaching it
-  needs a console open on a team player.api has forgotten, which is why nothing has noticed;
-  `GetViewIdsForTeams_SkipsATeamPlayerDoesNotHave` is the same input through the method that does check.
-
-Smaller ones are `<remarks>`ed in place: the fifteen-minute sliding cache in `ViewService` holding the
-*absence* of a team as firmly as its presence, so a Vm added to a team of a view still being created stays
-out of that view's group until the entry lapses; `GetInfoForTeams` returning one entry per view while its
-name and its `TeamName` field promise one per team; a 404 being forgiven on a team lookup but not on a
-view's teams; the five retry waits of a shipped deployment holding a caller for a minute before it gets the
-401 it was always going to get, with Polly's delays taking no cancellation token; and the webhook payloads
-being parsed with Newtonsoft while the DTOs are annotated for System.Text.Json, which works only because
-the names match case-insensitively.
-
-The Proxmox driver adds the largest cluster of all, which is what 907 lines that had never had a request
-made of them looks like. The first two are the ones to read before touching that file:
-
-- **The `!= null` guards on a Proxmox response do not guard anything.** `PveClient` surfaces bodies as
-  `ExpandoObject`, and dynamic member access to an *absent* key throws `RuntimeBinderException` rather
-  than returning null - so in `data.exited != null ? (int)data.exited : 0` the exception is thrown while
-  evaluating the condition and the fallback arm is unreachable code. Eight sites share the mistake:
-  `exited` and `exitcode` in `RunGuestProcess`, `pid` in both guest-process methods, `content` in
-  `ReadGuestFile`, and `description`, `parent`, `vmstate` and `snaptime` in `GetSnapshots`. The
-  consequence is worst in `GetSnapshots`, because PVE appends a synthetic `current` entry to any
-  non-empty snapshot list and that entry carries no `description`: a VM with snapshots gets a binder
-  error naming `ExpandoObject` where the method means to return a list. The deadness was proved by
-  mutation rather than inferred - changing both fallback literals in `RunGuestProcess` at once reddens
-  *nothing*, which is normally a coverage hole and here is the finding. `DecodeAgentOutput` is the one
-  response path that is safe, and only by accident: hyphenated keys like `out-data` cannot be reached
-  dynamically at all, which forced it onto `IDictionary.TryGetValue`. What no test here can settle is how
-  often a real cluster omits one of these keys - with `exited: 0` the code never reads `exitcode` - so
-  the proven part is that the guards cannot work, not how often they are reached.
-- **`BulkPowerOperation` reports a failed power operation as a success.** The per-VM dictionary uses
-  `string.Empty` for "this one worked" and `result.GetError()` for a refusal, and `GetError()` is built
-  only from an `errors` object in the body - so a bare 500 yields an empty string, indistinguishable
-  from success. An unreachable node is worse: `PveClient` catches the transport exception itself and
-  returns an unsuccessful `Result` with no `errors` object, so the per-VM `catch` never runs (the
-  stale-node retry still does, which is the proof) and a whole node being down is invisible to the UI.
-  The corollary is that the only exception which reaches that `catch` in practice is the
-  `NotSupportedException` for `Revert`. Pinned in
-  `ProxmoxServiceVmLookupTests.BulkPowerOperation_WhenAVmsNodeIsUnreachable_ReportsItAsSuccessButStillSubmitsTheRest`.
-- **`GetCurrentNodeForVm` does not refresh the stored node**, though the interface doc comment says it
-  does. `ResolveNode` assigns `info.Node` in memory, the query is `AsNoTracking`, and nothing calls
-  `SaveChanges` on any path - so after a migration the call returns the new node while the row still
-  holds the old one. Asserted against a fresh `DbContext`, which is the only way to see it.
-- **`GetConsole` throws its refusals with no message.** `throw new Exception(result.GetError())` at
-  `ProxmoxService.cs:175` discards the status code, the reason phrase and the route, so a rejected API
-  token surfaces as an empty exception. Every other refusal in the file interpolates `GetError()` into
-  context naming the operation and the vmid, which is why those tests assert with `Assert.StartsWith`.
-
-Smaller ones are `<remarks>`ed in place: `ReplaceBridge`'s `bridge=` append branch being unreachable
-through its only caller, since `ChangeNetwork` refuses an adapter whose bridge is blank and it is blank
-exactly when there is no token to replace - it is also the only line of `ProxmoxService` that no test
-covers; a config key like `netx` reaching `int.Parse` in `ChangeNetwork` as an unhandled
-`FormatException`, which no real PVE config produces; `RunGuestProcessFast` reporting a pid as `long`
-while `RunGuestProcess` narrows it to `int` for the status query, so pid `4294967303` is polled as
-`?pid=7`, unreachable on Linux; `EnsureQemu` refusing a container with a 500 where `MountIso` refuses the
-same impossibility with a 400; `GetError()` rendering an `errors` object as `"field : message"`, so a
-Proxmox power refusal - which carries no field - reaches the UI with a leading `" : "`; and the two
-`UrlEncode` families in use disagreeing on case, `WebUtility` in the console URL emitting upper-case hex
-where `HttpUtility` in the query path emits lower-case and `+` for a space.
-
-The pollers add a cluster of their own, and it divides in a way the others do not: the first is about an
-operator never being told, and the rest are about a user seeing something wrong.
-
-- **`HealthAllowanceSeconds` has no default and is compared with a strict `<`**, so zero means
-  "unresponsive however recently it ran" - and vSphere's `TaskService` is the only thing that ever writes
-  either half of that readiness check. It overwrites the class's own field default of 90 on every pass, so a
-  deployment that sets any other `Vsphere` option without this one fails readiness forever while the poller
-  works perfectly. An environment-variable install cannot inherit a single key from `appsettings.json` once
-  it overrides the section, which is how that happens. `appsettings.json` ships 180. Pinned in
-  `WithNoAllowanceConfigured_ReadinessFailsThoughThePassSucceeded`.
-- **`ProxmoxTaskService`'s query that *sets* `HasPendingTasks` has no provider filter, while the query that
-  *clears* it does.** So a Vm with a `ProxmoxVmInfo` row and some other `Vm.Type` can be flagged by this
-  poller and then skipped by its own clearing sweep forever - a spinner that never stops and power buttons
-  that never come back. A trap door rather than a live bug: nothing in the application writes a
-  `ProxmoxVmInfo` for a Vm it did not also type as Proxmox, so it needs a mis-migration or hand-edited
-  data. The fix is the same `Type == VmType.Proxmox` clause on the second query. Pinned in
-  `AVmWithProxmoxInfoButAnotherType_IsFlaggedAndThenNeverCleared`.
-- **`ProxmoxStateService` is what closes that trap door, and only under two conditions neither file
-  states.** Its pass selects on `ProxmoxVmInfo != null` - the same set as the flagging query, not the
-  clearing one - and assigns `vm.Type = VmType.Proxmox` for every row the cluster still lists, so the
-  mis-typed row above is retyped within one interval and the clearing sweep can then see it. That is the
-  whole reason the trap door is a trap door rather than a live bug. It stops working if `Proxmox:Enabled` is
-  false, which is the shipped default, and it never applies to a row PVE has stopped listing, because the
-  retype lives inside the same `if (pveVm != null)` as the power state. Pinned from this side in
-  `AVmWithProxmoxInfoButAnotherType_IsRetypedAsProxmox`, and the two tests are each other's other half.
-- **A machine the cluster stops reporting keeps its state; a machine it reports in a state the client does
-  not model loses it.** `ProcessVms` looks each row up with `TryGetValue` and passes the miss straight to
-  `UpdateVm`, whose `if (pveVm != null)` leaves the row alone - so a machine deleted on PVE, or an entire
-  cluster answering an empty list, freezes every indicator at whatever it last was, with nothing logged
-  above `Debug` to distinguish it from an idle pass. But a machine PVE *does* list with a status the
-  client has no flag for - anything that is not `running`, `stopped` or `paused` - is written as
-  `PowerState.Unknown` and loses the state it had. The asymmetry is the finding: absence is treated as
-  "no news" and an unrecognized presence as "no state". Pinned in
-  `AMachineTheClusterNoLongerReports_KeepsTheStateItLastHad` and
-  `AMachineTheClusterCallsUnknown_LosesTheStateItHad`.
-- **`StateRefreshIntervalSeconds` has no property default**, unlike every other interval on
-  `ProxmoxOptions`, so a deployment that overrides the `Proxmox` section without that key binds 0 and gets
-  the floor - a one-second reconciliation of the whole cluster, which is the busiest this poller can be
-  rather than the "off" an operator might read 0 as. `appsettings.json` ships 5. It is the same shape as
-  `HealthAllowanceSeconds` above and reached the same way, an environment-variable install inheriting no
-  single key from the file it overrode; the difference is that this one warns, once per distinct bad value.
-  Pinned in `WithNoIntervalConfigured_ItFloorsAtOneSecondAndWarnsOnce`, with
-  `AnIntervalCorrectedAndThenBrokenAgain_IsWarnedAboutAgain` for the once-per-*value* part.
-- **vSphere's `TaskService` is the one poller whose `WaitAsync` is given no cancellation token.** Cancelling
-  leaves it asleep for up to a full `CheckTaskProgressIntervalMilliseconds` - five seconds as shipped - so
-  every restart and every rolling update waits that out, after which the container is killed rather than
-  stopped if the orchestrator's grace period is shorter. `ProxmoxTaskService` passes
-  one. It is also why `PollLoop.Stop` has to nudge after cancelling, and so why every test in that
-  class depends on the defect being there - the `<remarks>` says which assertion replaces it once the token
-  is passed. Pinned in `WhenCancelled_TheLoopSleepsOnUntilSomethingNudgesIt`.
-- **A task that cannot be processed costs its own machine's spinner.** The per-task `catch` isolates the
-  rest of the list, which is what it is for, but a task missing from `stillPendingVmIds` is
-  indistinguishable from a task that finished - so the machine whose task could not be read is cleared while
-  vCenter is still working on it. Pinned in
-  `ATaskThatCannotBeProcessed_IsLoggedAndTheRestOfTheListStillIs`, which asserts both halves.
-- **One hub, two vocabularies.** Both pollers broadcast the same `Notification` type to the same hub, and
-  they do not agree on it. vSphere sends `queued`/`running`/`success` with a real `info.progress`; Proxmox
-  sends `running` or PVE's own status string with `progress` **permanently the empty string**, because
-  PVE's cluster task list carries no percentage. A client rendering a progress bar off that field shows one
-  for a vSphere machine and nothing for a Proxmox one. Pinned from both sides.
+Not every oddity is a defect. `VsphereServiceCommandTests` pins a contract that reads as sloppy error
+handling and is not: the VM UI lets a user multi-select machines and hit power on, so one machine that is
+already on - or one whose host is unreachable - must not surface as an error for the whole selection,
+which is why the service reports outcomes as opaque strings and swallows some faults on purpose. Those
+comments carry intent through the next refactor and stay.
 
 Two more were found by mutation rather than by reading, and are the reason the convention in "Adding a
 test" is worth the round trip: removing `_runningTasks.Clear()` and removing `_tasksPending = false`, both
@@ -946,52 +727,24 @@ the first task anybody starts pins every vCenter on the fast interval for the li
 arrangement, which no other test in the class had; cross-pass state was the shape of the gap, not those two
 lines.
 
-Smaller ones are `<remarks>`ed in place: `AsyncExExtensions.WaitAsync` disposing neither its timeout CTS
-nor its linked CTS, so every pass of all three pollers leaves a callback registered on the long-lived
-stopping token; three of the eight `Task` properties vSphere is asked for never being read - `info.name`,
-`info.cancelled` and `info.error` - so a cancelled or failed task is only ever "not queued and not
-running" to that poller and a user is told a task ended, never that it failed; `_tasksPending` being set
-from a task's state before the code asks whether a Player Vm was resolved, so another tenant's long
-datastore operation holds this deployment's poller at its fast interval; `ProxmoxTaskService`'s per-task
-`catch` logging `task?.UniqueTaskId`, written for a null task that would already have been dereferenced two
-lines earlier;
-`ProxmoxStateService`'s `DistinctBy(x => x.VmId)`, which is load-bearing rather than tidy, because PVE
-lists a machine mid-migration under both nodes and the `ToDictionary` behind it would otherwise throw the
-whole pass away - it keeps the first entry, so which node gets written for a migrating machine is PVE's
-list order and nothing else; the same service's `Proxmox:Enabled` being read inside the loop rather than
-around it, so turning Proxmox off does not stop the poller, it only makes every pass an empty one that
-still wakes on the interval - and turning it on needs no restart; and its `UpdateVm` entry point, which
-the hub and the command handlers use to write one machine without waiting for a pass, taking no
-cancellation token, resolving its row with a `FirstOrDefaultAsync` that takes none either, and running on
-an `ActionBlock` with `MaxDegreeOfParallelism = -1`, so a burst of console opens is a scope and a
-`DbContext` per machine with no ceiling.
+Two conventions are not yet uniform across the suite and are follow-ups rather than rules: test names
+mix the sentence-with-underscores form the newer tests use with older PascalCase names, and several
+classes build their entities inline rather than through `Support/TestData.cs`.
 
 # Continuous integration
 
-`.github/workflows/test.yml` restores, builds and runs the suite on every push and pull request. It
-is not scoped to a branch list, so a regression surfaces on the branch that introduced it rather
-than waiting for a pull request to be opened. Publishing is gated separately, in `main.yml`.
+`.github/workflows/build-and-test.yml` is the standard's workflow, copied by `agent-docs/api-testing/sync.sh`
+with this repository's test project filled in and not edited here (it replaced the earlier `test.yml`). It
+runs on pull requests and on pushes to `main`: restore, build the solution (which also compiles
+`Player.Vm.Api.Client` under `TreatWarningsAsErrors`), and
+`dotnet test src/Player.Vm.Api.Tests -- xUnit.DiagnosticMessages=true`, then confirms the log carries
+`[Player.Vm.Api.Tests] database provider: PostgreSQL`, so a harness change cannot silently stop exercising
+the production database. The SDK comes from `global.json`. There is no database service block:
+`ubuntu-latest` runners ship Docker, and Testcontainers starts and disposes the containers itself. The TRX
+of the run is uploaded as `test-results` even when the job fails. Coverage is not collected there.
 
-The job needs no database service block. `ubuntu-latest` runners ship a working Docker daemon, and
-Testcontainers starts and disposes the container itself. Nothing needs to force PostgreSQL on either -
-there is no fallback to force it away from, so a CI run cannot go green without having used it.
-
-The job builds the whole solution rather than just the test project. `Player.Vm.Api` would be built
-either way, through the test project's `ProjectReference`, but `Player.Vm.Api.Client` would not:
-`main.yml` builds the image and `client.yml` is `workflow_dispatch`, so this is the only workflow
-that compiles the Client on a push. With `TreatWarningsAsErrors` in force, a warning there would
-otherwise first surface at release time.
-
-The run produces one artifact, `test-results`, the TRX of the run. It is uploaded even when the job
-fails, so that a failure shows which tests failed rather than only a count, and
-`if-no-files-found: error` means a run that produced no TRX at all - a test host that died before
-writing one - fails rather than passing quietly. The NuGet cache is keyed on
-`Directory.Packages.props` and the project files, which are what decide what a restore pulls.
-
-`coverage.yml` is the other workflow that runs the suite, and it is `workflow_dispatch` only: nothing
-it produces is visible to any other run, and it cannot fail a pull request. The next section is what it
-is for. Its NuGet cache key is the test job's plus `.config/dotnet-tools.json`, which shares the same
-`restore-keys` prefix, so whichever of the two runs first warms the cache for the other.
+`coverage.yml` is the other workflow that runs the suite, and it is `workflow_dispatch` only: nothing it
+produces is visible to any other run, and it cannot fail a pull request. The next section is what it is for.
 
 # Coverage
 
@@ -1013,7 +766,7 @@ anything else; `coverage/` is rebuilt from scratch each time, so the last run is
 
 None of it is part of a normal run or of the build that gates a pull request. `coverlet.collector` is
 a VSTest data collector, so it is inert until a run asks for XPlat Code Coverage, and only the script
-and that workflow ask: `dotnet test` neither instruments nor slows down, and `test.yml` never
+and that workflow ask: `dotnet test` neither instruments nor slows down, and `build-and-test.yml` never
 collects a figure or sees one. The single extra tool, ReportGenerator, is pinned as a local tool in
 `.config/dotnet-tools.json` and restored by the script. `jq` formats the ranking, and the script says
 so and carries on without it if it is not installed.
@@ -1036,8 +789,9 @@ So: a map for deciding what to test next, and nothing else. It has no vote on wh
 
 ## What is measured
 
-`coverlet.runsettings` holds the settings, and they matter to any figure quoted from it. Only
-`Player.Vm.Api` is instrumented; EF's migrations are excluded by namespace and by file, because the
+`src/Player.Vm.Api.Tests/coverlet.runsettings` (the standard's shared file) holds the settings, and they
+matter to any figure quoted from it. The test assembly and any `*.Migrations.PostgreSQL` assembly are
+excluded by name; EF's migrations under `Data/Migrations` are excluded by file, because the
 harness migrates the template database once per run and would report them as well covered while
 proving nothing; auto-implemented property accessors are skipped, so that a number does not move
 whenever a DTO grows a field; generated and `[Obsolete]` members are out; and so is the test assembly,
@@ -1192,6 +946,35 @@ unreachable: `Startup` imports `Player.Vm.Api.Features.Vms.Hubs` and nothing any
 no caller. The only reference to it in the repository is the assertion in `HubConnectionTests` that it is
 not mapped. Deleting the file is the fix; the coverage figure is only how it was noticed.
 
+## Follow-up: the sibling-API seam
+
+The standard now substitutes the generated client (`IPlayerApiClient`) and keeps the application's own
+`PlayerService` real (`CONVENTIONS.md` section 1). This suite still substitutes `IPlayerService` and answers it
+through `PlayerPermissions`, which mirrors `PlayerService.Can`; moving to the seam is not done yet. The size of it:
+
+- **What changes.** 21 test files arrange `IPlayerService`, about 580 test methods between them:
+  `VmUsageLoggingSessionEndpointTests` (86), `VmServiceAuthorizationTests` (73), `VmsEndpointTests` (65),
+  `VsphereEndpointTests` (52), `ProxmoxEndpointTests` (40), `VmHubGroupTests` (32), and fifteen smaller
+  classes (ISO, network, presence, bulk power, usage log service, `ConnectionService`, the harness
+  self-tests). In most of them only the arrangement changes. `AllowEverything` (13 files), the `Deny(...)` helpers
+  (three files) and `PlayerPermissions` (12 files) become what player.api returns: the caller's system
+  permissions (`GetMyPermissionsAsync`), its team permission claims, and the views and teams it can see.
+  `TestActorBuilder.Holding` becomes the place that arranges those on the client. `PlayerPermissions` and its
+  `TestActorTests` go, and `PlayerServiceAuthorizationTests` stays as the real service's own suite.
+- **What becomes real.** The visibility calls (`GetVisibilityContext*`) are stubbed directly today. With the
+  real `PlayerService` they are computed from the client's teams, primary team and direct permissions, so
+  `VmHubGroupTests`, the list routes in `VmsEndpointTests` and the presence tests arrange teams rather than a
+  `VisibilityContext`. That is most of the work.
+- **The cache caveat.** `PlayerService.GetSystemPermissionsAsync` caches a user's system permissions in
+  `IMemoryCache` for one minute, keyed on the user id (`src/Player.Vm.Api/Domain/Services/PlayerService.cs:515-521`).
+  The per-class host's `IMemoryCache` is a singleton, and `Root`'s id is the host's `UserId`, so a test that
+  changes `Root`'s system permissions would read the set an earlier test of the class cached. Either every
+  test gets a fresh actor id (`Root` per test rather than per host), or the host's cache is cleared in
+  `InitializeAsync`. The view-team cache (`_viewTeamsCache`) is per request and needs nothing.
+- **Order.** Whether to deliver the suite as it stands and migrate in a follow-up, or migrate first, is the
+  user's decision. The broken-gate checks recorded for this suite would need repeating on the migrated
+  tests.
+
 # What is not covered yet
 
 The suite is being grown in stages, and it is worth being explicit about what a green run does *not*
@@ -1284,7 +1067,8 @@ currently tell you.
    `VmHub.JoinUser`'s active-Vm branch for a caller who is not a view admin, and
    `VmTeamDeletedSignalRHandler`'s suppression loop past a team in another view - sixteen cases added to
    three existing classes. Then the out-of-process clients, which needed a harness rather than a test:
-   `Infrastructure/TestHttpHandler.cs`, a substituted transport with the real generated client,
+   `Support/RoutedHttpHandler.cs` (since replaced by the shared `StubHttpMessageHandler`'s route rules), a
+   substituted transport with the real generated client,
    IdentityModel and Polly above it, and 45 cases across four new classes -
    `ViewServiceTests`, `AuthenticationServiceTests`, `AuthenticatingHandlerTests` and
    `CallbackBackgroundServiceTests` - which took all four off the zero line together. Four
@@ -1302,10 +1086,10 @@ currently tell you.
     question rather than from the map: which of the gaps above can be closed with no hypervisor at all?
     `ProxmoxService` turned out to be one of them. It constructs its own `PveClient` from
     `IHttpClientFactory.CreateClient("proxmox")`, so the seam is the transport, and item 8's
-    `TestHttpHandler` was already most of a harness for it - it needed a method prefix on a rule pattern,
+    `RoutedHttpHandler` was already most of a harness for it - it needed a method prefix on a rule pattern,
     because reading a VM's config and writing it are the same path and differ only in verb, and a lazily
     computed body, because a cluster gains machines and migrates them between two reads of one path.
-    On top of that, `Infrastructure/FakeProxmoxCluster.cs`: one cluster holding whatever machines a test
+    On top of that, `Support/FakeProxmoxCluster.cs`: one cluster holding whatever machines a test
     registers, arranged in Proxmox's own vocabulary of paths and JSON, with the real client's route
     building, `{"data": ...}` envelope, model binding and task waiting all still running. Then 236 cases
     across seven classes - `ProxmoxServiceCommandTests`, `…ConfigTests`, `…ConsoleTests`,
@@ -1324,7 +1108,7 @@ currently tell you.
     an infinite `while` around a scope, a hypervisor query, some database writes and a SignalR broadcast.
     The problem was never the hypervisor, which `IVimClient` and item 10's `FakeProxmoxCluster` already
     answer for; it was the loop, which has no seam and no way to be asked for exactly one pass.
-    `Infrastructure/PollLoop.cs` is that seam, and it is the item's real product: the test's own
+    `Support/PollLoop.cs` is that seam, and it is the item's real product: the test's own
     `IServiceProvider`, which counts passes because a pass is one `CreateScope`, and bounds them because
     a pass past its allowance throws into a `catch` the service already has. A refused pass is a barrier,
     so `Run(passes: n)` returning means pass *n* finished - writes and broadcasts included - without a

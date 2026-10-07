@@ -2,7 +2,7 @@ name: Coverage
 
 # Manual only, and that is the whole design. Coverage here is a map of where the untested risk is,
 # not a gate: nothing in this workflow can fail a pull request, there is no threshold to meet, and
-# test.yml - the one that does run on every push - never collects coverage and never sees a number.
+# build-and-test.yml - the one that does run on pull requests and main - never collects coverage and never sees a number.
 #
 # The reason to keep it out of the required build is that a coverage percentage attached to a merge
 # button changes what people write. The figure moves fastest when a test drags an untested file
@@ -28,7 +28,7 @@ jobs:
           # The SDK version lives in global.json; never pin a second copy of it here.
           global-json-file: global.json
 
-      # Keyed the same way as test.yml's, so a coverage run warms the cache the test job reads and
+      # Keyed the same way as build-and-test.yml's, so a coverage run warms the cache the test job reads and
       # the other way round. ReportGenerator is a local tool and restores into the same cache.
       - name: Cache NuGet packages
         uses: actions/cache@v4
