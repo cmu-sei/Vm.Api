@@ -1,9 +1,10 @@
 // Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
-// vm.api keeps no users or permissions of its own: it asks player.api, which the factory substitutes.
-// So an actor is the identity a request carries, and what it may do is what the substituted player.api
-// answers: the class's own arrangement for Root, Actor().Holding(...) for a near miss (see TestActor).
+// vm.api keeps no users or permissions of its own: PlayerService asks player.api, whose client the
+// factory substitutes. So an actor is the identity a request carries, and what it may do is the
+// player.api data its builder steps write (see TestActor). Each test starts with a clean player.api and
+// a fresh Root, which holds every system permission.
 // Also here: NewLoggingContext(), for the usage-log database, and JsonOptions, the host's own serializer
 // options.
 
@@ -14,6 +15,7 @@ using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Player.Vm.Api.Data;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Tests.Support;
 
@@ -33,10 +35,9 @@ public abstract class ApiTestBase(DatabaseFixture fixture, VmAppFactory factory)
     protected VmAppFactory Factory { get; } = factory;
 
     /// <summary>
-    /// The caller for the tests that are about what an endpoint does rather than who may call it: the
-    /// identity <see cref="VmAppFactory.UserId"/>, holding whatever the class arranged on
-    /// <see cref="VmAppFactory.PlayerApi"/> (every permission, in a class that calls
-    /// <see cref="VmAppFactory.AllowEverything"/>).
+    /// The caller for the tests that are about what an endpoint does rather than who may call it: a fresh
+    /// id per test, holding every system permission. A gate that asks only for a View or team permission
+    /// needs Root on that View or team as well (<c>Actor().WithId(Root.Id)...</c> adds to it).
     /// </summary>
     protected TestActor Root { get; private set; }
 
@@ -45,9 +46,9 @@ public abstract class ApiTestBase(DatabaseFixture fixture, VmAppFactory factory)
 
     /// <summary>
     /// Starts describing another caller:
-    /// <c>await Actor().Holding(new PlayerPermissions().Holding(AppViewPermission.ViewViewMaps)).SeedAsync()</c>.
+    /// <c>await Actor().Holding(AppViewPermission.ViewViewMaps, viewId).SeedAsync()</c>.
     /// </summary>
-    protected TestActorBuilder Actor() => new(Factory.PlayerApi, Ct);
+    protected TestActorBuilder Actor() => new(Factory.Player, Ct);
 
     /// <summary>A client that acts as <paramref name="actor"/>, cached per actor.</summary>
     protected HttpClient Client(TestActor actor)
@@ -75,11 +76,12 @@ public abstract class ApiTestBase(DatabaseFixture fixture, VmAppFactory factory)
     {
         await base.InitializeAsync();
 
-        Root = await Actor().WithId(Factory.UserId).WithName("Root").SeedAsync();
-
         // Resolving from Factory.Services is what builds the host, if no client has yet.
         JsonOptions = Factory.Services
             .GetRequiredService<IOptions<Microsoft.AspNetCore.Mvc.JsonOptions>>()
             .Value.JsonSerializerOptions;
+
+        Factory.ResetPlayer();
+        Root = await Actor().WithName("Root").Holding(Enum.GetValues<AppSystemPermission>()).SeedAsync();
     }
 }

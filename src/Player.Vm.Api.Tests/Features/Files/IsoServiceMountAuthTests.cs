@@ -16,6 +16,8 @@ using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Infrastructure.Options;
 
 using VmType = Player.Vm.Api.Domain.Models.VmType;
+using Player.Vm.Api.Tests.Support;
+using Player.Vm.Api.Infrastructure.Authorization;
 
 namespace Player.Vm.Api.Tests.Features.Files;
 
@@ -37,9 +39,11 @@ public class IsoServiceMountAuthTests
 
     private const string Token = "nfs:iso/canonical.iso";
 
-    private readonly IPlayerService _playerService = Substitute.For<IPlayerService>();
-    private readonly IViewService _viewService = Substitute.For<IViewService>();
+    private readonly PlayerHarness _player = new(Guid.NewGuid(), TestContext.Current.CancellationToken);
     private readonly IIsoProvider _provider = Substitute.For<IIsoProvider>();
+    private PlayerServiceSpy _spy;
+
+    private IViewService _viewService => _player.Views;
 
     public IsoServiceMountAuthTests()
     {
@@ -50,16 +54,12 @@ public class IsoServiceMountAuthTests
         // whichever of these the case is about.
         _viewService.GetViewIdsForTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns([ViewId]);
-        _viewService.GetViewIdForTeam(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            .Returns(ViewId);
-
-        // Deny by default, so a test that means to allow something has to say so.
-        _playerService.CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(false);
+        _player.Directory.PlaceTeam(TeamA, ViewId);
+        _player.Directory.PlaceTeam(TeamB, ViewId);
     }
 
     private IsoService Service() =>
-        new(_playerService, _viewService, [_provider], new IsoUploadOptions(),
+        new(PlayerServiceSpy.Wrap(_player.Service, out _spy), _viewService, [_provider], new IsoUploadOptions(),
             NullLogger<IsoService>.Instance);
 
     // What the provider decoded out of the submitted value. The value itself is irrelevant here - the
@@ -70,14 +70,11 @@ public class IsoServiceMountAuthTests
             .Returns(new IsoMountTarget(viewId, scopeId, filename, Token));
     }
 
+    // ControlTeamVms on each team, and nothing View-wide.
     private void CallerCanControlVms(params Guid[] teamIds)
     {
         foreach (var teamId in teamIds)
-        {
-            _playerService
-                .CanControlVms(Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)), Arg.Any<CancellationToken>())
-                .Returns(true);
-        }
+            _player.Grant(b => b.Holding(AppTeamPermission.ControlTeamVms, teamId));
     }
 
     private Task<string> Mount(params Guid[] vmTeamIds) =>
@@ -144,8 +141,7 @@ public class IsoServiceMountAuthTests
 
         Assert.Equal(Token, await Mount(TeamA));
 
-        await _playerService.DidNotReceive()
-            .CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>());
+        Assert.Empty(_spy.CallsTo(nameof(IPlayerService.CanControlVms)));
     }
 
     [Fact]
@@ -163,7 +159,7 @@ public class IsoServiceMountAuthTests
     {
         Decodes(ViewId, TeamA);
         CallerCanControlVms(TeamA);
-        _viewService.GetViewIdForTeam(TeamA, Arg.Any<CancellationToken>()).Returns(OtherViewId);
+        _player.Directory.PlaceTeam(TeamA, OtherViewId);
 
         await AssertRefused(TeamA);
     }
@@ -204,24 +200,51 @@ public class IsoServiceMountAuthTests
 
     // ---- ResolveViewTeamsForVmAsync: the picker has to offer exactly what a mount will accept ----
 
+    // The teams the caller can see in the View: the first is its primary team, the rest are scoped onto
+    // it (which ViewTeam on the primary team lets it see). None means no primary team, so nothing visible.
     private void CallerIsIn(Guid viewId, params Guid[] teamIds)
     {
-        _playerService.GetTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(teamIds.Select(id => new Team { Id = id, Name = $"team-{id.ToString()[..4]}" }));
+        if (teamIds.Length == 0)
+            return;
+
+        foreach (var teamId in teamIds)
+            _player.Directory.PlaceTeam(teamId, viewId);
+
+        _player.Grant(b =>
+        {
+            b.PrimaryOn(teamIds[0]);
+
+            if (teamIds.Length > 1)
+                b.Holding(AppTeamPermission.ViewTeam, teamIds[0]);
+
+            foreach (var other in teamIds.Skip(1))
+                b.SeesScoped(other);
+
+            return b;
+        });
     }
 
-    // The privileged all-teams listing: every team in the View, whether or not the caller is a member.
+    // Every team in the View, whether or not the caller is a member, named as the privileged all-teams
+    // listing reports them. player.api answers that listing only for a caller holding ViewViews or ViewView
+    // on the View: see MayListTheViewsTeams.
     private void ViewHasTeams(Guid viewId, params Guid[] teamIds)
     {
-        _playerService.GetAllTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(teamIds.Select(id => new Team { Id = id, Name = $"all-{id.ToString()[..4]}" }));
+        foreach (var teamId in teamIds)
+            _player.Directory.PlaceTeam(teamId, viewId, $"all-{teamId.ToString()[..4]}");
     }
 
-    private void ViewExists(Guid viewId)
-    {
-        _playerService.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(new View { Id = viewId, Name = $"view-{viewId.ToString()[..4]}" });
-    }
+    // The system ViewViews, which player.api's all-teams listing accepts and which grants nothing on a Vm.
+    private void MayListTheViewsTeams() => _player.Grant(b => b.Holding(AppSystemPermission.ViewViews));
+
+    // Control of every team's Vms through the system ControlVms, with no team or membership in the View.
+    private void ControlsEveryVm() => _player.Grant(b => b.Holding(AppSystemPermission.ControlVms));
+
+    private void ViewExists(Guid viewId) => _player.Directory.AddView(viewId);
+
+    // player.api refusing the privileged all-teams listing.
+    private void AllTeamsListingIsRefused(Guid viewId) =>
+        _player.Client.GetViewTeamsAsync(viewId, Arg.Any<CancellationToken>())
+            .Returns<ICollection<Team>>(_ => throw new ApiException("Forbidden", 403, null, new Dictionary<string, IEnumerable<string>>(), null));
 
     private Task<IReadOnlyList<ViewTeams>> ResolveViewTeams(params Guid[] vmTeamIds) =>
         Service().ResolveViewTeamsForVmAsync(vmTeamIds, CancellationToken.None);
@@ -246,9 +269,10 @@ public class IsoServiceMountAuthTests
     {
         ViewExists(ViewId);
         CallerIsIn(ViewId);   // no memberships at all
-        CallerCanControlVms(TeamA);
-        _playerService.GetAllTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
-            .Returns([new Team { Id = TeamA, Name = "Red Team" }]);
+        _player.Directory.PlaceTeam(TeamA, ViewId, "Red Team");
+        _player.Directory.PlaceTeam(TeamB, OtherViewId);
+        MayListTheViewsTeams();
+        ControlsEveryVm();
 
         var views = await ResolveViewTeams(TeamA);
 
@@ -263,10 +287,9 @@ public class IsoServiceMountAuthTests
     public async Task Picker_StillOffersTheTeam_WhenTheAllTeamsListingIsRefused()
     {
         ViewExists(ViewId);
-        CallerIsIn(ViewId);
-        CallerCanControlVms(TeamA);
-        _playerService.GetAllTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
-            .Returns<IEnumerable<Team>>(_ => throw new Exception("403 from player.api"));
+        CallerIsIn(ViewId);   // no memberships at all
+        ControlsEveryVm();
+        AllTeamsListingIsRefused(ViewId);
 
         var team = Assert.Single(Assert.Single(await ResolveViewTeams(TeamA)).Teams);
 
@@ -288,20 +311,36 @@ public class IsoServiceMountAuthTests
         Assert.Equal(new[] { TeamA, TeamB }, teams.Select(t => t.Id).OrderBy(id => id.ToString()).ToArray());
     }
 
-    // Membership is not the test - CanUseTeamIsoAsync is - so a caller scoped into a team without being
-    // a member of it gets its ISOs. Only the privileged listing knows the team exists.
+    /// <summary>A team the caller holds only a scoped claim on is not offered without the all-teams listing.</summary>
     [Fact]
-    public async Task Picker_OffersATeamTheCallerIsOnlyScopedInto()
+    public async Task Picker_DoesNotOfferATeamTheCallerIsOnlyScopedInto_WithoutTheAllTeamsListing()
     {
         ViewExists(ViewId);
-        CallerIsIn(ViewId);   // no memberships at all
         ViewHasTeams(ViewId, TeamA, TeamB);
-        CallerCanControlVms(TeamB);
+
+        // As player.api reports it: the caller's primary team A grants ControlTeamVms, and team B shares
+        // itself with A, so the claim on B carries A's permissions. Nothing lets it read the all-teams listing.
+        _player.Grant(b => b.PrimaryOn(TeamA).Holding(AppTeamPermission.ControlTeamVms, TeamA).SeesScoped(TeamB));
 
         var team = Assert.Single(Assert.Single(await ResolveViewTeams(TeamA)).Teams);
 
-        Assert.Equal(TeamB, team.Id);
-        Assert.Equal("all-bbbb", team.Name);
+        Assert.Equal(TeamA, team.Id);
+    }
+
+    // The same caller allowed the privileged listing: the scoped team is a candidate, admitted by its claim,
+    // and named as that listing names it.
+    [Fact]
+    public async Task Picker_OffersATeamTheCallerIsOnlyScopedInto_WhenItMayListTheViewsTeams()
+    {
+        ViewExists(ViewId);
+        ViewHasTeams(ViewId, TeamA, TeamB);
+        _player.Grant(b => b.PrimaryOn(TeamA).Holding(AppTeamPermission.ControlTeamVms, TeamA).SeesScoped(TeamB));
+        MayListTheViewsTeams();
+
+        var teams = Assert.Single(await ResolveViewTeams(TeamA)).Teams;
+
+        Assert.Equal("all-bbbb", Assert.Single(teams, t => t.Id == TeamB).Name);
+        Assert.Contains(teams, t => t.Id == TeamA);
     }
 
     // Widening the candidates to the whole View does not widen who may use them.
@@ -312,6 +351,7 @@ public class IsoServiceMountAuthTests
         CallerIsIn(ViewId, TeamA);
         ViewHasTeams(ViewId, TeamA, TeamB);
         CallerCanControlVms(TeamA);
+        MayListTheViewsTeams();
 
         var teams = Assert.Single(await ResolveViewTeams(TeamA)).Teams;
 
@@ -326,8 +366,7 @@ public class IsoServiceMountAuthTests
         ViewExists(ViewId);
         CallerIsIn(ViewId, TeamA, TeamB);
         CallerCanControlVms(TeamA, TeamB);
-        _playerService.GetAllTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
-            .Returns<IEnumerable<Team>>(_ => throw new Exception("403 from player.api"));
+        AllTeamsListingIsRefused(ViewId);
 
         var teams = Assert.Single(await ResolveViewTeams(TeamA)).Teams;
 
@@ -341,11 +380,10 @@ public class IsoServiceMountAuthTests
     {
         ViewExists(ViewId);
         CallerIsIn(ViewId);
-        _playerService.GetAllTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
-            .Returns([
-                new Team { Id = TeamB, Name = "student" },
-                new Team { Id = TeamA, Name = "Admin" }]);
-        CallerCanControlVms(TeamA, TeamB);
+        _player.Directory.PlaceTeam(TeamB, ViewId, "student");
+        _player.Directory.PlaceTeam(TeamA, ViewId, "Admin");
+        MayListTheViewsTeams();
+        ControlsEveryVm();
 
         var teams = Assert.Single(await ResolveViewTeams(TeamB)).Teams;
 
@@ -381,11 +419,14 @@ public class IsoServiceMountAuthTests
     public async Task Picker_ToleratesAnUnknownViewsNullTeamList()
     {
         ViewExists(ViewId);
-        _playerService.GetTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
-            .Returns((IEnumerable<Team>)null);
-        CallerCanControlVms(TeamA);
-        _playerService.GetAllTeamsByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
-            .Returns([new Team { Id = TeamA, Name = "Red Team" }]);
+        _player.Directory.PlaceTeam(TeamA, ViewId, "Red Team");
+        _player.Directory.PlaceTeam(TeamB, OtherViewId);
+        _player.Client.GetUserViewTeamsAsync(ViewId, Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns<ICollection<Team>>(_ => throw new ApiException("Not Found", 404, null, new Dictionary<string, IEnumerable<string>>(), null));
+
+        // Control through the system permission, which answers before PlayerService reads the View's
+        // teams: with the View's teams refused, a team or View grant could not be read either.
+        _player.Grant(b => b.Holding(Player.Vm.Api.Infrastructure.Authorization.AppSystemPermission.ControlVms));
 
         var team = Assert.Single(Assert.Single(await ResolveViewTeams(TeamA)).Teams);
 
@@ -405,8 +446,6 @@ public class IsoServiceMountAuthTests
 
         _viewService.GetViewIdsForTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns([ViewId, OtherViewId]);
-        _viewService.GetViewIdForTeam(TeamA, Arg.Any<CancellationToken>()).Returns(ViewId);
-        _viewService.GetViewIdForTeam(TeamB, Arg.Any<CancellationToken>()).Returns(OtherViewId);
 
         var byView = (await ResolveViewTeams(TeamA, TeamB)).ToDictionary(v => v.View.Id);
 

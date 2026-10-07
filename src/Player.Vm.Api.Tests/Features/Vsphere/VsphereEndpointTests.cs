@@ -77,12 +77,9 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         // The factory, and so its substitutes, are shared across the class. The database is not.
         Factory.Vsphere.ClearSubstitute();
-        Factory.PlayerApi.ClearSubstitute();
-        Factory.Views.ClearSubstitute();
         Factory.IsoProvider.ClearSubstitute();
         Factory.VsphereTasks.ClearSubstitute();
 
-        Factory.AllowEverything();
         Factory.EnableIsoProvider(VmType.Vsphere);
 
         // Arrangement rather than subject, all four, and all four are load-bearing:
@@ -93,14 +90,22 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         //   GetConnectionAddress - the provider instance id the view-network lookup filters on. Null
         //     would match no row at all, and silently.
         //   GetViewIdsForTeams - the handlers take .FirstOrDefault() of it.
-        //   GetUserTeamIds - the branch NetworkService takes for a caller without view-network access
-        //     calls .ToArray() on it.
         Factory.Vsphere.GetMachineById(Arg.Any<Guid>()).Returns(TheMachine());
         Factory.Vsphere.GetConnectionAddress(Arg.Any<Guid>()).Returns(ConnectionAddress);
         Factory.Views.GetViewIdsForTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns([_viewId]);
-        Factory.PlayerApi.GetUserTeamIds(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(x => x.Arg<IEnumerable<Guid>>());
+
+        // Root holds every system permission but the two network ones, so NetworkService takes the branch
+        // a caller without view-network access takes: the networks shared with Root's own teams, which is
+        // what the network tests are about. The routes that ask only for a View permission (snapshots,
+        // guest files) get it through Root's membership of the Vm's team in this test's View.
+        Factory.Player.PlaceTeam(_teamId, _viewId);
+        await Actor().WithId(Root.Id).MemberOf(_teamId)
+            .Holding(AppViewPermission.RevertVms, _viewId)
+            .Holding(AppViewPermission.DownloadVmFiles, _viewId)
+            .Holding(AppViewPermission.UploadVmFiles, _viewId)
+            .SeedAsync();
+        Factory.Player.Caller(Root.Id).System.ExceptWith(NetworkPermissions);
     }
 
     #region The route table
@@ -197,7 +202,7 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var vm = await SeedVsphereVm();
         var actor = await Actor()
-            .Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamVms, Guid.NewGuid()))
+            .Holding(AppTeamPermission.ViewTeamVms, Guid.NewGuid())
             .SeedAsync();
 
         var response = await Client(actor).GetAsync(Route(vm.Id), Ct);
@@ -214,9 +219,7 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task ForAnotherUsersPersonalVm_WithNoViewWidePermission_Is403()
     {
         var vm = await SeedVsphereVm(userId: Guid.NewGuid());
-        DenyEveryPermission();
-
-        var response = await RootClient.GetAsync(Route(vm.Id), Ct);
+        var response = await (await TeamParticipant()).GetAsync(Route(vm.Id), Ct);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.Equal("This machine belongs to another user", await Title(response));
@@ -263,9 +266,7 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task EditingRoutes_WithoutVmControlPermission_Is403(string method, string suffix)
     {
         var vm = await SeedVsphereVm();
-        Deny(AppViewPermission.ControlViewVms);
-
-        var response = await Send(method, suffix, vm.Id);
+        var response = await Send(method, suffix, vm.Id, await AllBut(AppViewPermission.ControlViewVms));
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.Equal("You do not have permission to edit this Vm", await Title(response));
@@ -286,9 +287,7 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         string method, string suffix, string message)
     {
         var vm = await SeedVsphereVm();
-        Deny(AppViewPermission.RevertVms);
-
-        var response = await Send(method, suffix, vm.Id);
+        var response = await Send(method, suffix, vm.Id, await AllBut(AppViewPermission.RevertVms));
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.Equal(message, await Title(response));
@@ -317,9 +316,7 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         string suffix, AppViewPermission permission, string message)
     {
         var vm = await SeedVsphereVm();
-        Deny(permission);
-
-        var response = await Send("POST", suffix, vm.Id);
+        var response = await Send("POST", suffix, vm.Id, await AllBut(permission));
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         Assert.Equal(message, await Title(response));
@@ -342,9 +339,9 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var vm = await SeedVsphereVm();
         var actor = await Actor()
-            .Holding(new PlayerPermissions()
+            
                 .Holding(AppTeamPermission.ViewTeamVms, _teamId)
-                .Holding(AppTeamPermission.ControlTeamVms, Guid.NewGuid()))
+                .Holding(AppTeamPermission.ControlTeamVms, Guid.NewGuid())
             .SeedAsync();
 
         var response = await Send(method, suffix, vm.Id, Client(actor));
@@ -368,7 +365,7 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var vm = await SeedVsphereVm();
         var actor = await Actor()
-            .Holding(new PlayerPermissions().Holding(AppTeamPermission.ControlTeamVms, _teamId))
+            .Holding(AppTeamPermission.ControlTeamVms, _teamId)
             .SeedAsync();
 
         var response = await Send(method, suffix, vm.Id, Client(actor));
@@ -395,10 +392,10 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var vm = await SeedVsphereVm();
         var actor = await Actor()
-            .Holding(new PlayerPermissions()
+            
                 .Holding(AppTeamPermission.ViewTeamVms, _teamId)
                 .Holding(permission, Guid.NewGuid())
-                .InView(_teamId, _viewId))
+                .InView(_teamId, _viewId)
             .SeedAsync();
 
         var response = await Send(method, suffix, vm.Id, Client(actor));
@@ -421,10 +418,10 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var vm = await SeedVsphereVm();
         var actor = await Actor()
-            .Holding(new PlayerPermissions()
+            
                 .Holding(AppTeamPermission.ViewTeamVms, _teamId)
                 .Holding(permission, _viewId)
-                .InView(_teamId, _viewId))
+                .InView(_teamId, _viewId)
             .SeedAsync();
 
         var response = await Send(method, suffix, vm.Id, Client(actor));
@@ -446,9 +443,7 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task ReadRoutes_WithNoPermissionsBeyondTeamVisibility_Are200(string method, string suffix)
     {
         var vm = await SeedVsphereVm();
-        DenyEveryPermission();
-
-        var response = await Send(method, suffix, vm.Id);
+        var response = await Send(method, suffix, vm.Id, await TeamParticipant());
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
@@ -619,7 +614,7 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [InlineData(false)]
     public async Task Get_ReportsWhetherTheCallerOwnsTheVm(bool owned)
     {
-        var vm = await SeedVsphereVm(userId: owned ? Factory.UserId : Guid.NewGuid());
+        var vm = await SeedVsphereVm(userId: owned ? Root.Id : Guid.NewGuid());
 
         var result = await Get<VsphereMachine>(Route(vm.Id));
 
@@ -1449,11 +1444,9 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     /// </summary>
     private void IsoScopeIsResolvable()
     {
-        Factory.Views.GetViewIdForTeam(_teamId, Arg.Any<CancellationToken>()).Returns(_viewId);
-        Factory.PlayerApi.GetTeamsByViewIdAsync(_viewId, Arg.Any<CancellationToken>())
-            .Returns(new[] { new PlayerTeam { Id = _teamId, Name = "team-1", ViewId = _viewId } });
-        Factory.PlayerApi.GetViewByIdAsync(_viewId, Arg.Any<CancellationToken>())
-            .Returns(new View { Id = _viewId, Name = "view-1" });
+        Factory.Player.PlaceTeam(_teamId, _viewId, "team-1");
+        Factory.Player.AddView(_viewId, "view-1");
+        Factory.Player.Caller(Root.Id).ClaimOn(_teamId).Primary = true;
     }
 
     private void PowerCommandsReturn(string taskId)
@@ -1464,27 +1457,39 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Factory.Vsphere.ShutdownVm(Arg.Any<Guid>()).Returns(taskId);
     }
 
-    /// <summary>
-    /// Denies exactly one view permission at player.api, leaving every other answer as
-    /// <see cref="VmAppFactory.AllowEverything"/> left it. The narrower arrangement wins for the calls it
-    /// matches, so a 403 after this can only have come from the gate that asked for this permission.
-    /// </summary>
-    private void Deny(AppViewPermission permission) =>
-        Factory.PlayerApi.Can(
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<AppSystemPermission[]>(),
-                Arg.Is<AppViewPermission[]>(x => x != null && x.Contains(permission)),
-                Arg.Any<AppTeamPermission[]>(),
-                Arg.Any<CancellationToken>())
-            .Returns(false);
+    private static readonly AppSystemPermission[] NetworkPermissions =
+        [AppSystemPermission.ViewNetworks, AppSystemPermission.ManageNetworks];
 
     /// <summary>
-    /// Refuses every permission question, leaving only team visibility - a plain participant on the Vm's
-    /// team and nothing more.
+    /// A caller holding every permission Root does except <paramref name="permission"/> and the system and
+    /// team permissions that answer the same gate (<c>ControlVms</c> and <c>ControlTeamVms</c> for
+    /// <c>ControlViewVms</c>): every other system permission, every other View permission on this test's
+    /// View and every team permission on the Vm's team. A 403 can only have come from the gate that asks
+    /// for <paramref name="permission"/>.
     /// </summary>
-    private void DenyEveryPermission() =>
-        Factory.PlayerApi.Can(default, default, default, default, default, Ct).ReturnsForAnyArgs(false);
+    private async Task<HttpClient> AllBut(AppViewPermission permission)
+    {
+        AppSystemPermission? system = permission == AppViewPermission.ControlViewVms ? AppSystemPermission.ControlVms : null;
+        AppTeamPermission? team = permission == AppViewPermission.ControlViewVms ? AppTeamPermission.ControlTeamVms : null;
+
+        var builder = Actor().MemberOf(_teamId)
+            .Holding([.. Enum.GetValues<AppSystemPermission>().Except(NetworkPermissions).Where(x => x != system)]);
+
+        foreach (var view in Enum.GetValues<AppViewPermission>().Where(x => x != permission))
+            builder.Holding(view, _viewId);
+
+        foreach (var teamPermission in Enum.GetValues<AppTeamPermission>().Where(x => x != team))
+            builder.Holding(teamPermission, _teamId);
+
+        return Client(await builder.SeedAsync());
+    }
+
+    /// <summary>
+    /// A plain participant on the Vm's team: <c>ViewTeamVms</c> on it, and nothing else - no system
+    /// permission, no View permission.
+    /// </summary>
+    private async Task<HttpClient> TeamParticipant() =>
+        Client(await Actor().Holding(AppTeamPermission.ViewTeamVms, _teamId).SeedAsync());
 
     /// <summary>The arguments of the single call to the named <c>IVsphereService</c> method.</summary>
     private object[] VsphereCall(string methodName) => Assert.Single(VsphereCalls(methodName));

@@ -40,8 +40,6 @@ public class VmUsageLoggingDisabledEndpointTests(DatabaseFixture fixture, VmAppF
     {
         await base.InitializeAsync();
 
-        Factory.PlayerApi.ClearSubstitute();
-        Factory.AllowEverything();
     }
 
     /// <summary>
@@ -139,13 +137,8 @@ public class VmUsageLoggingDisabledEndpointTests(DatabaseFixture fixture, VmAppF
         var response = await RootClient.GetAsync(BaseRoute, Ct);
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-        await Factory.PlayerApi.DidNotReceive().Can(
-            Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<AppSystemPermission[]>(),
-            Arg.Any<AppViewPermission[]>(),
-            Arg.Any<AppTeamPermission[]>(),
-            Arg.Any<CancellationToken>());
+        await Factory.PlayerApiClient.DidNotReceiveWithAnyArgs().GetMyPermissionsAsync(Ct);
+        await Factory.PlayerApiClient.DidNotReceiveWithAnyArgs().GetMyTeamPermissionsAsync(default, default, default, Ct);
     }
 
     /// <summary>

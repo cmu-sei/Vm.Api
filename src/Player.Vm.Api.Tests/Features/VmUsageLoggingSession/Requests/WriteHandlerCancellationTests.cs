@@ -25,7 +25,7 @@ public class WriteHandlerCancellationTests(DatabaseFixture fixture) : DatabaseTe
 {
     private static readonly DateTimeOffset Noon = new(2026, 3, 4, 12, 0, 0, TimeSpan.Zero);
 
-    private readonly IPlayerService _player = Substitute.For<IPlayerService>();
+    private readonly PlayerHarness _player = new(Guid.NewGuid(), TestContext.Current.CancellationToken);
 
     /// <summary>A create handed a cancelled token stores the session.</summary>
     [Fact]
@@ -83,8 +83,8 @@ public class WriteHandlerCancellationTests(DatabaseFixture fixture) : DatabaseTe
 
     private IPlayerService Caller()
     {
-        new PlayerPermissions().Holding(AppSystemPermission.ManageViews).AnswerFor(_player);
-        return _player;
+        _player.Grant(b => b.Holding(AppSystemPermission.ManageViews));
+        return _player.Service;
     }
 
     private static CancellationToken Cancelled() => new(canceled: true);

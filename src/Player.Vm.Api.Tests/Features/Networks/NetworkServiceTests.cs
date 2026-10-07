@@ -27,15 +27,14 @@ namespace Player.Vm.Api.Tests.Features.Networks;
 /// true or false cannot show. And GetEffectiveNetworkPermissions is what stops a team attaching a NIC to
 /// another team's network: it is the only thing standing between a segmented range and a flat one.
 ///
-/// The permission substitute below models player.api's actual rule - any one of the listed permissions
-/// satisfies the check - rather than answering yes or no per call site, so the arrays the production code
-/// passes are what decides the outcome.
+/// PlayerService is real, over a substituted player.api client (see PlayerHarness), so the arrays the
+/// production code passes are what decides the outcome.
 /// </summary>
 public class NetworkServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixture)
 {
-    private readonly IPlayerService _player = Substitute.For<IPlayerService>();
+    private readonly PlayerHarness _player = new(Guid.NewGuid(), TestContext.Current.CancellationToken);
 
-    private NetworkService Service => new(Db, _player, TestMapper.Mapper);
+    private NetworkService Service => new(Db, _player.Service, TestMapper.Mapper);
 
     #region Read and write gates
 
@@ -109,25 +108,16 @@ public class NetworkServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fix
     }
 
     /// <summary>
-    /// The gate is asked about the view being operated on. Passing the wrong view id would authorize the
-    /// call against a view the caller does hold rights in, which no other assertion here would notice
-    /// because the substitute ignores the ids it is given.
+    /// The gate is asked about the view being operated on: a caller holding the view-level network
+    /// permission on that view alone is let through, which a gate asking about any other view would refuse.
     /// </summary>
     [Fact]
     public async Task Reads_AskAboutTheRequestedView()
     {
         var viewId = Guid.NewGuid();
-        Holding(AppSystemPermission.ViewNetworks);
+        Grant(b => b.Holding(AppViewPermission.ViewNetworks, viewId));
 
-        await Service.GetByViewId(viewId, Ct);
-
-        await _player.Received().Can(
-            Arg.Any<IEnumerable<Guid>>(),
-            Arg.Is<IEnumerable<Guid>>(views => views.SequenceEqual(new[] { viewId })),
-            Arg.Any<AppSystemPermission[]>(),
-            Arg.Any<AppViewPermission[]>(),
-            Arg.Any<AppTeamPermission[]>(),
-            Arg.Any<CancellationToken>());
+        Assert.Empty(await Service.GetByViewId(viewId, Ct));
     }
 
     #endregion
@@ -393,25 +383,24 @@ public class NetworkServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fix
 
     private const string Instance = "vcenter-1";
 
-    /// <summary>
-    /// Answers Can the way player.api does: the check passes if the caller holds any one of the
-    /// permissions the call site listed. Nothing granted unless a test says so.
-    /// </summary>
-    private void Holding(params AppSystemPermission[] held) =>
-        _player.Can(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<AppSystemPermission[]>(),
-            Arg.Any<AppViewPermission[]>(),
-            Arg.Any<AppTeamPermission[]>(),
-            Arg.Any<CancellationToken>())
-            .Returns(call => call.ArgAt<AppSystemPermission[]>(2).Any(held.Contains));
+    /// <summary>System permissions for the caller. Nothing granted unless a test says so.</summary>
+    private void Holding(params AppSystemPermission[] held) => Grant(b => b.Holding(held));
 
-    private void HasViewNetworkAccess(bool allowed) =>
-        _player.HasViewNetworkAccess(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns(allowed);
+    private void Grant(Func<TestActorBuilder, TestActorBuilder> steps) => _player.Grant(steps);
 
-    private void UserTeams(params Guid[] teamIds) =>
-        _player.GetUserTeamIds(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns((IEnumerable<Guid>)teamIds);
+    /// <summary>View-wide network access: the system <c>ViewNetworks</c>. False grants nothing.</summary>
+    private void HasViewNetworkAccess(bool allowed)
+    {
+        if (allowed)
+            Holding(AppSystemPermission.ViewNetworks);
+    }
+
+    /// <summary>The caller is a member of these teams, holding nothing on them.</summary>
+    private void UserTeams(params Guid[] teamIds)
+    {
+        foreach (var teamId in teamIds)
+            Grant(b => b.MemberOf(teamId));
+    }
 
     private async Task<ViewNetworkEntity> SeededNetwork()
     {
@@ -421,14 +410,18 @@ public class NetworkServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fix
         return network;
     }
 
-    private static ViewNetworkEntity Network(
+    /// <summary>A network row, with its View added in player.api.</summary>
+    private ViewNetworkEntity Network(
         Guid viewId,
         string networkId,
         Guid[] teamIds = null,
         string name = "network",
         string providerInstanceId = Instance,
-        VmType providerType = VmType.Vsphere) =>
-        new()
+        VmType providerType = VmType.Vsphere)
+    {
+        _player.Directory.AddView(viewId);
+
+        return new()
         {
             Id = Guid.NewGuid(),
             ViewId = viewId,
@@ -438,6 +431,7 @@ public class NetworkServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fix
             ProviderInstanceId = providerInstanceId,
             ProviderType = providerType
         };
+    }
 
     #endregion
 }

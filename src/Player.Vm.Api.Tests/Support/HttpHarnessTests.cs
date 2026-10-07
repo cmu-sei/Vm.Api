@@ -1,8 +1,10 @@
 // Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
-// vm.api: permissions are the substituted player.api's answers, so "an actor with no permissions" is a
-// caller the cleared Factory.PlayerApi answers false for. The host also has databases of its own (for
+// vm.api: permissions are the real PlayerService's decisions over the player.api data the directory
+// holds, so "an actor with no permissions" is a caller player.api knows nothing about. PlayerService
+// caches a caller's system permissions in the host's IMemoryCache, which every test of a class shares;
+// two tests below pin that each sees its own. The host also has databases of its own (for
 // InitializeDatabase), and three tests prove nothing reaches them after startup.
 
 using System;
@@ -17,6 +19,7 @@ using NSubstitute.ClearExtensions;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Features.Vms;
+using Player.Vm.Api.Infrastructure.Authorization;
 using VmModel = Player.Vm.Api.Features.Vms.Vm;
 
 namespace Player.Vm.Api.Tests.Support;
@@ -34,7 +37,6 @@ public class HttpHarnessTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         await base.InitializeAsync();
 
-        Factory.PlayerApi.ClearSubstitute();
         Factory.Vsphere.ClearSubstitute();
     }
 
@@ -52,8 +54,8 @@ public class HttpHarnessTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     /// <summary>
-    /// The substituted player.api answered no for this caller, and the endpoint refused it, rather than the
-    /// pipeline granting by default.
+    /// player.api knows nothing of this caller, PlayerService answered no, and the endpoint refused it,
+    /// rather than the pipeline granting by default.
     /// </summary>
     [Fact]
     public async Task An_actor_with_no_permissions_is_forbidden()
@@ -67,7 +69,6 @@ public class HttpHarnessTests(DatabaseFixture fixture, VmAppFactory factory)
     [Fact]
     public async Task Root_reads_what_the_test_seeded()
     {
-        Factory.AllowEverything();
         var vm = TestData.VsphereVm();
         await Seed(vm);
 
@@ -91,7 +92,6 @@ public class HttpHarnessTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         Assert.NotEqual(Factory.HostDatabaseName, Session.DatabaseName);
         Assert.NotEqual(Factory.HostLoggingDatabaseName, Session.LoggingDatabaseName());
-        Factory.AllowEverything();
         var vm = TestData.VsphereVm();
         await Seed(vm);
 
@@ -126,6 +126,50 @@ public class HttpHarnessTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     /// <summary>
+    /// The actor's id is the caller the application sees: <c>onlyMine</c> keeps the personal Vm whose owner
+    /// is this actor and drops the one owned by another.
+    /// </summary>
+    [Fact]
+    public async Task A_request_from_an_actor_is_made_as_its_id()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var actor = await Actor().InView(teamId, viewId).PrimaryOn(teamId).Holding(AppTeamPermission.ViewTeamVms, teamId).SeedAsync();
+        var mine = PersonalVm(teamId, actor.Id);
+        await Seed(mine, PersonalVm(teamId, Guid.NewGuid()));
+
+        var vms = await ReadAsync<List<VmModel>>(await Client(actor).GetAsync($"api/teams/{teamId}/vms?onlyMine=true", Ct));
+
+        Assert.Equal([mine.Id], vms.Select(x => x.Id));
+    }
+
+    /// <summary>Root holds every system permission and nothing else.</summary>
+    [Fact]
+    public async Task Root_holds_every_system_permission()
+    {
+        var permissions = await ReadAsync<VmPermissionResult>(await RootClient.GetAsync($"api/vms/{await SeededVmId()}/permissions", Ct));
+
+        Assert.Equal(Enum.GetValues<AppSystemPermission>().Order(), permissions.SystemPermissions.Order());
+        Assert.Empty(permissions.TeamPermissions);
+    }
+
+    /// <summary>
+    /// One user id in two tests of one class, holding different system permissions: each test sees its
+    /// own, because the host's cache is emptied for every test. This half holds <c>ViewVms</c>.
+    /// </summary>
+    [Fact]
+    public async Task A_user_id_reused_across_tests_sees_this_tests_system_permissions_first()
+    {
+        await AssertSystemPermissionsOf(SharedUser, AppSystemPermission.ViewVms);
+    }
+
+    /// <summary>The other half: the same user id holding <c>ControlVms</c> only.</summary>
+    [Fact]
+    public async Task A_user_id_reused_across_tests_sees_this_tests_system_permissions_second()
+    {
+        await AssertSystemPermissionsOf(SharedUser, AppSystemPermission.ControlVms);
+    }
+
+    /// <summary>
     /// Once the host has started, a context resolved outside a request throws rather than reaching the
     /// host's own databases: the fallback is for <c>InitializeDatabase</c> only.
     /// </summary>
@@ -142,9 +186,43 @@ public class HttpHarnessTests(DatabaseFixture fixture, VmAppFactory factory)
             Assert.Throws<InvalidOperationException>(() => scope.ServiceProvider.GetRequiredService<VmLoggingContext>()).Message);
     }
 
+    private static readonly Guid SharedUser = Guid.Parse("5ca1ab1e-0000-4000-8000-000000000001");
+
+    /// <summary>
+    /// Asks twice: a first request caches the user's system permissions, and the second, in the same test,
+    /// reads the cache. Both must report exactly what this test granted.
+    /// </summary>
+    private async Task AssertSystemPermissionsOf(Guid userId, AppSystemPermission permission)
+    {
+        var actor = await Actor().WithId(userId).Holding(permission).SeedAsync();
+        var vmId = await SeededVmId();
+
+        foreach (var _ in new[] { 1, 2 })
+        {
+            var result = await ReadAsync<VmPermissionResult>(await Client(actor).GetAsync($"api/vms/{vmId}/permissions", Ct));
+            Assert.Equal([permission], result.SystemPermissions);
+        }
+    }
+
+    private async Task<Guid> SeededVmId()
+    {
+        var vm = TestData.VsphereVm();
+        await Seed(vm);
+        Factory.Views.GetViewIdsForTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<System.Threading.CancellationToken>()).Returns([]);
+
+        return vm.Id;
+    }
+
+    private static Player.Vm.Api.Domain.Models.Vm PersonalVm(Guid teamId, Guid ownerId)
+    {
+        var vm = TestData.VsphereVm(teamId);
+        vm.UserId = ownerId;
+
+        return vm;
+    }
+
     private async Task CreateSharedNameVm()
     {
-        Factory.AllowEverything();
 
         var response = await RootClient.PostAsJsonAsync(
             "api/vms", new VmCreateForm { Id = Guid.NewGuid(), Name = SharedName, TeamIds = [Guid.NewGuid()] }, Ct);

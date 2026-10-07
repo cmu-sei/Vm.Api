@@ -12,6 +12,7 @@ using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Features.Vms.Hubs;
+using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Tests.Support;
 using VmDto = Player.Vm.Api.Features.Vms.Vm;
 
@@ -37,9 +38,9 @@ public class VmHubPresenceTests : DatabaseTestBase
     private const string UserPrefix = "ActiveConsoles";
     private const string VmUsersPrefix = "CurrentVirtualMachineUsers";
 
-    private readonly IPlayerService _player = Substitute.For<IPlayerService>();
+    private readonly PlayerHarness _player;
     private readonly IVmService _vms = Substitute.For<IVmService>();
-    private readonly IViewService _views = Substitute.For<IViewService>();
+    private readonly IViewService _views;
     private readonly IVmUsageLoggingService _usageLog = Substitute.For<IVmUsageLoggingService>();
     private readonly IXApiService _xApi = Substitute.For<IXApiService>();
     private readonly RecordingHubHarness _harness = new(Guid.NewGuid(), "alice");
@@ -56,6 +57,8 @@ public class VmHubPresenceTests : DatabaseTestBase
     /// </remarks>
     public VmHubPresenceTests(DatabaseFixture fixture) : base(fixture)
     {
+        _player = new PlayerHarness(_harness.UserId, TestContext.Current.CancellationToken, _harness.Harness.User);
+        _views = _player.Views;
         _views.GetInfoForTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns([]);
 
         _provider = new ServiceCollection()
@@ -82,7 +85,7 @@ public class VmHubPresenceTests : DatabaseTestBase
             var context = NewContext();
             _contexts.Add(context);
 
-            return _harness.Attach(new VmHub(_active, _usageLog, _views, _player, _vms, _xApi, context));
+            return _harness.Attach(new VmHub(_active, _usageLog, _views, _player.Service, _vms, _xApi, context));
         }
     }
 
@@ -197,7 +200,8 @@ public class VmHubPresenceTests : DatabaseTestBase
         var team = Guid.NewGuid();
         var vm = await VmOn(team);
         ViewsForTheVm(view);
-        Visibility(view, primaryTeamId: null, canViewAllTeams: true, team);
+        _player.Directory.PlaceTeam(team, view);
+        _player.Grant(b => b.Holding(AppSystemPermission.ViewViews));
 
         await Hub.SetActiveVirtualMachine(vm.Id);
 
@@ -429,7 +433,7 @@ public class VmHubPresenceTests : DatabaseTestBase
         await Hub.SetActiveVirtualMachine(vm.Id);
 
         var otherTab = new RecordingHubHarness(_harness.UserId, "alice", "another-tab");
-        await otherTab.Attach(new VmHub(_active, _usageLog, _views, _player, _vms, _xApi, Db))
+        await otherTab.Attach(new VmHub(_active, _usageLog, _views, _player.Service, _vms, _xApi, Db))
             .OnDisconnectedAsync(null);
 
         Assert.Empty(otherTab.Sends);
@@ -465,9 +469,9 @@ public class VmHubPresenceTests : DatabaseTestBase
     private void ViewsForTheVm(params Guid[] viewIds) =>
         _views.GetViewIdsForTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns(viewIds);
 
+    /// <summary>The player.api data the caller's visibility in the view comes from (see <see cref="PlayerHarness.Sees(Guid, Guid?, bool, IEnumerable{Guid})"/>).</summary>
     private void Visibility(Guid viewId, Guid? primaryTeamId, bool canViewAllTeams, params Guid[] teamIds) =>
-        _player.GetVisibilityContextAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(new VisibilityContext(primaryTeamId, canViewAllTeams, [.. teamIds]));
+        _player.Sees(viewId, primaryTeamId, canViewAllTeams, teamIds);
 
     /// <summary>The common arrangement: the Vm is in one view, and the caller sees it there.</summary>
     private void InOneView(Guid viewId, Guid primaryTeamId, Guid[] visibleTeamIds)

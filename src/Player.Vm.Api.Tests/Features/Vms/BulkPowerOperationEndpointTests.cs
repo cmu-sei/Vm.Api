@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
+using System.Net.Http;
 using System.Net.Http.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -36,14 +37,36 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
         // The factory, and so its substitutes, are shared across the class. The database is not.
         Factory.Vsphere.ClearSubstitute();
         Factory.Proxmox.ClearSubstitute();
-        Factory.PlayerApi.ClearSubstitute();
         Factory.VsphereTasks.ClearSubstitute();
-        Factory.AllowEverything();
     }
 
+    /// <summary>
+    /// Posts as Root. Root holds every system permission, and revert asks only for the View permission
+    /// <c>RevertVms</c>, so for a revert Root is also given it on a View holding the posted Vms' teams.
+    /// </summary>
     private async Task<BulkPowerOperation.Response> Post(string action, params Guid[] ids)
     {
-        var response = await RootClient.PostAsJsonAsync($"/api/vms/actions/{action}", new { Ids = ids }, Ct);
+        if (action == "revert")
+        {
+            Guid[] teams;
+            await using (var context = NewContext())
+                teams = [.. context.VmTeams.Where(x => ids.Contains(x.VmId)).Select(x => x.TeamId)];
+
+            var viewId = Guid.NewGuid();
+            var root = Actor().WithId(Root.Id).Holding(AppViewPermission.RevertVms, viewId);
+
+            foreach (var team in teams)
+                root.InView(team, viewId);
+
+            await root.SeedAsync();
+        }
+
+        return await Post(RootClient, action, ids);
+    }
+
+    private async Task<BulkPowerOperation.Response> Post(HttpClient client, string action, params Guid[] ids)
+    {
+        var response = await client.PostAsJsonAsync($"/api/vms/actions/{action}", new { Ids = ids }, Ct);
 
         Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
 
@@ -159,16 +182,11 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
         var allowed = TestData.VsphereVm();
         await Seed(denied, allowed);
 
-        Factory.PlayerApi
-            .CanViewVms(
-                Arg.Is<IEnumerable<Guid>>(teams => teams.Contains(deniedTeam)),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<CancellationToken>())
-            .Returns(false);
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, allowed.VmTeams.Single().TeamId).SeedAsync();
 
         VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [allowed.Id] = string.Empty });
 
-        var result = await Post("power-on", denied.Id, allowed.Id);
+        var result = await Post(Client(actor), "power-on", denied.Id, allowed.Id);
 
         Assert.Equal("Unauthorized", result.Errors.For(denied.Id));
         Assert.Equal([allowed.Id], result.Accepted);
@@ -484,15 +502,14 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
         var allowed = TestData.VsphereVm();
         await Seed(denied, allowed);
 
-        Factory.PlayerApi
-            .CanControlVms(
-                Arg.Is<IEnumerable<Guid>>(teams => teams.Contains(denied.VmTeams.Single().TeamId)),
-                Arg.Any<CancellationToken>())
-            .Returns(false);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, denied.VmTeams.Single().TeamId)
+            .Holding(AppTeamPermission.ControlTeamVms, allowed.VmTeams.Single().TeamId)
+            .SeedAsync();
 
         VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [allowed.Id] = string.Empty });
 
-        var result = await Post("power-on", denied.Id, allowed.Id);
+        var result = await Post(Client(actor), "power-on", denied.Id, allowed.Id);
 
         Assert.Equal("Insufficient Permissions", result.Errors.For(denied.Id));
         Assert.Equal([allowed.Id], result.Accepted);
@@ -513,17 +530,9 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
         var vm = TestData.VsphereVm(hasSnapshot: true);
         await Seed(vm);
 
-        Factory.PlayerApi
-            .Can(
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<AppSystemPermission[]>(),
-                Arg.Is<AppViewPermission[]>(x => x != null && x.Contains(AppViewPermission.RevertVms)),
-                Arg.Any<AppTeamPermission[]>(),
-                Arg.Any<CancellationToken>())
-            .Returns(false);
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, vm.VmTeams.Single().TeamId).SeedAsync();
 
-        var result = await Post("revert", vm.Id);
+        var result = await Post(Client(actor), "revert", vm.Id);
 
         Assert.Equal("Insufficient Permissions", result.Errors.For(vm.Id));
         Assert.Empty(result.Accepted);
@@ -543,19 +552,11 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
         var vm = TestData.VsphereVm();
         await Seed(vm);
 
-        Factory.PlayerApi
-            .Can(
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<AppSystemPermission[]>(),
-                Arg.Is<AppViewPermission[]>(x => x != null && x.Contains(AppViewPermission.RevertVms)),
-                Arg.Any<AppTeamPermission[]>(),
-                Arg.Any<CancellationToken>())
-            .Returns(false);
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, vm.VmTeams.Single().TeamId).SeedAsync();
 
         VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
 
-        var result = await Post("power-on", vm.Id);
+        var result = await Post(Client(actor), "power-on", vm.Id);
 
         Assert.Empty(result.Errors);
         Assert.Equal([vm.Id], result.Accepted);
@@ -563,8 +564,7 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
 
     #endregion
 
-    // The endpoints are behind the default authorization policy, which the substituted player.api has
-    // no say in.
+    // The endpoints are behind the default authorization policy, which player.api has no say in.
     [Fact]
     public async Task PowerOn_RejectsAnUnauthenticatedRequest()
     {

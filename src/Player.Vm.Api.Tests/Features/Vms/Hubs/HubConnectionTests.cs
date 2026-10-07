@@ -228,7 +228,7 @@ public class HubConnectionTests(DatabaseFixture fixture, VmAppFactory factory)
             {
                 options.Transports = HttpTransportType.LongPolling;
                 options.HttpMessageHandlerFactory = _ => Factory.Server.CreateHandler();
-                options.Headers.Add(TestAuthHandler.UserHeader, Factory.UserId.ToString());
+                options.Headers.Add(TestAuthHandler.UserHeader, Root.Id.ToString());
             })
             .Build();
 

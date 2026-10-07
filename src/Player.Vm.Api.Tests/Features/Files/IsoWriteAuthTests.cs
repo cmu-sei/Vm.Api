@@ -16,6 +16,7 @@ using Player.Vm.Api.Features.Files.Requests;
 using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Infrastructure.Options;
+using Player.Vm.Api.Tests.Support;
 
 namespace Player.Vm.Api.Tests.Features.Files;
 
@@ -26,8 +27,8 @@ namespace Player.Vm.Api.Tests.Features.Files;
 // rather than in the UploadIso/DeleteIso handlers, which only call it. If the gate is ever hoisted into
 // the handlers - as ListViewIsos/ListAllIsos do it - these tests should move with it.
 //
-// Every case is written against a caller who is denied by default, so an allowed case has to say which
-// permission allows it. IsoServiceMountAuthTests covers the read/mount side of the same feature.
+// Every case is written against a caller who holds nothing but a primary team in the View, so an allowed
+// case has to say which permission allows it. PlayerService is real (see PlayerHarness). IsoServiceMountAuthTests covers the read/mount side of the same feature.
 public class IsoWriteAuthTests
 {
     private static readonly Guid ViewId = Guid.Parse("11111111-1111-1111-1111-111111111111");
@@ -35,64 +36,38 @@ public class IsoWriteAuthTests
     private static readonly Guid TeamB = Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb");
     private static readonly Guid PrimaryTeam = Guid.Parse("cccccccc-cccc-cccc-cccc-cccccccccccc");
 
-    private readonly IPlayerService _playerService = Substitute.For<IPlayerService>();
-    private readonly IViewService _viewService = Substitute.For<IViewService>();
+    private readonly PlayerHarness _player = new(Guid.NewGuid(), TestContext.Current.CancellationToken);
     private readonly IIsoProvider _provider = Substitute.For<IIsoProvider>();
+    private bool _hasPrimaryTeam = true;
+    private PlayerServiceSpy _spy;
 
     public IsoWriteAuthTests()
     {
-        // Deny every permission unless a test grants it.
-        _playerService.Can(
-                Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<AppSystemPermission[]>(), Arg.Any<AppViewPermission[]>(),
-                Arg.Any<AppTeamPermission[]>(), Arg.Any<CancellationToken>())
-            .Returns(false);
-
         // The teams under test belong to the View, and the caller has a primary team in it. Tests about
         // either of those override it.
-        _playerService.IsTeamInViewAsync(Arg.Any<Guid>(), Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            .Returns(true);
-        _playerService.GetPrimaryTeamByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
-            .Returns(new Team { Id = PrimaryTeam, Name = "primary" });
+        foreach (var team in new[] { TeamA, TeamB, PrimaryTeam })
+            _player.Directory.PlaceTeam(team, ViewId);
     }
 
-    private IsoService Service() =>
-        new(_playerService, _viewService, [_provider], new IsoUploadOptions(),
+    private IsoService Service()
+    {
+        if (_hasPrimaryTeam)
+            _player.Grant(b => b.PrimaryOn(PrimaryTeam));
+
+        return new(PlayerServiceSpy.Wrap(_player.Service, out _spy), _player.Views, [_provider], new IsoUploadOptions(),
             NullLogger<IsoService>.Instance);
+    }
 
     // A view-level claim - held over the View itself, so it applies to every team in it.
-    private void AllowView(AppViewPermission permission)
-    {
-        _playerService.Can(
-                Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<AppSystemPermission[]>(),
-                Arg.Is<AppViewPermission[]>(p => p.Contains(permission)),
-                Arg.Any<AppTeamPermission[]>(), Arg.Any<CancellationToken>())
-            .Returns(true);
-    }
+    private void AllowView(AppViewPermission permission) => _player.Grant(b => b.Holding(permission, ViewId));
 
-    // A team-level claim on one specific team. The team-scoped calls pass that team as the only
-    // requested id, so matching on it keeps the grant from leaking to another team's check.
-    private void AllowTeam(AppTeamPermission permission, Guid teamId)
-    {
-        _playerService.Can(
-                Arg.Is<IEnumerable<Guid>>(ids => ids != null && ids.Contains(teamId)),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<AppSystemPermission[]>(), Arg.Any<AppViewPermission[]>(),
-                Arg.Is<AppTeamPermission[]>(p => p.Contains(permission)),
-                Arg.Any<CancellationToken>())
-            .Returns(true);
-    }
+    // A team-level claim on one specific team.
+    private void AllowTeam(AppTeamPermission permission, Guid teamId) => _player.Grant(b => b.Holding(permission, teamId));
 
-    private void AllowSystem(AppSystemPermission permission)
-    {
-        _playerService.Can(
-                Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-                Arg.Is<AppSystemPermission[]>(p => p.Contains(permission)),
-                Arg.Any<AppViewPermission[]>(), Arg.Any<AppTeamPermission[]>(),
-                Arg.Any<CancellationToken>())
-            .Returns(true);
-    }
+    private void AllowSystem(AppSystemPermission permission) => _player.Grant(b => b.Holding(permission));
+
+    // A team placed in another View than the one under test.
+    private void ElsewhereThanTheView(Guid teamId) => _player.Directory.PlaceTeam(teamId, Guid.NewGuid());
 
     private Task<IReadOnlyList<string>> ResolveUpload(string scope, params Guid[] teamIds) =>
         Service().ResolveUploadScopeIdsAsync(ViewId, scope, teamIds, CancellationToken.None);
@@ -177,11 +152,7 @@ public class IsoWriteAuthTests
 
         Assert.Equal([PrimaryTeam.ToString()], await ResolveUpload("team"));
 
-        await _playerService.Received().Can(
-            Arg.Is<IEnumerable<Guid>>(ids => ids.SequenceEqual(new[] { PrimaryTeam })),
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<AppSystemPermission[]>(),
-            Arg.Any<AppViewPermission[]>(), Arg.Any<AppTeamPermission[]>(),
-            Arg.Any<CancellationToken>());
+        Assert.Contains(_spy.CallsTo(nameof(IPlayerService.Can)), x => ((IEnumerable<Guid>)x[0]).SequenceEqual([PrimaryTeam]));
     }
 
     // A caller with no team in the View has no default target, which is a 403 rather than a null deref -
@@ -189,9 +160,8 @@ public class IsoWriteAuthTests
     [Fact]
     public async Task TeamScopedUpload_WithNoPrimaryTeam_IsRefused()
     {
-        AllowView(AppViewPermission.UploadViewIsos);
-        _playerService.GetPrimaryTeamByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
-            .Returns((Team)null);
+        AllowSystem(AppSystemPermission.ViewViews);
+        _hasPrimaryTeam = false;
 
         var ex = await Assert.ThrowsAsync<ForbiddenException>(() => ResolveUpload("team"));
 
@@ -204,16 +174,13 @@ public class IsoWriteAuthTests
     public async Task TeamScopedUpload_ToATeamOutsideTheView_IsABadRequest_BeforeAnyPermissionCheck()
     {
         AllowView(AppViewPermission.UploadViewIsos);
-        _playerService.IsTeamInViewAsync(TeamA, ViewId, Arg.Any<CancellationToken>()).Returns(false);
+        ElsewhereThanTheView(TeamA);
 
         var ex = await Assert.ThrowsAsync<BadRequestException>(() => ResolveUpload("team", TeamA));
 
         Assert.Equal("The specified team is not part of this View", ex.Message);
 
-        await _playerService.DidNotReceive().Can(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<AppSystemPermission[]>(), Arg.Any<AppViewPermission[]>(),
-            Arg.Any<AppTeamPermission[]>(), Arg.Any<CancellationToken>());
+        Assert.Empty(_spy.CallsTo(nameof(IPlayerService.Can)));
     }
 
     // ---- Delete ----
@@ -296,7 +263,7 @@ public class IsoWriteAuthTests
     public async Task TeamScopedDelete_WithSystemDeleteIsos_StillRejectsATeamOutsideTheView()
     {
         AllowSystem(AppSystemPermission.DeleteIsos);
-        _playerService.IsTeamInViewAsync(TeamA, ViewId, Arg.Any<CancellationToken>()).Returns(false);
+        ElsewhereThanTheView(TeamA);
 
         var ex = await Assert.ThrowsAsync<BadRequestException>(() => ResolveDelete("team", TeamA));
 
@@ -314,9 +281,8 @@ public class IsoWriteAuthTests
     [Fact]
     public async Task TeamScopedDelete_WithNoPrimaryTeam_IsRefused()
     {
-        AllowView(AppViewPermission.DeleteViewIsos);
-        _playerService.GetPrimaryTeamByViewIdAsync(ViewId, Arg.Any<CancellationToken>())
-            .Returns((Team)null);
+        AllowSystem(AppSystemPermission.DeleteIsos);
+        _hasPrimaryTeam = false;
 
         var ex = await Assert.ThrowsAsync<ForbiddenException>(() => ResolveDelete("team"));
 

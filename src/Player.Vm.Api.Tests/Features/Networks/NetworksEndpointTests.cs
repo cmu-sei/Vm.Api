@@ -35,8 +35,6 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
     {
         await base.InitializeAsync();
 
-        Factory.PlayerApi.ClearSubstitute();
-        Factory.AllowEverything();
     }
 
     #region Reads
@@ -261,7 +259,7 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
         var network = Network(Guid.NewGuid(), "vlan-10");
         await Seed(network);
         var actor = await Actor()
-            .Holding(new PlayerPermissions().Holding(AppViewPermission.ViewNetworks, Guid.NewGuid()))
+            .Holding(AppViewPermission.ViewNetworks, Guid.NewGuid())
             .SeedAsync();
 
         var byView = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks", Ct);
@@ -277,7 +275,7 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
         var network = Network(Guid.NewGuid(), "vlan-10");
         await Seed(network);
         var actor = await Actor()
-            .Holding(new PlayerPermissions().Holding(AppViewPermission.ViewNetworks, network.ViewId))
+            .Holding(AppViewPermission.ViewNetworks, network.ViewId)
             .SeedAsync();
 
         var response = await Client(actor).DeleteAsync(
@@ -297,9 +295,8 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
     [Fact]
     public async Task Reads_WhenPlayerApiReportsTheViewIsGone_Are404()
     {
-        Factory.PlayerApi
-            .Can(default, default, default, default, default, Ct)
-            .ReturnsForAnyArgs<bool>(_ => throw new Player.Api.Client.ApiException(
+        Factory.PlayerApiClient.GetMyPermissionsAsync(Arg.Any<System.Threading.CancellationToken>())
+            .Returns<System.Collections.Generic.ICollection<string>>(_ => throw new Player.Api.Client.ApiException(
                 "View not found", (int)HttpStatusCode.NotFound, null, null, null));
 
         var response = await RootClient.GetAsync($"/api/views/{Guid.NewGuid()}/networks", Ct);
@@ -312,9 +309,8 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
     [Fact]
     public async Task Reads_WhenPlayerApiIsUnreachable_Are500()
     {
-        Factory.PlayerApi
-            .Can(default, default, default, default, default, Ct)
-            .ReturnsForAnyArgs<bool>(_ => throw new Player.Api.Client.ApiException(
+        Factory.PlayerApiClient.GetMyPermissionsAsync(Arg.Any<System.Threading.CancellationToken>())
+            .Returns<System.Collections.Generic.ICollection<string>>(_ => throw new Player.Api.Client.ApiException(
                 "Service Unavailable", (int)HttpStatusCode.ServiceUnavailable, null, null, null));
 
         var response = await RootClient.GetAsync($"/api/views/{Guid.NewGuid()}/networks", Ct);
@@ -353,9 +349,13 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
             ProviderInstanceId = Instance
         };
 
-    private static ViewNetworkEntity Network(
-        Guid viewId, string networkId, Guid[] teamIds = null, string name = "network") =>
-        new()
+    /// <summary>A network row, with its View added in player.api.</summary>
+    private ViewNetworkEntity Network(
+        Guid viewId, string networkId, Guid[] teamIds = null, string name = "network")
+    {
+        Factory.Player.AddView(viewId);
+
+        return new()
         {
             Id = Guid.NewGuid(),
             ViewId = viewId,
@@ -365,6 +365,7 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
             ProviderInstanceId = Instance,
             ProviderType = VmType.Vsphere
         };
+    }
 
     #endregion
 }

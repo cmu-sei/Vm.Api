@@ -4,7 +4,7 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 1,716 tests. All of them run today; nothing is skipped.
+The suite contains 1,732 tests. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
 Docker: no network, no vCenter and no Proxmox cluster. The unit tests need not even that.
@@ -407,8 +407,8 @@ resolve to the test project's folders, so references to production types are wri
   `DatabaseHarnessTests`, `HttpHarnessTests` and `TestActorTests`.
 - `Support/` also holds vm.api's own extras, each named for what it fakes: `FakeProxmoxCluster` (a PVE
   cluster at the socket), `FakeChangeFeed` (vCenter's property collector), `PollLoop` (a counted turn of a
-  polling `BackgroundService`, with `PollLoopSmokeTests`), `PlayerPermissions` (what the substituted
-  player.api answers), `RecordingHubHarness` and `HubContextHarness` (below).
+  polling `BackgroundService`, with `PollLoopSmokeTests`), `PlayerDirectory`, `PlayerHarness` and
+  `PlayerServiceSpy` (player.api's side of the seam, below), `RecordingHubHarness` and `HubContextHarness`.
 
 ## The database
 
@@ -443,9 +443,10 @@ one host per test class, through `IClassFixture<VmAppFactory>`, because the test
 the NSubstitute doubles the host resolves. Its doc comment is the authoritative list of what is real; the
 shape of it is:
 
-- **Substituted**: `IVsphereService` and `IProxmoxService` (the hypervisors), `IPlayerService`,
-  `IViewService` and `IPlayerApiClient` (player.api, reached over HTTP for authorization decisions and
-  for the View a SignalR notification is addressed to), `ITaskService` / `IProxmoxTaskService` (the
+- **Substituted**: `IVsphereService` and `IProxmoxService` (the hypervisors), `IPlayerApiClient` (the
+  generated player.api client, answered by `Factory.Player`; see Callers and permissions), `IViewService`
+  (`ViewService`, player.api by its admin client: its team-to-View lookup is answered by `Factory.Player`,
+  the entity-event handlers' View lookups are arranged per test), `ITaskService` / `IProxmoxTaskService` (the
   pollers the `CheckTasks` pipeline behaviors poke after a power command), `ICallbackBackgroundService`
   (the webhook send queue) and `IIsoProvider` (ISO storage on a hypervisor).
 - **Replaced**: token validation (the shared `TestAuthHandler`), `IHttpClientFactory` (the shared
@@ -453,13 +454,15 @@ shape of it is:
   registrations (below).
 - **Removed**: every `IHostedService`. The background pollers would otherwise start dialing a vCenter
   that is not there, on their own schedule, in the middle of unrelated tests.
-- **Real**: everything else, including `VmService.CanAccessVm`, the handlers' own permission gates and
-  the SignalR hub contexts (`HubConnectionTests` connects real clients to them).
+- **Real**: everything else, including `PlayerService` (every authorization and visibility decision),
+  `VmService.CanAccessVm`, the handlers' own permission gates and the SignalR hub contexts
+  (`HubConnectionTests` connects real clients to them).
 
 A substitute is safe in a per-class host because one class's tests run one after another, so no other
-class's request reaches it. Its state does persist across those tests, so each endpoint class clears what
-it arranges in `InitializeAsync` (`BulkPowerOperationEndpointTests` calls `ClearSubstitute()` on each and
-then `AllowEverything()`): a `Received()` assertion in a class that did not clear can be satisfied by an
+class's request reaches it. Its state does persist across those tests, so `ApiTestBase` resets the
+player.api side for every test (`Factory.ResetPlayer()`: the client and `IViewService` substitutes cleared,
+the directory emptied, the host's `IMemoryCache` cleared) and each endpoint class clears the rest of what it
+arranges in `InitializeAsync`: a `Received()` assertion in a class that did not clear can be satisfied by an
 earlier test's request. A run-wide host would need recorders instead, which is the standard's default and
 the reason it is not used here.
 
@@ -523,37 +526,76 @@ touches no database, is driven over a live connection in `HubConnectionTests`.
 
 ## Callers and permissions
 
-vm.api keeps no users or permissions of its own: every decision is a question to player.api through
-`IPlayerService`, which the factory substitutes. So an actor (`Support/TestActor.cs`) is the identity a
-request carries, the `sub` and `name` claims the shared `TestAuthHandler` mints from `X-Test-User` and
-`X-Test-Name`, and what it may do is what the substitute answers:
+vm.api keeps no users or permissions of its own: `PlayerService` turns what player.api answers into every
+authorization and visibility decision. The seam is therefore the generated `IPlayerApiClient`, the one
+thing that leaves the process (`CONVENTIONS.md` section 1, the sibling-API seam), and `PlayerService` is real
+in every test, hosted or not.
 
-- `Root` (`ApiTestBase`) is the factory's `UserId`, holding whatever the class arranged:
-  `Factory.AllowEverything()` answers yes to every permission question the endpoints ask, and leaves the
-  visibility calls unstubbed, because a default that made every team visible would hide the difference
-  between a permission and a team's membership of a View.
-- `Actor().Holding(new PlayerPermissions()...).SeedAsync()` makes the substitute answer every permission
-  question from exactly those grants, the way the real `PlayerService.Can` would: a system permission
-  everywhere, a View permission for that View (or a team placed in it with `InView`), a team permission
-  for that team. This is what a denied test's near miss is made of: the caller holds the permission next
-  to the one the gate asks for, or the right one on another team or View, and because every question is
-  answered from the same grants, a gate that asked the wrong question would let it through. The substitute
-  is one per host, so the grants answer for every caller of the test that seeds them. `TestActorTests`
-  pins the shapes.
-- `Client()` carries no identity, for the 401 cases.
+`Support/PlayerDirectory.cs` is player.api's side: which View each team is in, and per user the system
+permissions (`GetMyPermissionsAsync`) and the team permission claims (`GetMyTeamPermissionsAsync`) player.api
+would return, plus the teams and Views by id and `IViewService.GetViewIdForTeam`. It answers as player.api
+does where vm.api's decisions depend on it: `GetUserViewTeamsAsync` is the user's primary visibility context
+(no primary team is no team; `ViewView` or `ManageView` on the primary team is every team of the View;
+`ViewTeam` or `ManageTeam` is the primary team and the teams scoped from it; otherwise the primary team
+alone); the privileged `GetViewTeamsAsync` answers 403 unless the caller holds `ViewViews` or `ViewView` on
+the View, and `GetViewsAsync` unless it holds `ViewViews`; a scoped claim carries the effective permissions of
+the membership that grants it. The `GetMy*` routes answer for the user of the request in flight
+(its `sub` claim), and a request with no credentials is refused with a 401, as player.api refuses the empty
+`Authorization` header vm.api forwards for it. A View nobody added answers 404 on its routes, so a test's
+Views have to exist in the directory, which the arrangement helpers see to.
 
-Each gate is then tested from both sides with an actor: allowed for a caller holding exactly the
-permission it asks for on the resource's own team or View (`Get_is_allowed_for_a_caller_holding_exactly_ViewTeamVms_on_the_Vms_team`),
-and refused for one holding that permission on another team or View, or its read-only neighbour
-(`Delete_is_forbidden_for_a_caller_holding_ManageTeam_only_on_another_team_and_leaves_the_row`). Older
-denials that re-stub one question false on top of `AllowEverything` (`Deny(...)` in the route classes)
-remain beside them; they show which question a route asks, and the actor tests show it asks about the
-right team.
+An actor (`Support/TestActor.cs`) is the identity a request carries (the `sub` and `name` claims the shared
+`TestAuthHandler` mints) and the player.api data its builder steps write under its id:
 
-Service tests that construct a service directly substitute `IPlayerService` themselves and use the same
-model (`new PlayerPermissions()...AnswerFor(_player)`, as `VmServiceAuthorizationTests.Holding` does), or
-build a principal with `Support/ClaimsPrincipalBuilder.cs`. The real `PlayerService` is covered by
-`PlayerServiceAuthorizationTests`, constructed through `AuthorizationHarness.CreatePlayerService`.
+- `Holding(AppSystemPermission...)` is a system permission.
+- `Holding(AppTeamPermission, teamId)` is a claim on the team carrying it, the actor a member; a team not
+  yet in a View gets one of its own.
+- `Holding(AppViewPermission, viewId)` is the permission on the claim of one of the actor's own teams in the
+  View (its primary team there, else a team it is a member of, else a team of its own), which is where
+  player.api reports a View permission.
+- `InView(teamId, viewId)` places a team; the actor's first membership in a View is its primary team there,
+  as player.api assigns it, unless `PrimaryOn(teamId)` names another. The primary team is what visibility
+  comes from (`ViewView` or `ManageView` on it sees every team of the View, `ViewTeam` or
+  `ManageTeam` the teams scoped onto it with `SeesScoped`); `MemberOf(teamId)` is a membership with nothing
+  on it.
+- `Factory.Player.Sees(userId, viewId, primary, canViewAllTeams, teams)` writes the data a given visibility
+  comes from, for the tests that are about what a caller sees rather than what it holds.
+
+`Root` (`ApiTestBase`) is a fresh actor every test, holding every system permission and nothing else. A gate
+that asks only for a View or team permission (the vSphere and Proxmox snapshot and guest-file routes, the
+bulk revert, the ISO View upload and listing) needs Root on that View too, which those classes arrange
+(`Actor().WithId(Root.Id)...` adds to Root). The vSphere and Proxmox classes also take the two network system
+permissions from Root, so `NetworkService` takes the branch a caller without view-network access takes,
+which is what their network tests are about. `Client()` carries no identity, for the 401 cases.
+
+**The cache.** `PlayerService.GetSystemPermissionsAsync` keeps a user's system permissions in `IMemoryCache`
+for a minute, keyed on the user id (`PlayerService.cs:515-521`), and the per-class host's cache is one
+singleton for every test of the class. Both answers apply: `Root` is a fresh id per test, and
+`Factory.ResetPlayer()` clears the cache before every test, so even a user id reused across tests reads its
+own test's permissions. `HttpHarnessTests.A_user_id_reused_across_tests_sees_this_tests_system_permissions_first`
+and `_second` pin it: one fixed id, `ViewVms` in one test and `ControlVms` in the other, each asked twice.
+Within a test an actor's answers are read once and kept, so a test never changes an actor's system
+permissions after its first request.
+
+Each gate is tested from both sides with an actor: allowed for a caller holding exactly the permission it
+asks for on the resource's own team or View
+(`Get_is_allowed_for_a_caller_holding_exactly_ViewTeamVms_on_the_Vms_team`), and refused for one holding that
+permission on another team or View, or its neighbour
+(`Delete_is_forbidden_for_a_caller_holding_ManageTeam_only_on_another_team_and_leaves_the_row`). The route
+classes also keep a wrong-question denial per gate family: `AllBut(permission)` in the vSphere and Proxmox
+classes is a caller holding everything Root does but the asked permission, and `Deny(system, view)` in the
+usage-log class takes the asked system permission from Root.
+
+Service tests that construct a service directly use `Support/PlayerHarness.cs`: the real `PlayerService` over
+a substituted client and `IViewService` answered by a directory of its own, for one caller
+(`_player.Grant(b => b.Holding(...))`, `_player.Sees(...)`), with a new `PlayerService` each time
+`_player.Service` is read so that nothing is cached from before the arrangement. Where a test's subject is
+how a service asks rather than what it is told (one batched question rather than one per team, no elevated
+check for the caller's own Vm), `Support/PlayerServiceSpy.cs` wraps the real service and records each call;
+every answer is still the real one. `PlayerServiceAuthorizationTests` covers `PlayerService` itself against
+the client, and `TestActorTests` pins what the real `PlayerService` derives from each builder step (the
+step's permission passes and its near misses do not) and the directory's fidelity to player.api: the primary
+team, the View teams, the gated listings and what a scoped claim carries.
 
 ## The fakes that are not in the standard
 
@@ -624,12 +666,9 @@ reviewer judges against; what follows is how they land in this repository.
    and an undisposed context keeps its pooled connection checked out until the process exits.
 6. Do not add Arrange, Act and Assert comments. A blank line already shows the shape of a test.
    Comments should explain what a test pins and why it matters, not what the next line does.
-7. For an authorization test of a service, substitute `IPlayerService` and construct the service
-   directly, with `TestMapper.Mapper` for the mapper. Make the substitute model the rule rather than the
-   answer - `PlayerPermissions.AnswerFor` (or `NetworkServiceTests.Holding`) returns true when the caller
-   holds one of the permissions the call site *asked for*, which is what lets one test show that view
-   rights allow a read and another show that they do not allow a write. A substitute that returns a flat
-   true or false per method cannot tell those apart.
+7. For an authorization test of a service, construct the service with `PlayerHarness.Service` (the real
+   `PlayerService`) and `TestMapper.Mapper`, and arrange the caller as player.api data with
+   `_player.Grant(...)`. Never substitute `IPlayerService`: it is the code that decides.
 8. Break the production code and check the test fails, then restore it (copy the file aside first, or
    `git checkout -- <file>` only if it was unmodified). For an authorization gate this is the standard's
    broken-gate check (`CONVENTIONS.md` section 5): break the gate at that endpoint's call site so it always
@@ -945,35 +984,6 @@ unreachable: `Startup` imports `Player.Vm.Api.Features.Vms.Hubs` and nothing any
 `Player.Vm.Api.Hubs` namespace, so the `MapHub<VmHub>` in `Startup` is the feature hub and this copy has
 no caller. The only reference to it in the repository is the assertion in `HubConnectionTests` that it is
 not mapped. Deleting the file is the fix; the coverage figure is only how it was noticed.
-
-## Follow-up: the sibling-API seam
-
-The standard now substitutes the generated client (`IPlayerApiClient`) and keeps the application's own
-`PlayerService` real (`CONVENTIONS.md` section 1). This suite still substitutes `IPlayerService` and answers it
-through `PlayerPermissions`, which mirrors `PlayerService.Can`; moving to the seam is not done yet. The size of it:
-
-- **What changes.** 21 test files arrange `IPlayerService`, about 580 test methods between them:
-  `VmUsageLoggingSessionEndpointTests` (86), `VmServiceAuthorizationTests` (73), `VmsEndpointTests` (65),
-  `VsphereEndpointTests` (52), `ProxmoxEndpointTests` (40), `VmHubGroupTests` (32), and fifteen smaller
-  classes (ISO, network, presence, bulk power, usage log service, `ConnectionService`, the harness
-  self-tests). In most of them only the arrangement changes. `AllowEverything` (13 files), the `Deny(...)` helpers
-  (three files) and `PlayerPermissions` (12 files) become what player.api returns: the caller's system
-  permissions (`GetMyPermissionsAsync`), its team permission claims, and the views and teams it can see.
-  `TestActorBuilder.Holding` becomes the place that arranges those on the client. `PlayerPermissions` and its
-  `TestActorTests` go, and `PlayerServiceAuthorizationTests` stays as the real service's own suite.
-- **What becomes real.** The visibility calls (`GetVisibilityContext*`) are stubbed directly today. With the
-  real `PlayerService` they are computed from the client's teams, primary team and direct permissions, so
-  `VmHubGroupTests`, the list routes in `VmsEndpointTests` and the presence tests arrange teams rather than a
-  `VisibilityContext`. That is most of the work.
-- **The cache caveat.** `PlayerService.GetSystemPermissionsAsync` caches a user's system permissions in
-  `IMemoryCache` for one minute, keyed on the user id (`src/Player.Vm.Api/Domain/Services/PlayerService.cs:515-521`).
-  The per-class host's `IMemoryCache` is a singleton, and `Root`'s id is the host's `UserId`, so a test that
-  changes `Root`'s system permissions would read the set an earlier test of the class cached. Either every
-  test gets a fresh actor id (`Root` per test rather than per host), or the host's cache is cleared in
-  `InitializeAsync`. The view-team cache (`_viewTeamsCache`) is per request and needs nothing.
-- **Order.** Whether to deliver the suite as it stands and migrate in a follow-up, or migrate first, is the
-  user's decision. The broken-gate checks recorded for this suite would need repeating on the migrated
-  tests.
 
 # What is not covered yet
 

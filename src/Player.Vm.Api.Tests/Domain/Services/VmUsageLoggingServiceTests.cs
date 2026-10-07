@@ -46,7 +46,7 @@ public class VmUsageLoggingServiceTests(DatabaseFixture fixture) : DatabaseTestB
     /// </summary>
     private static readonly DateTimeOffset Noon = new(2026, 3, 4, 12, 0, 0, TimeSpan.Zero);
 
-    private readonly IPlayerService _player = Substitute.For<IPlayerService>();
+    private readonly PlayerHarness _player = new(Guid.NewGuid(), TestContext.Current.CancellationToken);
     private readonly IVmService _vms = Substitute.For<IVmService>();
     private readonly List<VmLoggingContext> _contexts = [];
 
@@ -63,7 +63,7 @@ public class VmUsageLoggingServiceTests(DatabaseFixture fixture) : DatabaseTestB
         LoggingDb = NewLoggingContext();
 
         // Every write needs a user, and only the tests about what a row says care which one.
-        _player.GetUserById(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+        _player.Client.GetUserAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
             .Returns(call => new User { Id = call.Arg<Guid>(), Name = "user" });
     }
 
@@ -199,7 +199,7 @@ public class VmUsageLoggingServiceTests(DatabaseFixture fixture) : DatabaseTestB
     {
         var session = await SeedSession(name: "exercise");
         var vmId = SeededVm(name: "web-01", addresses: ["10.0.0.4"]);
-        _player.GetUserById(_userId, Arg.Any<CancellationToken>())
+        _player.Client.GetUserAsync(_userId, Arg.Any<CancellationToken>())
             .Returns(new User { Id = _userId, Name = "ada" });
 
         await Service().CreateVmLogEntry(_userId, vmId, [_teamId], Ct);
@@ -276,7 +276,7 @@ public class VmUsageLoggingServiceTests(DatabaseFixture fixture) : DatabaseTestB
         await Service().CreateVmLogEntry(_userId, vmId, [_teamId], Ct);
 
         Assert.Equal(3, (await Entries()).Length);
-        await _player.Received(1).GetUserById(_userId, Arg.Any<CancellationToken>());
+        await _player.Client.Received(1).GetUserAsync(_userId, Arg.Any<CancellationToken>());
         await _vms.Received(1).GetAsync(vmId, Arg.Any<CancellationToken>());
     }
 
@@ -291,7 +291,7 @@ public class VmUsageLoggingServiceTests(DatabaseFixture fixture) : DatabaseTestB
 
         await Service().CreateVmLogEntry(_userId, Guid.NewGuid(), [_teamId], Ct);
 
-        await _player.DidNotReceive().GetUserById(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await _player.Client.DidNotReceive().GetUserAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
         await _vms.DidNotReceive().GetAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
@@ -423,7 +423,7 @@ public class VmUsageLoggingServiceTests(DatabaseFixture fixture) : DatabaseTestB
 
         Assert.Equal(open.Id, (Assert.Single(await Entries())).Id);
         Assert.Equal(DateTimeOffset.MinValue, (await Entry(open.Id)).VmInactiveDT);
-        await _player.DidNotReceive().GetUserById(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        await _player.Client.DidNotReceive().GetUserAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
     }
 
     /// <summary>
@@ -460,7 +460,7 @@ public class VmUsageLoggingServiceTests(DatabaseFixture fixture) : DatabaseTestB
         _contexts.Add(context);
 
         return new VmUsageLoggingService(
-            new VmUsageLoggingOptions { Enabled = enabled }, _player, _vms, context);
+            new VmUsageLoggingOptions { Enabled = enabled }, _player.Service, _vms, context);
     }
 
     /// <summary>An open session over <see cref="_teamId"/>, started an hour ago.</summary>

@@ -11,6 +11,7 @@ using Player.Api.Client;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Features.Vms.Hubs;
+using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Tests.Support;
 using VmDto = Player.Vm.Api.Features.Vms.Vm;
 using VmUserEntity = Player.Vm.Api.Domain.Models.VmUser;
@@ -48,18 +49,37 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
     /// </summary>
     private const string VmUsersPrefix = "CurrentVirtualMachineUsers";
 
-    private readonly IPlayerService _player = Substitute.For<IPlayerService>();
     private readonly IActiveVirtualMachineService _active = Substitute.For<IActiveVirtualMachineService>();
     private readonly IVmService _vms = Substitute.For<IVmService>();
-    private readonly IViewService _views = Substitute.For<IViewService>();
     private readonly IVmUsageLoggingService _usageLog = Substitute.For<IVmUsageLoggingService>();
     private readonly IXApiService _xApi = Substitute.For<IXApiService>();
     private const string CallersConnection = "the-callers-connection";
 
     private readonly HubHarness _harness = new(Guid.NewGuid(), connectionId: CallersConnection);
+    private PlayerHarness _playerHarness;
+    private readonly Dictionary<Guid, VisibilityContext> _visibility = [];
+    private readonly Dictionary<Guid, Team[]> _teams = [];
+    private PlayerServiceSpy _spy;
 
-    private VmHub Hub => _harness.Attach(
-        new VmHub(_active, _usageLog, _views, _player, _vms, _xApi, Db));
+    /// <summary>The real PlayerService's player.api, for the harness's caller.</summary>
+    private PlayerHarness _player => _playerHarness ??= new(_harness.UserId, TestContext.Current.CancellationToken, _harness.User);
+
+    private IViewService _views => _player.Views;
+
+    /// <summary>
+    /// A hub as one invocation gets it: a new real PlayerService over the player.api data arranged so far,
+    /// recorded by <see cref="_spy"/>. Production builds one per invocation too, which is why a test that
+    /// changes what player.api says between two invocations takes the hub afresh.
+    /// </summary>
+    private VmHub Hub
+    {
+        get
+        {
+            WriteArrangement();
+            return _harness.Attach(
+                new VmHub(_active, _usageLog, _views, PlayerServiceSpy.Wrap(_player.Service, out _spy), _vms, _xApi, Db));
+        }
+    }
 
     #region JoinView and LeaveView
 
@@ -146,11 +166,10 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
         var kept = Guid.NewGuid();
         var lost = Guid.NewGuid();
         GroupIds(viewId, kept, lost);
-        var hub = Hub;
 
-        await hub.JoinView(viewId);
+        await Hub.JoinView(viewId);
         GroupIds(viewId, kept);
-        await hub.LeaveView(viewId);
+        await Hub.LeaveView(viewId);
 
         Assert.Equal<string>([kept.ToString()], _harness.LeftGroups);
     }
@@ -182,7 +201,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
 
         Assert.Empty(result);
         Assert.Empty(_harness.JoinedGroups);
-        await _player.DidNotReceive().GetTeamsByViewIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        Assert.Empty(_spy.CallsTo(nameof(IPlayerService.GetTeamsByViewIdAsync)));
     }
 
     /// <summary>
@@ -197,7 +216,8 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
         var viewId = Guid.NewGuid();
         var groupId = Guid.NewGuid();
         GroupIds(viewId, groupId);
-        _player.GetTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>()).Returns((IEnumerable<Team>)null);
+        _player.Client.GetUserViewTeamsAsync(viewId, Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns<ICollection<Team>>(_ => throw new ApiException("Not Found", 404, null, new Dictionary<string, IEnumerable<string>>(), null));
 
         var result = await Hub.JoinViewUsers(viewId);
 
@@ -370,7 +390,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
 
         Assert.Empty(_harness.JoinedGroups);
         _active.DidNotReceive().GetActiveVirtualMachineForUser(Arg.Any<Guid>());
-        await _player.DidNotReceive().GetUserById(Arg.Any<Guid>(), Arg.Any<CancellationToken>());
+        Assert.Empty(_spy.CallsTo(nameof(IPlayerService.GetUserById)));
     }
 
     /// <summary>
@@ -381,8 +401,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
     public async Task JoinUser_ForAViewTheCallerCannotSee_IsRefused()
     {
         var viewId = Guid.NewGuid();
-        _player.GetVisibilityContextAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(VisibilityContext.Empty);
+        _visibility[viewId] = VisibilityContext.Empty;
 
         await Assert.ThrowsAsync<HubException>(() => Hub.JoinUser(Guid.NewGuid(), viewId, Guid.NewGuid()));
     }
@@ -398,7 +417,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
         var teamId = Guid.NewGuid();
         var userId = Guid.NewGuid();
         Visibility(viewId, primaryTeamId: teamId, canViewAllTeams: false, teamId);
-        _player.GetUserById(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
+        _player.Client.GetUserAsync(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
 
         await Hub.JoinUser(userId, viewId, teamId);
 
@@ -416,7 +435,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
         var teamId = Guid.NewGuid();
         var userId = Guid.NewGuid();
         Visibility(viewId, primaryTeamId: teamId, canViewAllTeams: true, teamId);
-        _player.GetUserById(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
+        _player.Client.GetUserAsync(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
 
         await Hub.JoinUser(userId, viewId, teamId);
 
@@ -431,7 +450,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
         var userId = Guid.NewGuid();
         var vmId = Guid.NewGuid();
         Visibility(viewId, primaryTeamId: teamId, canViewAllTeams: false, teamId);
-        _player.GetUserById(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
+        _player.Client.GetUserAsync(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
         _active.GetActiveVirtualMachineForUser(userId)
             .Returns(new ActiveVirtualMachine(vmId, "other-connection", [Guid.NewGuid()], "alice"));
 
@@ -458,7 +477,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
         var userId = Guid.NewGuid();
         var vmId = Guid.NewGuid();
         Visibility(viewId, primaryTeamId: teamId, canViewAllTeams: false, teamId);
-        _player.GetUserById(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
+        _player.Client.GetUserAsync(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
         _active.GetActiveVirtualMachineForUser(userId)
             .Returns(new ActiveVirtualMachine(vmId, "other-connection", [teamId], "alice"));
 
@@ -485,7 +504,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
         var vmId = Guid.NewGuid();
         var activeTeamId = Guid.NewGuid();
         Visibility(viewId, primaryTeamId: teamId, canViewAllTeams: true, teamId);
-        _player.GetUserById(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
+        _player.Client.GetUserAsync(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
         _active.GetActiveVirtualMachineForUser(userId)
             .Returns(new ActiveVirtualMachine(vmId, "other-connection", [activeTeamId], "alice"));
         Guid[] viewIdsTheVmIsActiveIn = sameView ? [viewId] : [Guid.NewGuid()];
@@ -508,7 +527,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
         await Seed(vm, new VmUserEntity(userId, vm.Id, teamId, lastSeen));
 
         Visibility(viewId, primaryTeamId: teamId, canViewAllTeams: false, teamId);
-        _player.GetUserById(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
+        _player.Client.GetUserAsync(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
 
         var result = await Hub.JoinUser(userId, viewId, teamId);
 
@@ -526,7 +545,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
         var userId = Guid.NewGuid();
         Guid[] groupIds = [Guid.NewGuid(), Guid.NewGuid()];
         GroupIds(viewId, groupIds);
-        _player.GetUserById(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
+        _player.Client.GetUserAsync(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
 
         await Hub.LeaveUser(userId, viewId);
 
@@ -549,7 +568,7 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
         var userId = Guid.NewGuid();
         Visibility(viewId, primaryTeamId: teamId, canViewAllTeams: false, teamId, otherTeamId);
         GroupIds(viewId, teamId, otherTeamId);
-        _player.GetUserById(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
+        _player.Client.GetUserAsync(userId, Arg.Any<CancellationToken>()).Returns(new User { Id = userId, Name = "alice" });
         var hub = Hub;
 
         await hub.JoinUser(userId, viewId, teamId);
@@ -661,23 +680,52 @@ public class VmHubGroupTests(DatabaseFixture fixture) : DatabaseTestBase(fixture
 
     #region Arrangement
 
+    /// <summary>
+    /// The groups <c>GetGroupIdsForViewAsync</c> derives for the view: the view id alone is a caller who
+    /// can see every team (<c>ViewView</c> on its primary team); team ids are its primary team and the
+    /// teams scoped onto it; none is a caller with no primary team there.
+    /// </summary>
     private void GroupIds(Guid viewId, params Guid[] groupIds) =>
-        _player.GetGroupIdsForViewAsync(viewId, Arg.Any<CancellationToken>()).Returns(groupIds);
+        _visibility[viewId] = groupIds.Length == 1 && groupIds[0] == viewId
+            ? new VisibilityContext(null, true, [])
+            : groupIds.Length == 0
+                ? VisibilityContext.Empty
+                : new VisibilityContext(groupIds[0], false, [.. groupIds]);
 
     /// <summary>
-    /// The visibility context player.api hands back for a view. Modeled rather than answered per call
-    /// site: <c>CanViewAllTeams</c> and the team id set are what the hub branches on, and a substitute
-    /// that returned a flat yes or no could not tell a view admin's subscription from a member's.
+    /// The caller's visibility in a view, written as the player.api data it comes from: the primary team,
+    /// with <c>ViewView</c> on it for <c>CanViewAllTeams</c>, otherwise <c>ViewTeam</c> on it and the other
+    /// teams scoped onto it.
     /// </summary>
     private void Visibility(Guid viewId, Guid? primaryTeamId, bool canViewAllTeams, params Guid[] teamIds) =>
-        _player.GetVisibilityContextAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(new VisibilityContext(primaryTeamId, canViewAllTeams, [.. teamIds]));
+        _visibility[viewId] = new VisibilityContext(primaryTeamId, canViewAllTeams, [.. teamIds]);
 
-    private void Teams(Guid viewId, params Team[] teams) =>
-        _player.GetTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(teams);
+    /// <summary>The view's teams, with their names; a caller who sees every team sees these.</summary>
+    private void Teams(Guid viewId, params Team[] teams) => _teams[viewId] = teams;
 
     private void UsersIn(Guid teamId, params User[] users) =>
-        _player.GetUsersByTeamId(teamId, Arg.Any<CancellationToken>()).Returns(users);
+        _player.Client.GetTeamUsersAsync(teamId, Arg.Any<CancellationToken>()).Returns(users);
+
+    /// <summary>
+    /// Rewrites the caller's player.api data for every view arranged, from the arrangement as it stands now.
+    /// </summary>
+    private void WriteArrangement()
+    {
+        foreach (var viewId in _visibility.Keys.Union(_teams.Keys))
+        {
+            _player.Directory.AddView(viewId);
+
+            foreach (var team in _teams.GetValueOrDefault(viewId) ?? [])
+                _player.Directory.PlaceTeam(team.Id, viewId, team.Name);
+
+            var context = _visibility.GetValueOrDefault(viewId) ?? VisibilityContext.Empty;
+            var primary = context.CanViewAllTeams
+                ? context.PrimaryTeamId ?? _teams.GetValueOrDefault(viewId)?.FirstOrDefault()?.Id
+                : context.PrimaryTeamId;
+
+            _player.Sees(viewId, primary, context.CanViewAllTeams, context.TeamIds);
+        }
+    }
 
     /// <summary>
     /// The Vm the hub will find, as <c>IVmService.GetAsync</c> answers - a mapped DTO, not a row, which

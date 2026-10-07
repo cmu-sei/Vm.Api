@@ -50,10 +50,6 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         await base.InitializeAsync();
 
-        Factory.PlayerApi.ClearSubstitute();
-        Factory.PlayerApiClient.ClearSubstitute();
-        Factory.Views.ClearSubstitute();
-        Factory.AllowEverything();
     }
 
     #region Reading Vms
@@ -121,7 +117,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var viewId = Guid.NewGuid();
 
         var shared = Vm([teamId], name: "shared");
-        var mine = Vm([teamId], name: "mine", userId: Factory.UserId);
+        var mine = Vm([teamId], name: "mine", userId: Root.Id);
         var theirs = Vm([teamId], name: "theirs", userId: Guid.NewGuid());
         await Seed(shared, mine, theirs);
 
@@ -164,9 +160,8 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var teamId = Guid.NewGuid();
         await Seed(Vm([teamId]));
 
-        // Visible to the caller, but not this team: the team must be in its own visibility set.
-        Factory.PlayerApi.GetVisibilityContextForTeamAsync(teamId, Arg.Any<CancellationToken>())
-            .Returns(new VisibilityContext(null, false, [Guid.NewGuid()]));
+        // The team is in a View where the caller has no primary team, so it sees none of its teams.
+        Factory.Player.PlaceTeam(teamId, Guid.NewGuid());
 
         var response = await RootClient.GetAsync($"/api/teams/{teamId}/vms", Ct);
 
@@ -184,10 +179,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var viewId = Guid.NewGuid();
         await Seed(Vm([Guid.NewGuid()]));
 
-        Factory.PlayerApi.GetVisibilityContextAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(VisibilityContext.Empty);
-        Factory.PlayerApi.GetTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns((IEnumerable<PlayerApiTeam>)null);
+        // A View player.api does not have: its teams route answers 404.
 
         Assert.Empty(await Get<VmModel[]>($"/api/views/{viewId}/vms"));
     }
@@ -230,21 +222,21 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         var vm = Vm([teamId]);
         await Seed(vm);
-        TeamVisibility(teamId);
 
         Factory.Views.GetViewIdsForTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
             .Returns([viewId]);
-        Factory.PlayerApiClient
-            .GetMyTeamPermissionsAsync(viewId, null, true, Arg.Any<CancellationToken>())
-            .Returns([
-                Claim(teamId, nameof(AppTeamPermission.ViewTeam), nameof(AppViewPermission.ViewView), "NotAPermission"),
-                Claim(otherTeamId, nameof(AppTeamPermission.ManageTeam), nameof(AppViewPermission.ManageView))
-            ]);
-        Factory.PlayerApi
-            .GetSystemPermissionsAsync(Arg.Any<CancellationToken>())
-            .Returns(new HashSet<AppSystemPermission> { AppSystemPermission.ControlVms });
+        var actor = await Actor()
+            .InView(teamId, viewId).InView(otherTeamId, viewId)
+            .Holding(AppSystemPermission.ControlVms)
+            .SeedAsync();
 
-        var permissions = await Get<VmPermissionResult>($"/api/vms/{vm.Id}/permissions");
+        // Claims as player.api reports them, none of them direct: what the endpoint keeps is decided by
+        // which team each is on and whether vm.api knows the permission.
+        var caller = Factory.Player.Caller(actor.Id);
+        caller.ClaimOn(teamId).Permissions.UnionWith([nameof(AppTeamPermission.ViewTeam), nameof(AppViewPermission.ViewView), "NotAPermission"]);
+        caller.ClaimOn(otherTeamId).Permissions.UnionWith([nameof(AppTeamPermission.ManageTeam), nameof(AppViewPermission.ManageView)]);
+
+        var permissions = await ReadAsync<VmPermissionResult>(await Client(actor).GetAsync($"/api/vms/{vm.Id}/permissions", Ct), JsonOptions);
 
         Assert.Equal([AppTeamPermission.ViewTeam], permissions.TeamPermissions);
         Assert.Equal([AppViewPermission.ViewView], permissions.ViewPermissions);
@@ -462,9 +454,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task CreateMap_ForAViewPlayerApiDoesNotKnow_Is403()
     {
         var viewId = Guid.NewGuid();
-        Factory.PlayerApi.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns<View>(_ => throw new ApiException(
-                "View not found", (int)HttpStatusCode.NotFound, null, null, null));
+        // A View player.api does not have: its view route answers 404.
 
         var response = await RootClient.PostAsJsonAsync(
             $"/api/views/{viewId}/map", new VmMapCreateForm { Name = "floor-1", TeamIds = [] }, Ct);
@@ -507,10 +497,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task GetViewMaps_ForAViewPlayerApiDoesNotKnow_Is404WithATitle()
     {
         var viewId = Guid.NewGuid();
-        Factory.PlayerApi.GetVisibilityContextAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(VisibilityContext.Empty);
-        Factory.PlayerApi.GetTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns((IEnumerable<PlayerApiTeam>)null);
+        // A View player.api does not have: its teams route answers 404.
 
         var response = await RootClient.GetAsync($"/api/views/maps/viewMaps/{viewId}", Ct);
 
@@ -667,7 +654,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var map = Map([teamId]);
         await Seed(map);
         var actor = await Actor()
-            .Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamMaps, teamId))
+            .Holding(AppTeamPermission.ViewTeamMaps, teamId)
             .SeedAsync();
 
         var response = await Client(actor).DeleteAsync($"/api/views/maps/{map.Id}", Ct);
@@ -702,8 +689,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task GetTeams_ForAViewPlayerApiDoesNotKnow_Is404WithATitle()
     {
         var viewId = Guid.NewGuid();
-        Factory.PlayerApi.GetTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns((IEnumerable<PlayerApiTeam>)null);
+        // A View player.api does not have: its teams route answers 404.
 
         var response = await RootClient.GetAsync($"/api/views/{viewId}/teams", Ct);
 
@@ -766,9 +752,9 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var teamId = Guid.NewGuid();
         await Seed(Vm([teamId]), Map([teamId]));
         var actor = await Actor()
-            .Holding(new PlayerPermissions()
+            
                 .Holding(AppTeamPermission.ViewTeamVms, teamId)
-                .Holding(AppTeamPermission.ViewTeamMaps, teamId))
+                .Holding(AppTeamPermission.ViewTeamMaps, teamId)
             .SeedAsync();
 
         var response = await Client(actor).GetAsync($"/api/{route}", Ct);
@@ -788,10 +774,10 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         await Seed(Vm([teamId]), Map([teamId], viewId));
         Roster(viewId, teamId);
         var actor = await Actor()
-            .Holding(new PlayerPermissions()
+            
                 .Holding(AppTeamPermission.ViewTeamVms, teamId)
                 .Holding(AppTeamPermission.ViewTeamMaps, teamId)
-                .InView(teamId, viewId))
+                .InView(teamId, viewId)
             .SeedAsync();
 
         var response = await Client(actor).GetAsync($"/api/views/{viewId}/{route}", Ct);
@@ -810,8 +796,8 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
 
-        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns<bool>(_ => throw new ApiException(
+        Factory.PlayerApiClient.GetMyPermissionsAsync(Arg.Any<CancellationToken>())
+            .Returns<ICollection<string>>(_ => throw new ApiException(
                 "Team not found", (int)HttpStatusCode.NotFound, null, null, null));
 
         var response = await RootClient.GetAsync($"/api/vms/{vm.Id}", Ct);
@@ -827,8 +813,8 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
 
-        Factory.PlayerApi.CanViewVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns<bool>(_ => throw new ApiException(
+        Factory.PlayerApiClient.GetMyPermissionsAsync(Arg.Any<CancellationToken>())
+            .Returns<ICollection<string>>(_ => throw new ApiException(
                 "Service Unavailable", (int)HttpStatusCode.ServiceUnavailable, null, null, null));
 
         var response = await RootClient.GetAsync($"/api/vms/{vm.Id}", Ct);
@@ -848,7 +834,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppSystemPermission.ViewVms)).SeedAsync();
+        var actor = await Actor().Holding(AppSystemPermission.ViewVms).SeedAsync();
 
         var response = await Client(actor).GetAsync("/api/vms", Ct);
 
@@ -862,7 +848,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var teamId = Guid.NewGuid();
         var vm = Vm([teamId]);
         await Seed(vm);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamVms, teamId)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ViewTeamVms, teamId).SeedAsync();
 
         var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
 
@@ -874,7 +860,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamVms, Guid.NewGuid())).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ViewTeamVms, Guid.NewGuid()).SeedAsync();
 
         var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
 
@@ -885,7 +871,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task Create_is_allowed_for_a_caller_holding_exactly_ManageTeam_on_the_team()
     {
         var teamId = Guid.NewGuid();
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, teamId)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, teamId).SeedAsync();
         var form = CreateForm(teamId, "new-vm");
 
         var response = await Client(actor).PostAsJsonAsync("/api/vms", form, Ct);
@@ -899,7 +885,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [Fact]
     public async Task Create_is_forbidden_for_a_caller_holding_ManageTeam_only_on_another_team_and_stores_nothing()
     {
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, Guid.NewGuid())).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, Guid.NewGuid()).SeedAsync();
         var form = CreateForm(Guid.NewGuid(), "new-vm");
 
         var response = await Client(actor).PostAsJsonAsync("/api/vms", form, Ct);
@@ -915,7 +901,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var vm = Vm([Guid.NewGuid()], name: "before");
         await Seed(vm);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppSystemPermission.ManageViews)).SeedAsync();
+        var actor = await Actor().Holding(AppSystemPermission.ManageViews).SeedAsync();
 
         var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
 
@@ -932,7 +918,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var teamId = Guid.NewGuid();
         var vm = Vm([teamId], name: "before");
         await Seed(vm);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, teamId)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, teamId).SeedAsync();
 
         var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
 
@@ -947,7 +933,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var vm = Vm([Guid.NewGuid()], name: "before");
         await Seed(vm);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, Guid.NewGuid())).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, Guid.NewGuid()).SeedAsync();
 
         var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
 
@@ -963,7 +949,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var teamId = Guid.NewGuid();
         var vm = Vm([teamId]);
         await Seed(vm);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, teamId)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, teamId).SeedAsync();
 
         var response = await Client(actor).DeleteAsync($"/api/vms/{vm.Id}", Ct);
 
@@ -978,7 +964,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, Guid.NewGuid())).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, Guid.NewGuid()).SeedAsync();
 
         var response = await Client(actor).DeleteAsync($"/api/vms/{vm.Id}", Ct);
 
@@ -994,7 +980,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var vm = Vm([Guid.NewGuid()]);
         await Seed(vm);
         var target = Guid.NewGuid();
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, target)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, target).SeedAsync();
 
         var response = await Client(actor).PostAsync($"/api/teams/{target}/vms/{vm.Id}", null, Ct);
 
@@ -1011,7 +997,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var vm = Vm([current]);
         await Seed(vm);
         var target = Guid.NewGuid();
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, current)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, current).SeedAsync();
 
         var response = await Client(actor).PostAsync($"/api/teams/{target}/vms/{vm.Id}", null, Ct);
 
@@ -1027,7 +1013,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var (removed, kept) = (Guid.NewGuid(), Guid.NewGuid());
         var vm = Vm([removed, kept]);
         await Seed(vm);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, removed)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, removed).SeedAsync();
 
         var response = await Client(actor).DeleteAsync($"/api/teams/{removed}/vms/{vm.Id}", Ct);
 
@@ -1043,7 +1029,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var (removed, kept) = (Guid.NewGuid(), Guid.NewGuid());
         var vm = Vm([removed, kept]);
         await Seed(vm);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, kept)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, kept).SeedAsync();
 
         var response = await Client(actor).DeleteAsync($"/api/teams/{removed}/vms/{vm.Id}", Ct);
 
@@ -1059,7 +1045,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var teamId = Guid.NewGuid();
         var map = Map([teamId]);
         await Seed(map);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamMaps, teamId)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ViewTeamMaps, teamId).SeedAsync();
 
         var response = await Client(actor).GetAsync($"/api/teams/{teamId}/map", Ct);
 
@@ -1072,7 +1058,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var teamId = Guid.NewGuid();
         await Seed(Map([teamId]));
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamMaps, Guid.NewGuid())).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ViewTeamMaps, Guid.NewGuid()).SeedAsync();
 
         var response = await Client(actor).GetAsync($"/api/teams/{teamId}/map", Ct);
 
@@ -1084,7 +1070,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
         View(viewId, teamId);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeamMaps, teamId)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeamMaps, teamId).SeedAsync();
 
         var response = await Client(actor).PostAsJsonAsync($"/api/views/{viewId}/map", MapCreateForm(teamId), Ct);
 
@@ -1099,7 +1085,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
         View(viewId, teamId);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeamMaps, Guid.NewGuid())).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeamMaps, Guid.NewGuid()).SeedAsync();
 
         var response = await Client(actor).PostAsJsonAsync($"/api/views/{viewId}/map", MapCreateForm(teamId), Ct);
 
@@ -1116,7 +1102,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var map = Map([teamId]);
         await Seed(map);
         View(map.ViewId, teamId);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeamMaps, teamId)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeamMaps, teamId).SeedAsync();
 
         var response = await Client(actor).PutAsJsonAsync($"/api/views/maps/{map.Id}", MapUpdateForm(teamId, "after"), Ct);
 
@@ -1133,7 +1119,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var map = Map([teamId]);
         await Seed(map);
         View(map.ViewId, teamId);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeamMaps, Guid.NewGuid())).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeamMaps, Guid.NewGuid()).SeedAsync();
 
         var response = await Client(actor).PutAsJsonAsync($"/api/views/maps/{map.Id}", MapUpdateForm(teamId, "after"), Ct);
 
@@ -1149,7 +1135,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var teamId = Guid.NewGuid();
         var map = Map([teamId]);
         await Seed(map);
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeamMaps, teamId)).SeedAsync();
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeamMaps, teamId).SeedAsync();
 
         var response = await Client(actor).DeleteAsync($"/api/views/maps/{map.Id}", Ct);
 
@@ -1177,36 +1163,25 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     private void Roster(Guid viewId, params Guid[] teamIds) =>
         Factory.Views.GetTeamsForView(viewId, true, Arg.Any<CancellationToken>()).Returns(teamIds.ToList());
 
-    /// <summary>Makes <paramref name="teamId"/> visible to the caller as its own primary team.</summary>
-    private void TeamVisibility(Guid teamId) =>
-        Factory.PlayerApi.GetVisibilityContextForTeamAsync(teamId, Arg.Any<CancellationToken>())
-            .Returns(new VisibilityContext(teamId, false, [teamId]));
+    /// <summary>
+    /// Makes <paramref name="teamId"/> Root's primary team in its View (a View of its own unless placed),
+    /// so Root sees it.
+    /// </summary>
+    private void TeamVisibility(Guid teamId)
+    {
+        var viewId = Factory.Player.ViewOf(teamId) ?? Guid.NewGuid();
+        Factory.Player.Sees(Root.Id, viewId, teamId, false, [teamId]);
+    }
 
     /// <summary>
-    /// Wires the four things a View-scoped route asks player.api for: the caller's visibility, the
-    /// View's teams, the View itself and each team by id.
+    /// The View in player.api with these teams placed in it, and Root's visibility there: the first team
+    /// is Root's primary team and the rest are scoped onto it.
     /// </summary>
     private void View(Guid viewId, params Guid[] teamIds)
     {
-        Factory.PlayerApi.GetVisibilityContextAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(new VisibilityContext(
-                teamIds.Length == 0 ? null : teamIds[0], false, [.. teamIds]));
-        Factory.PlayerApi.GetTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(teamIds.Select(x => PlayerTeam(x, viewId)).ToArray());
-        Factory.PlayerApi.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(new View { Id = viewId, Name = $"view-{viewId}" });
-
-        foreach (var teamId in teamIds)
-        {
-            Factory.PlayerApi.GetTeamById(teamId).Returns(PlayerTeam(teamId, viewId));
-        }
+        Factory.Player.AddView(viewId);
+        Factory.Player.Sees(Root.Id, viewId, teamIds.Length == 0 ? null : teamIds[0], false, teamIds);
     }
-
-    private static PlayerApiTeam PlayerTeam(Guid id, Guid viewId) =>
-        new() { Id = id, Name = $"team-{id}", ViewId = viewId, IsPrimary = true };
-
-    private static TeamPermissionsClaim Claim(Guid teamId, params string[] permissionValues) =>
-        new() { TeamId = teamId, PermissionValues = permissionValues, DirectPermissionValues = [] };
 
     private static VmCreateForm CreateForm(Guid teamId, string name) =>
         new() { Id = Guid.NewGuid(), Name = name, TeamIds = [teamId] };
@@ -1251,14 +1226,26 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         };
     }
 
-    private static VmMapEntity Map(Guid[] teamIds, Guid? viewId = null) =>
-        new()
+    /// <summary>A Map, with its View and teams placed in player.api: a Map's teams are teams of its View.</summary>
+    private VmMapEntity Map(Guid[] teamIds, Guid? viewId = null)
+    {
+        var map = new VmMapEntity
         {
             Name = "map",
             ImageUrl = "https://images/map.png",
             ViewId = viewId ?? Guid.NewGuid(),
             TeamIds = [.. teamIds]
         };
+
+        Factory.Player.AddView(map.ViewId);
+        foreach (var teamId in teamIds)
+        {
+            if (Factory.Player.ViewOf(teamId) != map.ViewId)
+                Factory.Player.PlaceTeam(teamId, map.ViewId);
+        }
+
+        return map;
+    }
 
     #endregion
 }

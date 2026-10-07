@@ -40,11 +40,14 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         await base.InitializeAsync();
 
-        Factory.PlayerApi.ClearSubstitute();
         Factory.IsoProvider.ClearSubstitute();
 
-        Factory.AllowEverything();
         Factory.EnableIsoProvider();
+
+        // Root holds every system permission; the view-scope upload asks only for UploadViewIsos, so Root
+        // holds it on this test's View too.
+        Factory.Player.AddView(_viewId);
+        await RootMayUploadToTheView();
     }
 
     #region Upload: the form the controller reads by hand
@@ -81,8 +84,8 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     {
         var teamA = Guid.NewGuid();
         var teamB = Guid.NewGuid();
-        Factory.PlayerApi.IsTeamInViewAsync(Arg.Any<Guid>(), _viewId, Arg.Any<CancellationToken>())
-            .Returns(true);
+        Factory.Player.PlaceTeam(teamA, _viewId);
+        Factory.Player.PlaceTeam(teamB, _viewId);
 
         // Braced placeholders, because a Guid's own text contains plenty of bare a's and b's to
         // substitute into.
@@ -105,8 +108,7 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task Upload_ToTeamScope_WithNoTeamIds_TargetsThePrimaryTeam()
     {
         var primary = Guid.NewGuid();
-        Factory.PlayerApi.GetPrimaryTeamByViewIdAsync(_viewId, Arg.Any<CancellationToken>())
-            .Returns(new Team { Id = primary, Name = "primary" });
+        await RootSees(_viewId, (primary, "primary"));
 
         var response = await RootClient.PostAsync(IsoRoute, Form(file: "boot.iso", scope: "team"), Ct);
 
@@ -236,7 +238,7 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task Upload_is_forbidden_for_a_caller_holding_only_DeleteViewIsos()
     {
         var actor = await Actor()
-            .Holding(new PlayerPermissions().Holding(AppViewPermission.DeleteViewIsos, _viewId))
+            .Holding(AppViewPermission.DeleteViewIsos, _viewId)
             .SeedAsync();
 
         var response = await Client(actor).PostAsync(IsoRoute, Form(file: "boot.iso"), Ct);
@@ -254,7 +256,7 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task ListView_ReturnsTheViewWideIsosAndOnePerTeam()
     {
         var teamId = Guid.NewGuid();
-        ViewWithTeams(_viewId, (teamId, "red"));
+        await RootSees(_viewId, (teamId, "red"));
         Holds((_viewId, "public.iso"), (teamId, "red-only.iso"));
 
         var result = await Get<ManagedIsoResult>(IsoRoute);
@@ -271,9 +273,9 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [Fact]
     public async Task ListView_is_forbidden_for_a_caller_holding_ViewView_only_in_another_view()
     {
-        ViewWithTeams(_viewId, (Guid.NewGuid(), "red"));
+        await RootSees(_viewId, (Guid.NewGuid(), "red"));
         var actor = await Actor()
-            .Holding(new PlayerPermissions().Holding(AppViewPermission.ViewView, Guid.NewGuid()))
+            .Holding(AppViewPermission.ViewView, Guid.NewGuid())
             .SeedAsync();
 
         var response = await Client(actor).GetAsync(IsoRoute, Ct);
@@ -281,14 +283,15 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
-    // A caller with the permission but no team in the View is still refused: the listing is per-team, and
-    // there is nothing here for them.
+    // A caller with no team in the View is refused, whatever it holds system-wide: the listing is per-team,
+    // and there is nothing here for it.
     [Fact]
     public async Task ListView_WhenTheCallerHasNoTeamInTheView_Is403()
     {
-        ViewWithTeams(_viewId);
+        await RootSees(_viewId, (Guid.NewGuid(), "red"));
+        var operatorWithNoTeam = await Actor().Holding(Enum.GetValues<AppSystemPermission>()).SeedAsync();
 
-        var response = await RootClient.GetAsync(IsoRoute, Ct);
+        var response = await Client(operatorWithNoTeam).GetAsync(IsoRoute, Ct);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
@@ -297,10 +300,7 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task ListAll_ReturnsOneResultPerView()
     {
         var other = Guid.NewGuid();
-        Factory.PlayerApi.GetAllViewsAsync(Arg.Any<CancellationToken>())
-            .Returns([View(_viewId, "first"), View(other, "second")]);
-        Factory.PlayerApi.GetAllTeamsByViewIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            .Returns([]);
+        Factory.Player.AddView(other);
 
         var results = await Get<ManagedIsoResult[]>("/api/isos");
 
@@ -320,7 +320,7 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task ListAll_is_forbidden_for_a_caller_holding_only_ViewView_on_a_view()
     {
         var actor = await Actor()
-            .Holding(new PlayerPermissions().Holding(AppViewPermission.ViewView, _viewId))
+            .Holding(AppViewPermission.ViewView, _viewId)
             .SeedAsync();
 
         var response = await Client(actor).GetAsync("/api/isos", Ct);
@@ -333,7 +333,7 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [Fact]
     public async Task ListView_WhenTheProviderCannotBeListed_Is500RatherThanEmpty()
     {
-        ViewWithTeams(_viewId, (Guid.NewGuid(), "red"));
+        await RootSees(_viewId, (Guid.NewGuid(), "red"));
         Factory.IsoProvider.ListAsync(Arg.Any<Guid?>(), Arg.Any<CancellationToken>())
             .Returns<IReadOnlyDictionary<Guid, IReadOnlyList<IsoListingEntry>>>(
                 _ => throw new TimeoutException("datastore browser timed out"));
@@ -379,9 +379,7 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [Fact]
     public async Task Delete_ForATeamThatIsNotInTheView_Is400()
     {
-        Factory.PlayerApi.IsTeamInViewAsync(Arg.Any<Guid>(), _viewId, Arg.Any<CancellationToken>())
-            .Returns(false);
-
+        // A team player.api has in no View, so not in this one.
         var response = await RootClient.DeleteAsync(
             $"{IsoRoute}?scope=team&filename=boot.iso&teamId={Guid.NewGuid()}", Ct);
 
@@ -392,7 +390,7 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task Delete_is_forbidden_for_a_caller_holding_only_UploadViewIsos_and_removes_nothing()
     {
         var actor = await Actor()
-            .Holding(new PlayerPermissions().Holding(AppViewPermission.UploadViewIsos, _viewId))
+            .Holding(AppViewPermission.UploadViewIsos, _viewId)
             .SeedAsync();
 
         var response = await Client(actor).DeleteAsync($"{IsoRoute}?scope=view&filename=boot.iso", Ct);
@@ -534,14 +532,27 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
             .Select(x => x.GetArguments()[2])
             .Single();
 
-    /// <summary>What player.api reports about the View: its identity and the caller's teams in it.</summary>
-    private void ViewWithTeams(Guid viewId, params (Guid Id, string Name)[] teams)
+    /// <summary>
+    /// The teams player.api has in the View, with their names, and Root seeing them: the first is Root's
+    /// primary team, holding ViewTeam, and the rest are scoped onto it. Root keeps its upload grant on the
+    /// View.
+    /// </summary>
+    private async Task RootSees(Guid viewId, params (Guid Id, string Name)[] teams)
     {
-        Factory.PlayerApi.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(View(viewId, $"view-{viewId}"));
-        Factory.PlayerApi.GetTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>())
-            .Returns(teams.Select(x => new Team { Id = x.Id, Name = x.Name }).ToArray());
+        foreach (var (id, name) in teams)
+            Factory.Player.PlaceTeam(id, viewId, name);
+
+        Factory.Player.Sees(Root.Id, viewId, teams.Length == 0 ? null : teams[0].Id, false, teams.Select(x => x.Id));
+
+        // ViewTeam on the primary team: the team permission the View listing accepts.
+        if (teams.Length > 0)
+            Factory.Player.Caller(Root.Id).ClaimOn(teams[0].Id).Grant(nameof(AppTeamPermission.ViewTeam));
+
+        await RootMayUploadToTheView();
     }
+
+    private Task RootMayUploadToTheView() =>
+        Actor().WithId(Root.Id).Holding(AppViewPermission.UploadViewIsos, _viewId).SeedAsync();
 
     /// <summary>What the provider holds, keyed on scope - a view id for view-wide, else a team id.</summary>
     private void Holds(params (Guid ScopeId, string Filename)[] isos) =>
@@ -550,7 +561,6 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
                 x => x.ScopeId,
                 x => (IReadOnlyList<IsoListingEntry>)[new IsoListingEntry(x.Filename, $"[ds] {x.Filename}")]));
 
-    private static View View(Guid id, string name) => new() { Id = id, Name = name };
 
     #endregion
 }

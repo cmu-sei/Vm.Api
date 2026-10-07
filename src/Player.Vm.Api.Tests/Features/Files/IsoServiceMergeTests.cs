@@ -14,6 +14,7 @@ using Player.Vm.Api.Features.Files.Models;
 using Player.Vm.Api.Features.Files;
 using Player.Vm.Api.Features.Files.Providers;
 using Player.Vm.Api.Infrastructure.Options;
+using Player.Vm.Api.Tests.Support;
 
 namespace Player.Vm.Api.Tests.Features.Files;
 
@@ -149,7 +150,7 @@ public class IsoServiceMergeTests
     private static Task<ManagedIsoResult[]> BuildViewIsos(params IIsoProvider[] providers)
     {
         var service = new IsoService(
-            Substitute.For<IPlayerService>(),
+            new PlayerHarness(Guid.NewGuid(), TestContext.Current.CancellationToken).Service,
             Substitute.For<IViewService>(),
             providers,
             new IsoUploadOptions(),

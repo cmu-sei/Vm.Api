@@ -15,6 +15,9 @@ using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Hosting;
+using NSubstitute.ClearExtensions;
+using Microsoft.Extensions.Caching.Memory;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
@@ -47,12 +50,12 @@ namespace Player.Vm.Api.Tests.Support;
 /// <item><see cref="Vsphere"/> and <see cref="Proxmox"/>: the hypervisors. Unit tests prove the services
 /// build the right per-Vm error dictionary; these prove it survives the handler, the serializer and the
 /// wire.</item>
-/// <item><see cref="PlayerApi"/>: player.api, asked for every authorization decision. It is the one
-/// authorization substitute: <c>VmService.CanAccessVm</c> and each handler's own permission gates still
-/// run for real, and <c>PlayerServiceAuthorizationTests</c> covers the real <c>PlayerService</c>.</item>
-/// <item><see cref="Views"/> and <see cref="PlayerApiClient"/>: player.api by other routes. The SignalR
-/// entity-event handlers resolve a team's View through <see cref="Views"/> inside every Vm write;
-/// <c>GetVmPermissions</c> reads the caller's team claims from <see cref="PlayerApiClient"/>.</item>
+/// <item><see cref="PlayerApiClient"/>: the generated player.api client, answered by <see cref="Player"/>
+/// for the caller of the request in flight. The application's own <c>PlayerService</c>, which turns those
+/// answers into every authorization and visibility decision, is real.</item>
+/// <item><see cref="Views"/>: <c>ViewService</c>, player.api by its admin client with a cache of its own.
+/// Its team-to-View lookup is answered by <see cref="Player"/>; the entity-event handlers' View lookups are
+/// arranged per test. <c>ViewServiceTests</c> covers the real one at the socket.</item>
 /// <item><see cref="Callbacks"/>: the webhook send queue, which processes on a thread-pool thread outside
 /// any request and would reach the host's own database.</item>
 /// <item><see cref="IsoProvider"/>: ISO storage on a hypervisor. <c>IsoService</c> stays real.</item>
@@ -66,7 +69,9 @@ namespace Player.Vm.Api.Tests.Support;
 /// </para>
 /// <para>
 /// A substitute is safe here because one class's tests run one after another, so no other class's
-/// request can reach it; each class clears what it arranges in its own <c>InitializeAsync</c>.
+/// request can reach it. <c>ApiTestBase</c> resets the player.api side for each test
+/// (<see cref="ResetPlayer"/>); each class clears the rest of what it arranges in its own
+/// <c>InitializeAsync</c>.
 /// </para>
 /// </remarks>
 public class VmAppFactory(DatabaseFixture database) : WebApplicationFactory<Startup>, ITestHttpHost, IAsyncLifetime
@@ -92,11 +97,10 @@ public class VmAppFactory(DatabaseFixture database) : WebApplicationFactory<Star
 
     public IVsphereService Vsphere { get; } = Substitute.For<IVsphereService>();
     public IProxmoxService Proxmox { get; } = Substitute.For<IProxmoxService>();
-    public IPlayerService PlayerApi { get; } = Substitute.For<IPlayerService>();
 
     /// <summary>
-    /// The generated player.api client, as <c>GetVmPermissions</c> consumes it. Distinct from
-    /// <see cref="PlayerApi"/>, which is this application's own wrapper over it.
+    /// The generated player.api client, the one thing of player.api's that leaves the process. Answered by
+    /// <see cref="Player"/>; the application's own <c>PlayerService</c> above it is real.
     /// </summary>
     public IPlayerApiClient PlayerApiClient { get; } = Substitute.For<IPlayerApiClient>();
 
@@ -105,6 +109,13 @@ public class VmAppFactory(DatabaseFixture database) : WebApplicationFactory<Star
     /// write; unstubbed it answers null, which those handlers treat as "no View group to notify".
     /// </summary>
     public IViewService Views { get; } = Substitute.For<IViewService>();
+
+    /// <summary>
+    /// What player.api knows: the teams' Views and each caller's permissions. Answers
+    /// <see cref="PlayerApiClient"/> for the user of the request in flight, and <see cref="Views"/>' team
+    /// lookups. Tests write to it through <c>Actor()</c>; <c>ApiTestBase</c> resets it for each test.
+    /// </summary>
+    public PlayerDirectory Player { get; private set; }
 
     /// <summary>
     /// The webhook send queue. The real one is a <c>BackgroundService</c> that starts processing on a
@@ -125,12 +136,6 @@ public class VmAppFactory(DatabaseFixture database) : WebApplicationFactory<Star
     /// <summary>Answers every request the application makes through <c>IHttpClientFactory</c>.</summary>
     public StubHttpMessageHandler OutboundHttp { get; } = new();
 
-    /// <summary>
-    /// The id <c>ApiTestBase.Root</c> authenticates as. One per host, so a class's tests share it, as
-    /// they share the substitutes that answer for it.
-    /// </summary>
-    public Guid UserId { get; } = Guid.NewGuid();
-
     /// <summary>The database the host itself migrated at startup, for the harness's own tests.</summary>
     internal string HostDatabaseName => _hostSession.DatabaseName;
 
@@ -142,7 +147,32 @@ public class VmAppFactory(DatabaseFixture database) : WebApplicationFactory<Star
     /// <c>WebApplicationFactory</c> builds the host on first use, so the databases exist by the time
     /// <see cref="ConfigureWebHost"/> reads their connection strings.
     /// </remarks>
-    public async ValueTask InitializeAsync() => _hostSession = await database.BeginSessionAsync();
+    public async ValueTask InitializeAsync()
+    {
+        _hostSession = await database.BeginSessionAsync();
+        Player = new PlayerDirectory(PlayerApiClient, Views, RequestUser);
+    }
+
+    /// <summary>
+    /// The user of the request in flight, as player.api would read it from the token vm.api forwards:
+    /// the <c>sub</c> claim, or no one for a request without credentials.
+    /// </summary>
+    private static Guid? RequestUser() =>
+        Guid.TryParse(new HttpContextAccessor().HttpContext?.User.FindFirst("sub")?.Value, out var id) ? id : null;
+
+    /// <summary>
+    /// A clean player.api for the next test: the client and team-lookup substitutes cleared and answered
+    /// afresh by an empty <see cref="Player"/>, and the host's <c>IMemoryCache</c> emptied, because
+    /// <c>PlayerService</c> keeps each caller's system permissions there for a minute, keyed on the user id.
+    /// </summary>
+    public void ResetPlayer()
+    {
+        PlayerApiClient.ClearSubstitute();
+        Views.ClearSubstitute();
+        Player.Reset();
+
+        ((MemoryCache)Services.GetRequiredService<IMemoryCache>()).Clear();
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -175,7 +205,6 @@ public class VmAppFactory(DatabaseFixture database) : WebApplicationFactory<Star
 
             services.Replace(ServiceDescriptor.Singleton(Vsphere));
             services.Replace(ServiceDescriptor.Singleton(Proxmox));
-            services.Replace(ServiceDescriptor.Singleton(PlayerApi));
             services.Replace(ServiceDescriptor.Singleton(PlayerApiClient));
             services.Replace(ServiceDescriptor.Singleton(Views));
             services.Replace(ServiceDescriptor.Singleton(Callbacks));
@@ -219,54 +248,6 @@ public class VmAppFactory(DatabaseFixture database) : WebApplicationFactory<Star
             services, () => _started ? null : _hostSession);
         TestDatabaseScope.ReplaceRegistration<VmLoggingContext>(
             services, () => _started ? null : (ITestDatabaseSession<VmLoggingContext>)_hostSession);
-    }
-
-    /// <summary>
-    /// Grants the substituted player.api every team-scoped and system-wide permission the endpoints gate
-    /// on: what <c>Root</c> holds in a class that calls it. Tests about a denial re-stub the call they deny.
-    /// </summary>
-    /// <remarks>
-    /// Deliberately not exhaustive over <c>IPlayerService</c>: the visibility calls
-    /// (<c>GetVisibilityContextAsync</c> and friends) are left unstubbed, because a default that made every
-    /// team visible would hide the difference between a permission and a team's membership of a View.
-    /// </remarks>
-    public void AllowEverything()
-    {
-        PlayerApi.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(true);
-        PlayerApi.CanViewVms(
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<CancellationToken>())
-            .Returns(true);
-        PlayerApi.CanControlVms(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>())
-            .Returns(true);
-        PlayerApi.CanViewMaps(
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<CancellationToken>())
-            .Returns(true);
-        PlayerApi.CanManageMaps(
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<CancellationToken>())
-            .Returns(true);
-        PlayerApi.Can(
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<AppSystemPermission[]>(),
-                Arg.Any<AppViewPermission[]>(),
-                Arg.Any<AppTeamPermission[]>(),
-                Arg.Any<CancellationToken>())
-            .Returns(true);
-        PlayerApi.GetTeamIdsWithPermissionAsync(
-                Arg.Any<Guid>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<AppSystemPermission[]>(),
-                Arg.Any<AppViewPermission[]>(),
-                Arg.Any<AppTeamPermission[]>(),
-                Arg.Any<CancellationToken>())
-            .Returns(ci => (IReadOnlySet<Guid>)ci.ArgAt<IEnumerable<Guid>>(1).ToHashSet());
     }
 
     /// <summary>

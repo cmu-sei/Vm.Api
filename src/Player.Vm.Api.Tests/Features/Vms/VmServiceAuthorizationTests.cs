@@ -35,19 +35,24 @@ namespace Player.Vm.Api.Tests.Features.Vms;
 /// error. So does a caller who should not know which teams a VM belongs to, which is what
 /// MapVisibleCollection masks.
 ///
-/// IPlayerService is substituted; its own interpretation of player.api's claims is covered by
-/// PlayerServiceAuthorizationTests. The database is real, because the filtering is partly done in SQL.
+/// PlayerService is real, over a substituted player.api client answered by a PlayerDirectory (see
+/// PlayerHarness), so every decision here is the one production makes from those answers. The database is
+/// real, because the filtering is partly done in SQL.
 /// </summary>
 public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTestBase(fixture)
 {
     private static readonly Guid Caller = Guid.Parse("22222222-2222-2222-2222-222222222222");
     private static readonly Guid OtherUser = Guid.Parse("33333333-3333-3333-3333-333333333333");
 
-    private readonly IPlayerService _player = Substitute.For<IPlayerService>();
-    private readonly IViewService _views = Substitute.For<IViewService>();
+    private readonly PlayerHarness _player = new(Caller, TestContext.Current.CancellationToken, Principal(Caller));
     private readonly INetworkService _networks = Substitute.For<INetworkService>();
+    private PlayerServiceSpy _spy;
 
-    private VmService Service => new(Db, _player, _views, Principal(Caller), TestMapper.Mapper, _networks);
+    private IViewService _views => _player.Views;
+
+    /// <summary>A VmService over a new real PlayerService, built now; <see cref="_spy"/> records its questions.</summary>
+    private VmService Service =>
+        new(Db, PlayerServiceSpy.Wrap(_player.Service, out _spy), _views, Principal(Caller), TestMapper.Mapper, _networks);
 
     #region CanAccessVm
 
@@ -66,7 +71,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     {
         var teamId = Guid.NewGuid();
         var vm = Vm(teamIds: [teamId]);
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamMaps, teamId));
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamMaps, teamId));
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.CanAccessVm(vm, Ct));
     }
@@ -76,7 +81,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     {
         var teamId = Guid.NewGuid();
         var vm = Vm(teamIds: [teamId]);
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamVms, teamId));
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamVms, teamId));
 
         Assert.True(await Service.CanAccessVm(vm, Ct));
     }
@@ -85,7 +90,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task CanAccessVm_is_forbidden_for_a_caller_holding_ViewTeamVms_only_on_another_team()
     {
         var vm = Vm(teamIds: [Guid.NewGuid()]);
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamVms, Guid.NewGuid()));
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamVms, Guid.NewGuid()));
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.CanAccessVm(vm, Ct));
     }
@@ -106,31 +111,27 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     [Fact]
     public async Task CanAccessVm_ForAnotherUsersPersonalVm_IsForbidden()
     {
-        var vm = Vm(teamIds: [Guid.NewGuid()], userId: OtherUser);
-        CanViewVms(true);
-        Can(false);
+        var teamId = Guid.NewGuid();
+        var vm = Vm(teamIds: [teamId], userId: OtherUser);
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamVms, teamId));
 
         var ex = await Assert.ThrowsAsync<ForbiddenException>(() => Service.CanAccessVm(vm, Ct));
 
         Assert.Contains("belongs to another user", ex.Message);
     }
 
-    // The caller's own personal VM needs nothing beyond the team-scoped Vm permission - no elevated
-    // permission is consulted at all, which is what the DidNotReceive pins.
+    // The caller's own personal VM needs nothing beyond the team-scoped Vm permission: the elevated
+    // check another user's Vm takes is not asked, which the spy pins.
     [Fact]
     public async Task CanAccessVm_ForTheCallersOwnPersonalVm_IsAllowedWithoutEscalation()
     {
-        var vm = Vm(teamIds: [Guid.NewGuid()], userId: Caller);
-        CanViewVms(true);
+        var teamId = Guid.NewGuid();
+        var vm = Vm(teamIds: [teamId], userId: Caller);
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamVms, teamId));
 
         Assert.True(await Service.CanAccessVm(vm, Ct));
 
-        await _player.DidNotReceive().Can(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<AppSystemPermission[]>(),
-            Arg.Any<AppViewPermission[]>(),
-            Arg.Any<AppTeamPermission[]>(),
-            Arg.Any<CancellationToken>());
+        Assert.Empty(_spy.CallsTo(nameof(IPlayerService.Can)));
     }
 
     // An instructor or view admin does reach another user's personal VM - that is what the elevated
@@ -138,9 +139,9 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     [Fact]
     public async Task CanAccessVm_ForAnotherUsersPersonalVm_IsAllowedWithViewPermission()
     {
-        var vm = Vm(teamIds: [Guid.NewGuid()], userId: OtherUser);
-        CanViewVms(true);
-        Can(true);
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm(teamIds: [teamId], userId: OtherUser);
+        Grant(b => b.InView(teamId, viewId).Holding(AppTeamPermission.ViewTeamVms, teamId).Holding(AppViewPermission.ViewViewVms, viewId));
 
         Assert.True(await Service.CanAccessVm(vm, Ct));
     }
@@ -171,7 +172,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var teamId = Guid.NewGuid();
         await Seed(Vm(teamIds: [teamId]));
         Visibility(teamId, VisibilityFor(teamId));
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamVms, Guid.NewGuid()));
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamVms, Guid.NewGuid()));
 
         await Assert.ThrowsAsync<ForbiddenException>(
             () => Service.GetByTeamIdAsync(teamId, null, false, false, Ct));
@@ -294,8 +295,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task GetByViewId_ForAViewWithNoTeams_IsEmpty()
     {
         var viewId = Guid.NewGuid();
-        _player.GetVisibilityContextAsync(viewId, Arg.Any<CancellationToken>()).Returns(VisibilityFor());
-        _player.GetTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>()).Returns((IEnumerable<Player.Api.Client.Team>)null);
+        // A View player.api does not have: its teams route answers 404.
 
         Assert.Empty(await Service.GetByViewIdAsync(viewId, null, false, false, Ct));
     }
@@ -467,13 +467,11 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var vms = await Service.GetByViewIdAsync(viewId, null, false, false, Ct);
 
         Assert.Equal(new HashSet<Guid> { first.Id, second.Id }, vms.Select(x => x.Id).ToHashSet());
-        await _player.Received(1).GetTeamIdsWithPermissionAsync(
-            viewId,
-            Arg.Is<IEnumerable<Guid>>(ids => ids.ToHashSet().SetEquals(new[] { firstTeam, secondTeam })),
-            AppPermissions.VmReadSystem, AppPermissions.VmReadView, AppPermissions.VmReadTeam,
-            Arg.Any<CancellationToken>());
-        await _player.DidNotReceive().CanViewVms(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>());
+        var batched = Assert.Single(_spy.CallsTo(nameof(IPlayerService.GetTeamIdsWithPermissionAsync)));
+        Assert.Equal(viewId, batched[0]);
+        Assert.True(((IEnumerable<Guid>)batched[1]).ToHashSet().SetEquals([firstTeam, secondTeam]));
+        Assert.Equal(AppPermissions.VmReadTeam, batched[4]);
+        Assert.Empty(_spy.CallsTo(nameof(IPlayerService.CanViewVms)));
     }
 
     [Fact]
@@ -506,7 +504,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var viewId = Guid.NewGuid();
         var teamId = Guid.NewGuid();
         Roster(viewId, teamId);
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamVms, teamId).InView(teamId, viewId));
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamVms, teamId).InView(teamId, viewId));
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetAllByViewIdAsync(viewId, Ct));
     }
@@ -521,14 +519,9 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
         await Service.GetAllByViewIdAsync(viewId, Ct);
 
-        await _player.Received().CanViewVms(
-            Arg.Is<IEnumerable<Guid>>(ids => !ids.Any()),
-            Arg.Is<IEnumerable<Guid>>(ids => ids.SequenceEqual(new[] { viewId })),
-            Arg.Any<CancellationToken>());
-        await _player.DidNotReceive().CanViewVms(
-            Arg.Is<IEnumerable<Guid>>(ids => ids.Any()),
-            Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<CancellationToken>());
+        var asked = Assert.Single(_spy.CallsTo(nameof(IPlayerService.CanViewVms)));
+        Assert.Empty((IEnumerable<Guid>)asked[0]);
+        Assert.Equal([viewId], (IEnumerable<Guid>)asked[1]);
     }
 
     [Fact]
@@ -589,7 +582,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var viewId = Guid.NewGuid();
         var teamId = Guid.NewGuid();
         Roster(viewId, teamId);
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamMaps, teamId).InView(teamId, viewId));
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamMaps, teamId).InView(teamId, viewId));
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetAllViewMapsAsync(viewId, Ct));
     }
@@ -632,7 +625,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     [Fact]
     public async Task GetAll_is_forbidden_for_a_caller_holding_only_ViewViewVms()
     {
-        Holding(new PlayerPermissions().Holding(AppViewPermission.ViewViewVms));
+        Grant(b => b.Holding(AppViewPermission.ViewViewVms));
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetAllAsync(Ct));
     }
@@ -642,7 +635,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     {
         var vm = Vm(teamIds: [Guid.NewGuid()]);
         await Seed(vm);
-        Holding(new PlayerPermissions().Holding(AppSystemPermission.ViewVms));
+        Grant(b => b.Holding(AppSystemPermission.ViewVms));
 
         Assert.Contains(vm.Id, (await Service.GetAllAsync(Ct)).Select(x => x.Id));
     }
@@ -650,7 +643,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     [Fact]
     public async Task GetAllMaps_is_forbidden_for_a_caller_holding_only_ViewViewMaps()
     {
-        Holding(new PlayerPermissions().Holding(AppViewPermission.ViewViewMaps));
+        Grant(b => b.Holding(AppViewPermission.ViewViewMaps));
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetAllMapsAsync(Ct));
     }
@@ -674,7 +667,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var teamId = Guid.NewGuid();
         var map = Map(teamIds: [teamId]);
         await Seed(map);
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamVms, teamId));
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamVms, teamId));
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetMapAsync(map.Id, Ct));
     }
@@ -688,8 +681,8 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     {
         var map = Map(teamIds: []);
         await Seed(map);
-        CanViewMaps(true);
-        CanViewViewMaps(false);
+        var teamId = Guid.NewGuid();
+        Grant(b => b.InView(teamId, map.ViewId).Holding(AppTeamPermission.ViewTeamMaps, teamId));
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetMapAsync(map.Id, Ct));
     }
@@ -700,22 +693,16 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     {
         var map = Map(teamIds: []);
         await Seed(map);
-        CanViewViewMaps(true);
-        CanManageMaps(false);
+        Grant(b => b.Holding(AppViewPermission.ViewViewMaps, map.ViewId));
 
         Assert.NotNull(await Service.GetMapAsync(map.Id, Ct));
-
-        await _player.Received().CanViewMaps(
-            Arg.Is<IEnumerable<Guid>>(ids => !ids.Any()),
-            Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(map.ViewId)),
-            Arg.Any<CancellationToken>());
     }
 
     [Fact]
     public async Task GetTeamMap_is_forbidden_for_a_caller_holding_only_ViewTeamVms()
     {
         var teamId = Guid.NewGuid();
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamVms, teamId));
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamVms, teamId));
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetTeamMapAsync(teamId, Ct));
     }
@@ -726,7 +713,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var teamId = Guid.NewGuid();
         var map = Map(teamIds: [teamId]);
         await Seed(map);
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamMaps, teamId));
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamMaps, teamId));
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.DeleteMapAsync(map.Id, Ct));
     }
@@ -761,7 +748,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     {
         var map = Map(teamIds: []);
         await Seed(map);
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeamMaps));
+        Grant(b => b.Holding(AppTeamPermission.ManageTeamMaps));
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.DeleteMapAsync(map.Id, Ct));
     }
@@ -774,8 +761,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task GetViewMaps_ForAnUnknownView_IsNull()
     {
         var viewId = Guid.NewGuid();
-        _player.GetVisibilityContextAsync(viewId, Arg.Any<CancellationToken>()).Returns(VisibilityFor());
-        _player.GetTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>()).Returns((IEnumerable<Player.Api.Client.Team>)null);
+        // A View player.api does not have: its teams route answers 404.
 
         Assert.Null(await Service.GetViewMapsAsync(viewId, Ct));
     }
@@ -817,8 +803,10 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Seed(teamless, teamScoped);
 
         View(viewId, VisibilityFor(teamId), teams: [Team(teamId)]);
-        CanViewMaps(true);
-        CanViewViewMaps(viewLevel);
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamMaps, teamId));
+
+        if (viewLevel)
+            Grant(b => b.Holding(AppViewPermission.ViewViewMaps, viewId));
 
         var maps = await Service.GetViewMapsAsync(viewId, Ct);
 
@@ -842,13 +830,11 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         CanViewMaps(true);
 
         Assert.Equal(2, (await Service.GetViewMapsAsync(viewId, Ct)).Length);
-        await _player.Received(1).GetTeamIdsWithPermissionAsync(
-            viewId,
-            Arg.Is<IEnumerable<Guid>>(ids => ids.ToHashSet().SetEquals(new[] { firstTeam, secondTeam })),
-            AppPermissions.MapReadSystem, AppPermissions.MapReadView, AppPermissions.MapReadTeam,
-            Arg.Any<CancellationToken>());
-        await _player.DidNotReceive().CanViewMaps(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>());
+        var batched = Assert.Single(_spy.CallsTo(nameof(IPlayerService.GetTeamIdsWithPermissionAsync)));
+        Assert.Equal(viewId, batched[0]);
+        Assert.True(((IEnumerable<Guid>)batched[1]).ToHashSet().SetEquals([firstTeam, secondTeam]));
+        Assert.Equal(AppPermissions.MapReadTeam, batched[4]);
+        Assert.Empty(_spy.CallsTo(nameof(IPlayerService.CanViewMaps)));
     }
 
     // The View-level permission is a property of the View, not of any one teamless Map, so it is asked once.
@@ -861,11 +847,10 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Seed(Map(teamIds: [], viewId: viewId), Map(teamIds: [], viewId: viewId), Map(teamIds: [], viewId: viewId));
 
         View(viewId, VisibilityFor(teamId), teams: [Team(teamId)]);
-        CanViewViewMaps(true);
+        Grant(b => b.Holding(AppViewPermission.ViewViewMaps, viewId));
 
         Assert.Equal(3, (await Service.GetViewMapsAsync(viewId, Ct)).Length);
-        await _player.Received(1).CanViewMaps(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>());
+        Assert.Single(_spy.CallsTo(nameof(IPlayerService.CanViewMaps)));
     }
 
     // A map can only be assigned to teams the caller manages, and the view must exist. Both failures are
@@ -873,8 +858,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     [Fact]
     public async Task CreateMap_ForAViewThatDoesNotExist_IsForbidden()
     {
-        _player.GetViewByIdAsync(Arg.Any<Guid>(), Arg.Any<CancellationToken>())
-            .Returns<Player.Api.Client.View>(_ => throw new InvalidOperationException("no such view"));
+        // A View player.api does not have: its view route answers 404.
 
         var ex = await Assert.ThrowsAsync<ForbiddenException>(
             () => Service.CreateMapAsync(new VmMapCreateForm { Name = "m", TeamIds = [] }, Guid.NewGuid(), Ct));
@@ -888,8 +872,8 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var viewId = Guid.NewGuid();
         var teamId = Guid.NewGuid();
 
-        _player.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(new Player.Api.Client.View());
-        _player.GetTeamById(teamId).Returns(new Player.Api.Client.Team { Id = teamId, ViewId = Guid.NewGuid() });
+        _player.Directory.AddView(viewId);
+        _player.Directory.PlaceTeam(teamId, Guid.NewGuid());
 
         var ex = await Assert.ThrowsAsync<ForbiddenException>(
             () => Service.CreateMapAsync(new VmMapCreateForm { Name = "m", TeamIds = [teamId] }, viewId, Ct));
@@ -903,9 +887,8 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var viewId = Guid.NewGuid();
         var teamId = Guid.NewGuid();
 
-        _player.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(new Player.Api.Client.View());
-        _player.GetTeamById(teamId).Returns(new Player.Api.Client.Team { Id = teamId, ViewId = viewId });
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ViewTeamMaps, teamId));
+        ViewWithTeams(viewId, teamId);
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamMaps, teamId));
 
         await Assert.ThrowsAsync<ForbiddenException>(
             () => Service.CreateMapAsync(new VmMapCreateForm { Name = "m", TeamIds = [teamId] }, viewId, Ct));
@@ -919,8 +902,8 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task CreateMap_of_a_teamless_map_is_forbidden_for_a_caller_holding_only_ManageTeamMaps()
     {
         var viewId = Guid.NewGuid();
-        _player.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(new Player.Api.Client.View());
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeamMaps));
+        ViewWithTeams(viewId);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeamMaps));
 
         await Assert.ThrowsAsync<ForbiddenException>(
             () => Service.CreateMapAsync(new VmMapCreateForm { Name = "m", TeamIds = [] }, viewId, Ct));
@@ -930,17 +913,12 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task CreateMap_WithNoTeams_IsAllowedByAViewLevelMapPermission()
     {
         var viewId = Guid.NewGuid();
-        _player.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(new Player.Api.Client.View());
-        CanManageMaps(true);
+        ViewWithTeams(viewId);
+        Grant(b => b.Holding(AppViewPermission.ManageViewMaps, viewId));
 
         var map = await Service.CreateMapAsync(new VmMapCreateForm { Name = "m", TeamIds = [] }, viewId, Ct);
 
         Assert.Equal(viewId, map.ViewId);
-
-        await _player.Received().CanManageMaps(
-            Arg.Is<IEnumerable<Guid>>(ids => !ids.Any()),
-            Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(viewId)),
-            Arg.Any<CancellationToken>());
     }
 
     /// <summary>
@@ -1037,7 +1015,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     {
         var vm = Vm(teamIds: [Guid.NewGuid()]);
         await Seed(vm);
-        Holding(new PlayerPermissions().Holding(AppSystemPermission.ManageViews));
+        Grant(b => b.Holding(AppSystemPermission.ManageViews));
 
         await Service.UpdateAsync(vm.Id, new VmUpdateForm { Name = "renamed" }, Ct);
 
@@ -1062,7 +1040,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var vm = Vm(teamIds: [Guid.NewGuid()]);
         await Seed(vm);
         var target = Guid.NewGuid();
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, target));
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, target));
 
         Assert.True(await Service.AddToTeamAsync(vm.Id, target, Ct));
 
@@ -1074,7 +1052,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task Create_is_allowed_for_a_caller_holding_exactly_ManageTeam_on_every_team()
     {
         var (first, second) = (Guid.NewGuid(), Guid.NewGuid());
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, first).Holding(AppTeamPermission.ManageTeam, second));
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, first).Holding(AppTeamPermission.ManageTeam, second));
 
         var form = new VmCreateForm { Id = Guid.NewGuid(), Name = "new", TeamIds = [first, second] };
 
@@ -1085,7 +1063,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task Create_is_forbidden_for_a_caller_holding_ManageTeam_on_only_one_of_its_teams()
     {
         var (first, second) = (Guid.NewGuid(), Guid.NewGuid());
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, first));
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, first));
 
         var form = new VmCreateForm { Id = Guid.NewGuid(), Name = "new", TeamIds = [first, second] };
 
@@ -1096,7 +1074,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task Create_is_forbidden_for_a_caller_holding_only_ControlTeamVms()
     {
         var teamId = Guid.NewGuid();
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ControlTeamVms, teamId));
+        Grant(b => b.Holding(AppTeamPermission.ControlTeamVms, teamId));
 
         var form = new VmCreateForm { Id = Guid.NewGuid(), Name = "new", TeamIds = [teamId] };
 
@@ -1156,7 +1134,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var second = Guid.NewGuid();
         var vm = Vm(teamIds: [first, second]);
         await Seed(vm);
-        Holding(new PlayerPermissions().Holding(AppTeamPermission.ManageTeam, first));
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, first));
 
         Assert.True(await Service.RemoveFromTeamAsync(vm.Id, first, Ct));
 
@@ -1171,58 +1149,29 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     private static ClaimsPrincipal Principal(Guid userId) =>
         new(new ClaimsIdentity([new Claim("sub", userId.ToString())], "test"));
 
-    /// <summary>
-    /// A Vm permission on every team or on none - in the single checks and in the batched one alike.
-    /// </summary>
+    /// <summary>A Vm permission on every team: the system <c>ViewVms</c>. False grants nothing.</summary>
     private void CanViewVms(bool allowed)
     {
-        _player.CanViewVms(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<CancellationToken>()).Returns(allowed);
-        TeamsWith(AppPermissions.VmReadTeam, _ => allowed);
+        if (allowed)
+            Grant(b => b.Holding(AppSystemPermission.ViewVms));
     }
 
+    /// <summary>A Map permission on every team and View: the system <c>ViewMaps</c>. False grants nothing.</summary>
     private void CanViewMaps(bool allowed)
     {
-        _player.CanViewMaps(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<CancellationToken>()).Returns(allowed);
-        TeamsWith(AppPermissions.MapReadTeam, _ => allowed);
+        if (allowed)
+            Grant(b => b.Holding(AppSystemPermission.ViewMaps));
     }
-
-    /// <summary>
-    /// The Map read check asked with a View and no teams, which only a View- or system-level Map
-    /// permission passes. Stub it after <see cref="CanViewMaps"/> to override that for this one shape.
-    /// </summary>
-    private void CanViewViewMaps(bool allowed) =>
-        _player.CanViewMaps(
-            Arg.Is<IEnumerable<Guid>>(ids => !ids.Any()), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<CancellationToken>()).Returns(allowed);
-
-    /// <summary>
-    /// Answers <see cref="IPlayerService.GetTeamIdsWithPermissionAsync"/> for the permission set whose
-    /// team-level half is <paramref name="teamPermissions"/>, keeping the candidates <paramref name="allowed"/>
-    /// accepts. The Vm read, Map read and Map manage sets each have a different team-level half.
-    /// </summary>
-    private void TeamsWith(AppTeamPermission[] teamPermissions, Func<Guid, bool> allowed) =>
-        _player.GetTeamIdsWithPermissionAsync(
-                Arg.Any<Guid>(), Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<AppSystemPermission[]>(),
-                Arg.Any<AppViewPermission[]>(),
-                Arg.Is<AppTeamPermission[]>(p => p.SequenceEqual(teamPermissions)),
-                Arg.Any<CancellationToken>())
-            .Returns(ci => (IReadOnlySet<Guid>)ci.ArgAt<IEnumerable<Guid>>(1).Where(allowed).ToHashSet());
 
     /// <summary>What GetAllByViewIdAsync and GetAllViewMapsAsync read the View's teams from.</summary>
     private void Roster(Guid viewId, params Guid[] teamIds) =>
         _views.GetTeamsForView(viewId, true, Arg.Any<CancellationToken>()).Returns(teamIds.ToList());
 
+    /// <summary>Map management everywhere: the system <c>ManageMaps</c>. False grants nothing.</summary>
     private void CanManageMaps(bool allowed)
     {
-        _player.CanManageMaps(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<CancellationToken>()).Returns(allowed);
-        TeamsWith([AppTeamPermission.ManageTeamMaps], _ => allowed);
+        if (allowed)
+            Grant(b => b.Holding(AppSystemPermission.ManageMaps));
     }
 
     /// <summary>
@@ -1230,54 +1179,33 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     /// </summary>
     private void CanManageMapsOnly(params Guid[] teamIds)
     {
-        CanManageMaps(false);
-        TeamsWith([AppTeamPermission.ManageTeamMaps], teamIds.Contains);
+        foreach (var teamId in teamIds)
+            Grant(b => b.Holding(AppTeamPermission.ManageTeamMaps, teamId));
     }
 
     /// <summary>What validateViewAndTeams checks before any permission: the View and its teams exist.</summary>
     private void ViewWithTeams(Guid viewId, params Guid[] teamIds)
     {
-        _player.GetViewByIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(new Player.Api.Client.View());
+        _player.Directory.AddView(viewId);
         foreach (var teamId in teamIds)
-            _player.GetTeamById(teamId).Returns(new Player.Api.Client.Team { Id = teamId, ViewId = viewId });
+            _player.Directory.PlaceTeam(teamId, viewId);
     }
 
     private static VmMapUpdateForm UpdateForm(params Guid[] teamIds) =>
         new() { Name = "map", Coordinates = [], TeamIds = [.. teamIds] };
 
-    /// <summary>
-    /// Grants Vm access to exactly these teams and refuses it for every other, which is what a
-    /// team-scoped grant looks like from VmService's side.
-    /// </summary>
+    /// <summary>Vm access on exactly these teams: <c>ViewTeamVms</c> on each, and nothing View-wide.</summary>
     private void CanViewVmsOnly(params Guid[] teamIds)
     {
-        CanViewVms(false);
-
         foreach (var teamId in teamIds)
-        {
-            _player.CanViewVms(
-                Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<CancellationToken>()).Returns(true);
-        }
-
-        TeamsWith(AppPermissions.VmReadTeam, teamIds.Contains);
+            Grant(b => b.Holding(AppTeamPermission.ViewTeamVms, teamId));
     }
 
-    /// <summary>The Map counterpart of <see cref="CanViewVmsOnly"/>.</summary>
+    /// <summary>The Map counterpart of <see cref="CanViewVmsOnly"/>: <c>ViewTeamMaps</c> on each.</summary>
     private void CanViewMapsOnly(params Guid[] teamIds)
     {
-        CanViewMaps(false);
-
         foreach (var teamId in teamIds)
-        {
-            _player.CanViewMaps(
-                Arg.Is<IEnumerable<Guid>>(ids => ids.Contains(teamId)),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<CancellationToken>()).Returns(true);
-        }
-
-        TeamsWith(AppPermissions.MapReadTeam, teamIds.Contains);
+            Grant(b => b.Holding(AppTeamPermission.ViewTeamMaps, teamId));
     }
 
     /// <summary>A saved Vm on one team, and a caller holding <paramref name="permission"/> on that team only.</summary>
@@ -1286,37 +1214,47 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var teamId = Guid.NewGuid();
         var vm = Vm(teamIds: [teamId]);
         await Seed(vm);
-        Holding(new PlayerPermissions().Holding(permission, teamId));
+        Grant(b => b.Holding(permission, teamId));
 
         return vm;
     }
 
-    /// <summary>The substituted player.api answers every permission question from exactly these grants.</summary>
-    private void Holding(PlayerPermissions permissions) => permissions.AnswerFor(_player);
+    private void Grant(Func<TestActorBuilder, TestActorBuilder> steps) => _player.Grant(steps);
 
-    private void CanManageTeams(bool allowed) =>
-        _player.CanManageTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns(allowed);
+    /// <summary>Team management everywhere: the system <c>ManageViews</c>. False grants nothing.</summary>
+    private void CanManageTeams(bool allowed)
+    {
+        if (allowed)
+            Grant(b => b.Holding(AppSystemPermission.ManageViews));
+    }
 
-    private void Can(bool allowed) =>
-        _player.Can(
-            Arg.Any<IEnumerable<Guid>>(), Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<AppSystemPermission[]>(),
-            Arg.Any<AppViewPermission[]>(),
-            Arg.Any<AppTeamPermission[]>(),
-            Arg.Any<CancellationToken>()).Returns(allowed);
+    /// <summary>
+    /// The caller's visibility for the team's View, as player.api's data produces it: the team placed in a
+    /// View (its own, unless placed already), and the caller's primary team there (see <see cref="Visible"/>).
+    /// </summary>
+    private void Visibility(Guid teamId, VisibilityContext context)
+    {
+        var viewId = _player.Directory.ViewOf(teamId) ?? Guid.NewGuid();
+        _player.Directory.PlaceTeam(teamId, viewId);
+        Visible(viewId, context);
+    }
 
-    private void Visibility(Guid teamId, VisibilityContext context) =>
-        _player.GetVisibilityContextForTeamAsync(teamId, Arg.Any<CancellationToken>()).Returns(context);
-
-    /// <summary>Wires the two calls GetByViewIdAsync and GetViewMapsAsync both make.</summary>
+    /// <summary>The View's teams placed in it, and the caller's visibility there.</summary>
     private void View(Guid viewId, VisibilityContext visibility, params Guid[] teamIds) =>
         View(viewId, visibility, teamIds.Select(x => Team(x)).ToArray());
 
     private void View(Guid viewId, VisibilityContext visibility, Player.Api.Client.Team[] teams)
     {
-        _player.GetVisibilityContextAsync(viewId, Arg.Any<CancellationToken>()).Returns(visibility);
-        _player.GetTeamsByViewIdAsync(viewId, Arg.Any<CancellationToken>()).Returns(teams);
+        _player.Directory.AddView(viewId);
+
+        foreach (var team in teams)
+            _player.Directory.PlaceTeam(team.Id, viewId);
+
+        Visible(viewId, visibility);
     }
+
+    /// <summary>The player.api data the caller's visibility in the View comes from (see <see cref="PlayerHarness.Sees(Guid, VisibilityContext)"/>).</summary>
+    private void Visible(Guid viewId, VisibilityContext context) => _player.Sees(viewId, context);
 
     private static VisibilityContext VisibilityFor(params Guid[] teamIds) =>
         VisibilityFor(false, teamIds);
@@ -1346,14 +1284,23 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         };
     }
 
-    private static VmMapEntity Map(Guid[] teamIds, Guid? viewId = null) =>
-        new()
+    /// <summary>A Map, with its View and teams placed in player.api: a Map's teams are teams of its View.</summary>
+    private VmMapEntity Map(Guid[] teamIds, Guid? viewId = null)
+    {
+        var map = new VmMapEntity
         {
             Id = Guid.NewGuid(),
             Name = "map",
             ViewId = viewId ?? Guid.NewGuid(),
             TeamIds = [.. teamIds]
         };
+
+        _player.Directory.AddView(map.ViewId);
+        foreach (var teamId in teamIds)
+            _player.Directory.PlaceTeam(teamId, map.ViewId);
+
+        return map;
+    }
 
     #endregion
 }

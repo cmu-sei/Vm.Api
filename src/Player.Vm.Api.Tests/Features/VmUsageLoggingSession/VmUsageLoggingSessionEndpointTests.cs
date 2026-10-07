@@ -83,8 +83,9 @@ public class VmUsageLoggingSessionEndpointTests(
 
         LoggingDb = NewLoggingContext();
 
-        Factory.PlayerApi.ClearSubstitute();
-        Factory.AllowEverything();
+        // The View the sessions are seeded in is one player.api has.
+        Factory.Player.AddView(_viewId);
+
     }
 
     public override async ValueTask DisposeAsync()
@@ -127,6 +128,10 @@ public class VmUsageLoggingSessionEndpointTests(
     /// </summary>
     public static TheoryData<string, string> EveryRouteButTheReport =>
         AsTheoryData(Routes.Where(x => x.Suffix != ReportSuffix));
+
+    /// <summary>The seven routes that ask player.api: all but the report and <c>isloggingenabled</c>.</summary>
+    public static TheoryData<string, string> EveryRouteButTheReportAndTheFlag =>
+        AsTheoryData(Routes.Where(x => x.Suffix != ReportSuffix && x.Suffix != "/isloggingenabled"));
 
     private static TheoryData<string, string> AsTheoryData(
         IEnumerable<(string Method, string Suffix)> routes)
@@ -173,17 +178,16 @@ public class VmUsageLoggingSessionEndpointTests(
         Assert.NotEqual(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
+    /// <summary>A route that asks player.api answers a caller with no credentials with a 500.</summary>
     [Theory]
-    [MemberData(nameof(EveryRouteButTheReport))]
-    public async Task EveryRouteButTheReport_AnsweredWithoutAuthenticating(string method, string suffix)
+    [MemberData(nameof(EveryRouteButTheReportAndTheFlag))]
+    public async Task EveryRouteAskingPlayerApi_WithoutCredentials_Is500(string method, string suffix)
     {
         var session = await SeedSession();
 
         var response = await Send(method, suffix, session.Id, Client());
 
-        Assert.True(
-            response.IsSuccessStatusCode,
-            $"{method} {suffix} answered {(int)response.StatusCode} for a caller with no credentials");
+        Assert.Contains("Status: 401", (await AssertJsonError(HttpStatusCode.InternalServerError, response)).Detail);
     }
 
     /// <summary>The report answers a caller with no identity with a 500.</summary>
@@ -247,19 +251,12 @@ public class VmUsageLoggingSessionEndpointTests(
     [Fact]
     public async Task IsLoggingEnabled_IsAnsweredWithEveryPermissionDenied()
     {
-        DenyEveryPermission();
-
         var response = await Client().GetAsync($"{BaseRoute}/isloggingenabled", Ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("true", await response.Content.ReadAsStringAsync(Ct));
-        await Factory.PlayerApi.DidNotReceive().Can(
-            Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<IEnumerable<Guid>>(),
-            Arg.Any<AppSystemPermission[]>(),
-            Arg.Any<AppViewPermission[]>(),
-            Arg.Any<AppTeamPermission[]>(),
-            Arg.Any<CancellationToken>());
+        await Factory.PlayerApiClient.DidNotReceiveWithAnyArgs().GetMyPermissionsAsync(Ct);
+        await Factory.PlayerApiClient.DidNotReceiveWithAnyArgs().GetMyTeamPermissionsAsync(default, default, default, Ct);
     }
 
     #endregion
@@ -375,7 +372,7 @@ public class VmUsageLoggingSessionEndpointTests(
         string method, string suffix, AppViewPermission view, string message)
     {
         var session = await SeedSession();
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(view, Guid.NewGuid())).SeedAsync();
+        var actor = await Actor().Holding(view, Guid.NewGuid()).SeedAsync();
 
         var response = await SendInThisView(method, suffix, session.Id, Client(actor));
 
@@ -389,7 +386,7 @@ public class VmUsageLoggingSessionEndpointTests(
         string method, string suffix, AppViewPermission view, string message)
     {
         var session = await SeedSession();
-        var actor = await Actor().Holding(new PlayerPermissions().Holding(view, _viewId)).SeedAsync();
+        var actor = await Actor().Holding(view, _viewId).SeedAsync();
 
         var response = await SendInThisView(method, suffix, session.Id, Client(actor));
 
@@ -409,7 +406,7 @@ public class VmUsageLoggingSessionEndpointTests(
     {
         var session = await SeedSession();
         var actor = await Actor()
-            .Holding(new PlayerPermissions().Holding(AppViewPermission.ViewView, _viewId))
+            .Holding(AppViewPermission.ViewView, _viewId)
             .SeedAsync();
 
         var response = await SendInThisView(method, suffix, session.Id, Client(actor));
@@ -440,9 +437,9 @@ public class VmUsageLoggingSessionEndpointTests(
     public async Task EachIdRoute_ForAnUnknownId_Is404EvenWithEveryPermissionDenied(
         string method, string suffix)
     {
-        DenyEveryPermission();
+        var nobody = await Actor().SeedAsync();
 
-        var response = await Send(method, suffix, Guid.NewGuid());
+        var response = await Send(method, suffix, Guid.NewGuid(), Client(nobody));
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
         Assert.Equal("Vm Usage Logging Session not found", await Title(response));
@@ -453,11 +450,14 @@ public class VmUsageLoggingSessionEndpointTests(
     public async Task EachIdRoute_AsksForPermissionOnTheStoredView(string method, string suffix)
     {
         var session = await SeedSession();
+        var actor = await Actor()
+            .Holding(AppViewPermission.ViewView, _viewId)
+            .Holding(AppViewPermission.ManageView, _viewId)
+            .SeedAsync();
 
-        var response = await Send(method, suffix, session.Id);
+        var response = await Send(method, suffix, session.Id, Client(actor));
 
-        Assert.True(response.IsSuccessStatusCode);
-        await ReceivedCanForView(_viewId);
+        Assert.True(response.IsSuccessStatusCode, $"{method} {suffix} answered {(int)response.StatusCode}");
     }
 
     #endregion
@@ -578,10 +578,11 @@ public class VmUsageLoggingSessionEndpointTests(
     [Fact]
     public async Task GetAll_WithAViewId_AsksForPermissionOnThatView()
     {
-        var response = await RootClient.GetAsync($"{BaseRoute}?viewId={_viewId}", Ct);
+        var actor = await Actor().Holding(AppViewPermission.ViewView, _viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"{BaseRoute}?viewId={_viewId}", Ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        await ReceivedCanForView(_viewId);
     }
 
     /// <summary>
@@ -591,10 +592,11 @@ public class VmUsageLoggingSessionEndpointTests(
     [Fact]
     public async Task GetAll_WithNoViewId_AsksForPermissionWithNoView()
     {
-        var response = await RootClient.GetAsync(BaseRoute, Ct);
+        var actor = await Actor().Holding(AppViewPermission.ViewView, _viewId).SeedAsync();
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        await ReceivedCanForView(null);
+        var response = await Client(actor).GetAsync(BaseRoute, Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     [Fact]
@@ -768,10 +770,11 @@ public class VmUsageLoggingSessionEndpointTests(
     [Fact]
     public async Task Create_WithAViewId_AsksForPermissionOnThatView()
     {
-        var response = await RootClient.PostAsync(BaseRoute, Body(new { viewId = _viewId }), Ct);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, _viewId).SeedAsync();
+
+        var response = await Client(actor).PostAsync(BaseRoute, Body(new { viewId = _viewId }), Ct);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        await ReceivedCanForView(_viewId);
     }
 
     /// <summary>A session created without a View is stored against <see cref="Guid.Empty"/>.</summary>
@@ -781,7 +784,6 @@ public class VmUsageLoggingSessionEndpointTests(
         var response = await RootClient.PostAsync(BaseRoute, Body(new { sessionName = "no view" }), Ct);
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        await ReceivedCanForView(null);
 
         await using var context = NewLoggingContext();
         var stored = await context.VmUsageLoggingSessions.SingleAsync(Ct);
@@ -897,7 +899,7 @@ public class VmUsageLoggingSessionEndpointTests(
         var session = await SeedSession();
         var elsewhere = Guid.NewGuid();
         var actor = await Actor()
-            .Holding(new PlayerPermissions().Holding(AppViewPermission.ManageView, _viewId))
+            .Holding(AppViewPermission.ManageView, _viewId)
             .SeedAsync();
 
         var response = await Client(actor).PutAsync(
@@ -1122,11 +1124,12 @@ public class VmUsageLoggingSessionEndpointTests(
         await SeedSession(viewId: Guid.NewGuid(), name: "other");
         var wanted = await SeedSession(name: "wanted");
 
-        var response = await RootClient.GetAsync($"{BaseRoute}/{wanted.Id}/download", Ct);
+        var actor = await Actor().Holding(AppViewPermission.ViewView, _viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"{BaseRoute}/{wanted.Id}/download", Ct);
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("wanted.csv", DownloadName(response));
-        await ReceivedCanForView(_viewId);
     }
 
     /// <summary>
@@ -1478,24 +1481,27 @@ public class VmUsageLoggingSessionEndpointTests(
     [Fact]
     public async Task Report_AsksOnlyForTheSystemPermission()
     {
-        var response = await RootClient.GetAsync(
-            $"{BaseRoute}/report?reportStart={Query(Noon)}&reportEnd={Query(Noon.AddDays(1))}", Ct);
+        var session = await SeedSession(start: Noon, end: Noon.AddHours(1));
+        await SeedEntry(session, userId: Guid.NewGuid(), userName: "someone else");
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        await Factory.PlayerApi.Received(1).Can(
-            Arg.Is<IEnumerable<Guid>>(x => !x.Any()),
-            Arg.Is<IEnumerable<Guid>>(x => !x.Any()),
-            Arg.Is<AppSystemPermission[]>(x => x.SequenceEqual(new[] { AppSystemPermission.ViewViews })),
-            Arg.Is<AppViewPermission[]>(x => x.Length == 0),
-            Arg.Is<AppTeamPermission[]>(x => x.Length == 0),
-            Arg.Any<CancellationToken>());
+        // Everything but the system ViewViews: every other system permission, and every View permission on
+        // the session's View. The report still narrows to the caller's own activity, of which there is none.
+        var builder = Actor().Holding([.. Enum.GetValues<AppSystemPermission>().Where(x => x != AppSystemPermission.ViewViews)]);
+        foreach (var view in Enum.GetValues<AppViewPermission>())
+            builder.Holding(view, _viewId);
+        var actor = await builder.SeedAsync();
+
+        var response = await Client(actor).GetAsync(
+            $"{BaseRoute}/report?reportStart={Query(Noon.AddDays(-1))}&reportEnd={Query(Noon.AddDays(1))}", Ct);
+
+        Assert.Empty(await Get<VmUsageReport[]>(response));
     }
 
     [Fact]
     public async Task Report_WithTheSystemPermission_ReturnsEveryonesActivity()
     {
         var session = await SeedSession(start: Noon, end: Noon.AddHours(1));
-        await SeedEntry(session, userId: Factory.UserId, userName: "me");
+        await SeedEntry(session, userId: Root.Id, userName: "me");
         await SeedEntry(session, userId: Guid.NewGuid(), userName: "someone else");
 
         var result = await Report(Noon.AddDays(-1), Noon.AddDays(1));
@@ -1511,7 +1517,7 @@ public class VmUsageLoggingSessionEndpointTests(
     public async Task Report_WithoutTheSystemPermission_ReturnsOnlyTheCallersOwnActivity()
     {
         var session = await SeedSession(start: Noon, end: Noon.AddHours(1));
-        await SeedEntry(session, userId: Factory.UserId, userName: "me");
+        await SeedEntry(session, userId: Root.Id, userName: "me");
         await SeedEntry(session, userId: Guid.NewGuid(), userName: "someone else");
 
         Deny(AppSystemPermission.ViewViews, null);
@@ -1724,52 +1730,16 @@ public class VmUsageLoggingSessionEndpointTests(
     private static string Query(DateTimeOffset value) => Uri.EscapeDataString(value.ToString("O"));
 
     /// <summary>
-    /// Denies exactly one permission pair, leaving everything else allowed, so a refusal names the
-    /// permission the route actually asked for. Pass a null view permission for a route that asks for the
-    /// system permission alone.
+    /// Takes one system permission from Root, which holds no View permission, so Root then holds every
+    /// system permission but <paramref name="system"/> and nothing else: a refusal names the system
+    /// permission the route asked for. The View permission the same gate accepts is named for the reader;
+    /// Root never held it. Called before Root's first request, which is when its permissions are read.
     /// </summary>
     private void Deny(AppSystemPermission system, AppViewPermission? view)
     {
-        // Split out because an expression tree cannot contain an "is null" pattern.
-        var asksForNoView = !view.HasValue;
-        var viewPermission = view.GetValueOrDefault();
-
-        Factory.PlayerApi.Can(
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Is<AppSystemPermission[]>(x => x.Contains(system)),
-                Arg.Is<AppViewPermission[]>(x =>
-                    asksForNoView ? x.Length == 0 : x.Contains(viewPermission)),
-                Arg.Any<AppTeamPermission[]>(),
-                Arg.Any<CancellationToken>())
-            .Returns(false);
+        _ = view;
+        Factory.Player.Caller(Root.Id).System.Remove(system);
     }
-
-    private void DenyEveryPermission()
-    {
-        Factory.PlayerApi.Can(
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<IEnumerable<Guid>>(),
-                Arg.Any<AppSystemPermission[]>(),
-                Arg.Any<AppViewPermission[]>(),
-                Arg.Any<AppTeamPermission[]>(),
-                Arg.Any<CancellationToken>())
-            .Returns(false);
-    }
-
-    /// <summary>
-    /// Asserts player.api was asked about exactly one View - or, for a null, about no View at all, which
-    /// only the system-wide permission can answer.
-    /// </summary>
-    private Task ReceivedCanForView(Guid? viewId) =>
-        Factory.PlayerApi.Received(1).Can(
-            Arg.Is<IEnumerable<Guid>>(x => !x.Any()),
-            Arg.Is<IEnumerable<Guid>>(x =>
-                viewId.HasValue ? x.SequenceEqual(new[] { viewId.Value }) : !x.Any()),
-            Arg.Any<AppSystemPermission[]>(),
-            Arg.Any<AppViewPermission[]>(),
-            Arg.Any<AppTeamPermission[]>(),
-            Arg.Any<CancellationToken>());
 
     #endregion
 }
