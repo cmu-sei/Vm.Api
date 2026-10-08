@@ -133,6 +133,6 @@ public class PollLoopSmokeTests(DatabaseFixture fixture) : DatabaseTestBase(fixt
             new RecordingLogger<ProxmoxTaskService>(),
             options,
             loop,
-            new HubContextHarness<ProgressHub>().Context);
+            new HubRecorder<ProgressHub>());
     }
 }

@@ -84,6 +84,22 @@ public sealed class HubRecorder<THub> : IHubContext<THub> where THub : Hub
     public IReadOnlyList<string> Recipients(string method) => _clients.Recipients(method);
 
     /// <summary>
+    /// Every call the application made on <see cref="Clients"/>, in the order it made them, one per call:
+    /// a <c>Clients.Groups(list)</c> send is one call naming every group in it, and a send that
+    /// <see cref="FailsFor"/> made throw is not there. For the questions the per-audience readers cannot
+    /// ask: that nothing was sent at all (<c>Assert.Empty(recorder.Calls)</c>), and the order of sends
+    /// across audiences. On a run-wide recorder that is every test's broadcast, so read it on a recorder
+    /// one test owns.
+    /// </summary>
+    public IReadOnlyList<HubCall> Calls => _clients.Calls;
+
+    /// <summary>
+    /// The calls that sent <paramref name="method"/>, in order, whoever they addressed: how many times it
+    /// was sent, and to which audiences (<see cref="HubAudience.All"/> among them).
+    /// </summary>
+    public IReadOnlyList<HubCall> CallsOf(string method) => [.. _clients.Calls.Where(x => x.Method == method)];
+
+    /// <summary>
     /// Makes every send to <paramref name="groupName"/> throw <paramref name="failure"/>, for the callers
     /// that broadcast to each group in turn and must show that one failing group does not cost the others
     /// theirs. The failed send is not recorded, because it did not happen. On a recorder one test owns, or
@@ -112,32 +128,47 @@ public sealed class HubRecorder<THub> : IHubContext<THub> where THub : Hub
         /// <summary>Every recorded send, in order, keyed by audience, for <see cref="Recipients"/>.</summary>
         private readonly ConcurrentQueue<(string Key, string Method)> _log = new();
 
-        public IClientProxy All => Proxy("all");
+        /// <summary>Every call as the application made it, for <see cref="HubRecorder{THub}.Calls"/>.</summary>
+        private readonly ConcurrentQueue<HubCall> _calls = new();
+
+        public IClientProxy All => Logged(HubAudience.All, [], Proxy("all"));
 
         public IClientProxy AllExcept(IReadOnlyList<string> excludedConnectionIds) =>
-            Proxy($"all-except:{string.Join(',', excludedConnectionIds)}");
+            Logged(HubAudience.AllExcept, excludedConnectionIds, Proxy($"all-except:{string.Join(',', excludedConnectionIds)}"));
 
-        public IClientProxy Client(string connectionId) => Proxy($"client:{connectionId}");
+        public IClientProxy Client(string connectionId) =>
+            Logged(HubAudience.Client, [connectionId], Proxy($"client:{connectionId}"));
 
         public IClientProxy Clients(IReadOnlyList<string> connectionIds) =>
-            Proxy($"clients:{string.Join(',', connectionIds)}");
+            Logged(HubAudience.Clients, connectionIds, Proxy($"clients:{string.Join(',', connectionIds)}"));
 
-        public IClientProxy Group(string groupName) => Proxy($"group:{groupName}");
+        public IClientProxy Group(string groupName) =>
+            Logged(HubAudience.Group, [groupName], Proxy($"group:{groupName}"));
 
         public IClientProxy GroupExcept(string groupName, IReadOnlyList<string> excludedConnectionIds) =>
-            Proxy($"group-except:{groupName}:{string.Join(',', excludedConnectionIds)}");
+            Logged(
+                HubAudience.GroupExcept,
+                [groupName, .. excludedConnectionIds],
+                Proxy($"group-except:{groupName}:{string.Join(',', excludedConnectionIds)}"));
 
         /// <summary>
         /// Recorded as one send to the list and one to each group in it, which is what each group's
-        /// connections receive.
+        /// connections receive, and logged as the one call it was.
         /// </summary>
         public IClientProxy Groups(IReadOnlyList<string> groupNames) =>
-            new FanOutProxy([Proxy($"groups:{string.Join(',', groupNames)}"), .. groupNames.Select(Group)]);
+            Logged(
+                HubAudience.Groups,
+                groupNames,
+                new FanOutProxy([
+                    Proxy($"groups:{string.Join(',', groupNames)}"),
+                    .. groupNames.Select(name => Proxy($"group:{name}"))]));
 
-        public IClientProxy User(string userId) => Proxy($"user:{userId}");
+        public IClientProxy User(string userId) => Logged(HubAudience.User, [userId], Proxy($"user:{userId}"));
 
         public IClientProxy Users(IReadOnlyList<string> userIds) =>
-            Proxy($"users:{string.Join(',', userIds)}");
+            Logged(HubAudience.Users, userIds, Proxy($"users:{string.Join(',', userIds)}"));
+
+        public IReadOnlyList<HubCall> Calls => [.. _calls];
 
         public IReadOnlyList<HubBroadcast> Recorded(string key) =>
             _proxies.TryGetValue(key, out var proxy) ? proxy.Messages : [];
@@ -152,6 +183,9 @@ public sealed class HubRecorder<THub> : IHubContext<THub> where THub : Hub
 
         private RecordingClientProxy Proxy(string key) =>
             _proxies.GetOrAdd(key, _ => new RecordingClientProxy(key, this));
+
+        private LoggingProxy Logged(HubAudience audience, IReadOnlyList<string> names, IClientProxy inner) =>
+            new(inner, (method, args) => _calls.Enqueue(new HubCall(audience, [.. names], method, args)));
 
         public void Record(string key, string method)
         {
@@ -182,6 +216,19 @@ public sealed class HubRecorder<THub> : IHubContext<THub> where THub : Hub
         }
     }
 
+    /// <summary>Logs the call once it has been delivered; a send that throws is not logged.</summary>
+    private sealed class LoggingProxy(IClientProxy inner, Action<string, object[]> log) : IClientProxy
+    {
+        public async Task SendCoreAsync(
+            string method,
+            object[] args,
+            CancellationToken cancellationToken = default)
+        {
+            await inner.SendCoreAsync(method, args, cancellationToken);
+            log(method, args ?? []);
+        }
+    }
+
     private sealed class FanOutProxy(IReadOnlyList<IClientProxy> proxies) : IClientProxy
     {
         public async Task SendCoreAsync(
@@ -201,6 +248,35 @@ public sealed class HubRecorder<THub> : IHubContext<THub> where THub : Hub
 public sealed record HubBroadcast(string Method, object[] Arguments)
 {
     /// <summary>The single argument of a broadcast that sends one.</summary>
+    public object Argument => Arguments.Length == 1
+        ? Arguments[0]
+        : throw new InvalidOperationException(
+            $"'{Method}' was sent with {Arguments.Length} arguments, so name the one you mean.");
+}
+
+/// <summary>Whom one call on a hub context's clients addressed.</summary>
+public enum HubAudience
+{
+    All,
+    AllExcept,
+    Client,
+    Clients,
+    Group,
+    GroupExcept,
+    Groups,
+    User,
+    Users,
+}
+
+/// <summary>
+/// One call the application made on a hub context's clients, as it made it: whom it addressed (the
+/// group, user or connection names, in the order given; none for <see cref="HubAudience.All"/>; the
+/// group first, then the excluded connections, for <see cref="HubAudience.GroupExcept"/>), the client
+/// method it named, and what it carried.
+/// </summary>
+public sealed record HubCall(HubAudience Audience, IReadOnlyList<string> Names, string Method, object[] Arguments)
+{
+    /// <summary>The single argument of a call that sends one.</summary>
     public object Argument => Arguments.Length == 1
         ? Arguments[0]
         : throw new InvalidOperationException(

@@ -10,7 +10,7 @@ using Microsoft.AspNetCore.SignalR;
 
 namespace Player.Vm.Api.Tests.Support;
 
-/// <summary>One message a hub or hub context sent, and the groups it was addressed to.</summary>
+/// <summary>One message a hub under direct test sent, and the groups it was addressed to.</summary>
 /// <param name="Groups">The group names the send was addressed to, in the order the sender named them.</param>
 /// <param name="Method">The client method name.</param>
 /// <param name="Args">The arguments, as <c>SendAsync</c> packed them.</param>

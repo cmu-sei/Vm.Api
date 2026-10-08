@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http.Connections;
@@ -14,13 +15,14 @@ using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.Extensions.DependencyInjection;
 using Player.Vm.Api.Features.Vms.Hubs;
+using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Tests.Support;
 
 namespace Player.Vm.Api.Tests.Features.Vms.Hubs;
 
 /// <summary>
-/// The two hubs as endpoints of the running application: where they are mapped, who may reach them, and -
-/// for <c>ProgressHub</c>, which needs no database - one round trip over a real SignalR connection.
+/// The two hubs as endpoints of the running application: where they are mapped, who may reach them, and
+/// round trips over real SignalR connections to each.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -31,10 +33,13 @@ namespace Player.Vm.Api.Tests.Features.Vms.Hubs;
 /// joined actually reaches it.
 /// </para>
 /// <para>
-/// <c>VmHub</c> is deliberately not driven over a connection here. Its methods resolve a
-/// <c>VmContext</c>, and a hub invocation is not an HTTP request, so <see cref="VmAppFactory"/> cannot
-/// route it to this test's database - it would silently read the host's. That is why the hub's own
-/// behaviour is tested by direct invocation and only its edge is tested here.
+/// Every connection here is a WebSocket to the in-process <c>TestServer</c>
+/// (<c>Factory.Server.CreateWebSocketClient()</c>), carrying the caller's identity and this test's
+/// <c>X-Test-Session</c> header on the upgrade request. A hub invocation is not an HTTP request of its
+/// own, but over a WebSocket it runs inside the upgrade request's context, so a hub method that resolves a
+/// <c>VmContext</c> reads this test's database and <c>PlayerService</c> answers for the connected actor.
+/// Under long polling each invocation would arrive with no such header. The hub methods' own behaviour is
+/// tested by direct invocation in <see cref="VmHubGroupTests"/> and <see cref="VmHubPresenceTests"/>.
 /// </para>
 /// </remarks>
 public class HubConnectionTests(DatabaseFixture fixture, VmAppFactory factory)
@@ -110,16 +115,7 @@ public class HubConnectionTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.All(endpoints, x => Assert.NotEmpty(x.Metadata.GetOrderedMetadata<IAuthorizeData>()));
     }
 
-    /// <summary>
-    /// <c>Player.Vm.Api.Hubs.VmHub</c> is a second copy of the hub, with its own copy of
-    /// <c>VmHubMethods</c>. Nothing maps it and nothing imports its namespace, so it is unreachable: the
-    /// hub clients talk to is the one under <c>Features/Vms/Hubs</c>.
-    /// </summary>
-    /// <remarks>
-    /// Recorded rather than deleted, because deleting a public type is a decision for whoever owns the
-    /// file. What makes it worth a test is that the two copies are similar enough to edit by mistake -
-    /// a change made to the unmapped one would compile, pass every other test, and do nothing.
-    /// </remarks>
+    /// <summary><c>Player.Vm.Api.Hubs.VmHub</c>, a second copy of the hub, is mapped at no path.</summary>
     [Fact]
     public void TheDuplicateVmHub_IsMappedNowhere()
     {
@@ -130,6 +126,52 @@ public class HubConnectionTests(DatabaseFixture fixture, VmAppFactory factory)
     public void TheApplication_MapsNoHubsButThoseTwo()
     {
         Assert.Equal<string>([ProgressHubPath, VmHubPath], MappedHubs().Select(x => x.Path).Order());
+    }
+
+    #endregion
+
+    #region VmHub over a real connection
+
+    /// <summary>
+    /// An actor connects to <c>VmHub</c> as clients do, joins a View, and hears what the application sends
+    /// to the group of the team it sees there: the connection carried its identity into the hub, because
+    /// <c>JoinView</c> asked player.api about this caller and joined the group of its own primary team.
+    /// </summary>
+    [Fact]
+    public async Task AnActor_ConnectedToVmHub_HearsWhatIsSentToTheTeamItJoined()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var actor = await Actor().InView(teamId, viewId).PrimaryOn(teamId).SeedAsync();
+        var connection = await Connect(VmHubPath, actor);
+        var received = Received<string>(connection, VmHubMethods.VmUpdated);
+
+        await connection.InvokeAsync("JoinView", viewId, Ct);
+        await Broadcast<VmHub>(teamId.ToString(), VmHubMethods.VmUpdated, "updated");
+
+        Assert.Equal("updated", await Arrives(received));
+    }
+
+    /// <summary>
+    /// A hub method that reads the database, invoked over the connection, reads this test's: the Vm it
+    /// joins exists only there, and the connection then hears what is sent to that Vm's users channel for
+    /// the team the actor sees (<c>VmHub.GetCurrentVmUsersChannelName</c>: the method name, the team, the Vm).
+    /// </summary>
+    [Fact]
+    public async Task AnActor_ConnectedToVmHub_JoinsAVmSeededInItsTestsDatabase()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = TestData.VsphereVm(teamId);
+        await Seed(vm);
+        Factory.Views.GetViewIdsForTeams(Arg.Any<IEnumerable<Guid>>(), Arg.Any<CancellationToken>()).Returns([viewId]);
+        var actor = await Actor().InView(teamId, viewId).Holding(AppTeamPermission.ViewTeamVms, teamId).SeedAsync();
+        var connection = await Connect(VmHubPath, actor);
+        var received = Received<string>(connection, VmHubMethods.CurrentVirtualMachineUsers);
+
+        await connection.InvokeAsync("JoinVm", vm.Id, Ct);
+        await Broadcast<VmHub>(
+            $"{VmHubMethods.CurrentVirtualMachineUsers}-{teamId}-{vm.Id}", VmHubMethods.CurrentVirtualMachineUsers, "users");
+
+        Assert.Equal("users", await Arrives(received));
     }
 
     #endregion
@@ -145,11 +187,11 @@ public class HubConnectionTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task AClientThatJoinedAVm_ReceivesWhatIsBroadcastToThatVm()
     {
         var vmId = Guid.NewGuid();
-        var connection = await Connect(ProgressHubPath);
+        var connection = await Connect(ProgressHubPath, await Actor().SeedAsync());
         var received = Received<string>(connection, "Progress");
 
         await connection.InvokeAsync("Join", vmId.ToString(), Ct);
-        await Broadcast(vmId.ToString(), "Progress", "50");
+        await Broadcast<ProgressHub>(vmId.ToString(), "Progress", "50");
 
         Assert.Equal("50", await Arrives(received));
     }
@@ -162,11 +204,11 @@ public class HubConnectionTests(DatabaseFixture fixture, VmAppFactory factory)
     [Fact]
     public async Task AClientThatJoinedAnotherVm_ReceivesNothing()
     {
-        var connection = await Connect(ProgressHubPath);
+        var connection = await Connect(ProgressHubPath, await Actor().SeedAsync());
         var received = Received<string>(connection, "Progress");
 
         await connection.InvokeAsync("Join", Guid.NewGuid().ToString(), Ct);
-        await Broadcast(Guid.NewGuid().ToString(), "Progress", "50");
+        await Broadcast<ProgressHub>(Guid.NewGuid().ToString(), "Progress", "50");
 
         Assert.False(received.IsCompleted);
     }
@@ -178,16 +220,16 @@ public class HubConnectionTests(DatabaseFixture fixture, VmAppFactory factory)
     public async Task AClientThatLeft_ReceivesNothingMore()
     {
         var vmId = Guid.NewGuid();
-        var connection = await Connect(ProgressHubPath);
+        var connection = await Connect(ProgressHubPath, await Actor().SeedAsync());
 
         await connection.InvokeAsync("Join", vmId.ToString(), Ct);
         var first = Received<string>(connection, "Progress");
-        await Broadcast(vmId.ToString(), "Progress", "50");
+        await Broadcast<ProgressHub>(vmId.ToString(), "Progress", "50");
         Assert.Equal("50", await Arrives(first));
 
         await connection.InvokeAsync("Leave", vmId.ToString(), Ct);
         var second = Received<string>(connection, "Progress");
-        await Broadcast(vmId.ToString(), "Progress", "100");
+        await Broadcast<ProgressHub>(vmId.ToString(), "Progress", "100");
 
         Assert.False(second.IsCompleted);
     }
@@ -199,7 +241,7 @@ public class HubConnectionTests(DatabaseFixture fixture, VmAppFactory factory)
     [Fact]
     public async Task ProgressHub_HasNoMethodsBesidesJoinAndLeave()
     {
-        var connection = await Connect(ProgressHubPath);
+        var connection = await Connect(ProgressHubPath, await Actor().SeedAsync());
 
         var error = await Assert.ThrowsAsync<HubException>(
             () => connection.InvokeAsync("JoinAll", Ct));
@@ -213,22 +255,35 @@ public class HubConnectionTests(DatabaseFixture fixture, VmAppFactory factory)
     #region Helpers
 
     /// <summary>
-    /// A connected client, over the in-process server rather than a socket.
+    /// A client connected as <paramref name="actor"/>, over a WebSocket to the in-process server.
     /// </summary>
     /// <remarks>
-    /// Long polling, because a <c>TestServer</c> has no real WebSocket for the client transport to
-    /// upgrade to; the negotiation and the hub protocol above it are the real ones either way. The
-    /// user id header is what <see cref="TestAuthHandler"/> authenticates, and it has to be set here
-    /// rather than on a client because the connection makes its own requests.
+    /// <c>TestServer.CreateWebSocketClient()</c> gives a real WebSocket, so negotiation is skipped and the
+    /// upgrade request is the one request the connection makes. It carries what every
+    /// <see cref="ApiTestBase"/> client sends: the identity <see cref="TestAuthHandler"/> authenticates and
+    /// this test's database session, which the hub methods' scopes resolve their <c>VmContext</c> by.
     /// </remarks>
-    private async Task<HubConnection> Connect(string path)
+    private async Task<HubConnection> Connect(string path, TestActor actor)
     {
+        var session = Client().DefaultRequestHeaders.GetValues(TestDatabaseScope.HeaderName).Single();
+
         var connection = new HubConnectionBuilder()
             .WithUrl($"http://localhost{path}", options =>
             {
-                options.Transports = HttpTransportType.LongPolling;
-                options.HttpMessageHandlerFactory = _ => Factory.Server.CreateHandler();
-                options.Headers.Add(TestAuthHandler.UserHeader, Root.Id.ToString());
+                options.Transports = HttpTransportType.WebSockets;
+                options.SkipNegotiation = true;
+                options.WebSocketFactory = async (context, ct) =>
+                {
+                    var client = Factory.Server.CreateWebSocketClient();
+                    client.ConfigureRequest = request =>
+                    {
+                        request.Headers[TestAuthHandler.UserHeader] = actor.Id.ToString();
+                        request.Headers[TestAuthHandler.NameHeader] = actor.Name;
+                        request.Headers[TestDatabaseScope.HeaderName] = session;
+                    };
+
+                    return await client.ConnectAsync(context.Uri, ct);
+                };
             })
             .Build();
 
@@ -269,14 +324,15 @@ public class HubConnectionTests(DatabaseFixture fixture, VmAppFactory factory)
     /// Sends to a group as the application does, through the hub context the task pollers hold rather
     /// than through a hub method - which is the point: it is the other side of the name.
     /// </summary>
-    private async Task Broadcast(string group, string method, object argument)
+    private async Task Broadcast<THub>(string group, string method, object argument)
+        where THub : Hub
     {
-        await Factory.Services.GetRequiredService<IHubContext<ProgressHub>>()
+        await Factory.Services.GetRequiredService<IHubContext<THub>>()
             .Clients.Group(group).SendAsync(method, argument, Ct);
 
-        // The negative assertions need the absence of a message to mean something. A long-polling client
-        // has to be given a chance to receive it, and one it did not subscribe to leaves nothing to wait
-        // for, so this is the one place a delay is the only available signal.
+        // The negative assertions need the absence of a message to mean something. The client receives on
+        // its own loop and has to be given a chance to, and a message it did not subscribe to leaves
+        // nothing to wait for, so this is the one place a delay is the only available signal.
         await Task.Delay(TimeSpan.FromMilliseconds(250), Ct);
     }
 

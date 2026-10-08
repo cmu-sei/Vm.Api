@@ -27,12 +27,16 @@ namespace Player.Vm.Api.Tests.Support;
 /// test's own caller.
 /// </para>
 /// <para>
-/// Every team is placed in one View (<see cref="PlaceTeam"/>). <c>GetUserViewTeamsAsync</c> returns the
-/// teams the user's primary visibility context reaches, with its membership flags; the privileged
-/// <c>GetViewTeamsAsync</c> and <c>GetViewsAsync</c> answer 403 without the permissions player.api asks
-/// for them; a View nobody placed a team in, or added, answers 404 as player.api does. A caller's claim on a team carries its
-/// permissions as direct ones (granted by that team's own role), unless it is scoped in from another team.
-/// Tests arrange callers through <see cref="TestActorBuilder"/>, not here.
+/// Every team is placed in one View (<see cref="PlaceTeam"/>). Each route answers as player.api's endpoint
+/// does, its authorization first and its 404 after (player.api's <c>BaseHandler.Handle</c> authorizes before
+/// it handles): <c>GetUserViewTeamsAsync</c> returns the teams the caller's primary visibility context
+/// reaches, or every team of the View to a privileged caller asking about someone else; the team and View
+/// reads answer 403 to a caller player.api would refuse; the privileged <c>GetViewTeamsAsync</c> and
+/// <c>GetViewsAsync</c> answer 403 without the permissions player.api asks for them; a View nobody placed a
+/// team in, or added, answers 404. Every team returned carries the caller's own membership flags. A
+/// caller's claim on a team carries its permissions as direct ones (granted by that team's own role),
+/// unless it is scoped in from another team. Each rule is pinned to player.api's source by
+/// <c>PlayerDirectoryTests</c>. Tests arrange callers through <see cref="TestActorBuilder"/>, not here.
 /// </para>
 /// </remarks>
 public sealed class PlayerDirectory
@@ -204,18 +208,18 @@ public sealed class PlayerDirectory
             .ReturnsForAnyArgs(call => Task.FromResult(ClaimsOf(_currentUser(), call.ArgAt<Guid?>(0))));
 
         _client.GetUserViewTeamsAsync(default, default, default)
-            .ReturnsForAnyArgs(call => Task.FromResult(Roster(call.ArgAt<Guid>(0), call.ArgAt<Guid>(1))));
+            .ReturnsForAnyArgs(call => Task.FromResult(Roster(_currentUser(), call.ArgAt<Guid>(0), call.ArgAt<Guid>(1))));
 
         _client.GetViewTeamsAsync(default, default)
             .ReturnsForAnyArgs(call => Task.FromResult(AllTeams(_currentUser(), call.ArgAt<Guid>(0))));
 
         _client.GetTeamAsync(default)
-            .ReturnsForAnyArgs(call => Task.FromResult(Team(call.ArgAt<Guid>(0))));
+            .ReturnsForAnyArgs(call => Task.FromResult(Team(_currentUser(), call.ArgAt<Guid>(0))));
         _client.GetTeamAsync(default, default)
-            .ReturnsForAnyArgs(call => Task.FromResult(Team(call.ArgAt<Guid>(0))));
+            .ReturnsForAnyArgs(call => Task.FromResult(Team(_currentUser(), call.ArgAt<Guid>(0))));
 
         _client.GetViewAsync(default, default)
-            .ReturnsForAnyArgs(call => Task.FromResult(View(call.ArgAt<Guid>(0))));
+            .ReturnsForAnyArgs(call => Task.FromResult(View(_currentUser(), call.ArgAt<Guid>(0))));
 
         _client.GetViewsAsync(default)
             .ReturnsForAnyArgs(_ => Task.FromResult<ICollection<View>>(Views(_currentUser())));
@@ -263,22 +267,44 @@ public sealed class PlayerDirectory
     }
 
     /// <summary>
-    /// <c>GetUserViewTeamsAsync</c>: the teams of the View the user's primary visibility context reaches,
-    /// as player.api computes it from the primary team's direct permissions. No primary team there is no
-    /// team at all; <c>ViewView</c> or <c>ManageView</c> on it is every team of the View; <c>ViewTeam</c> or
-    /// <c>ManageTeam</c> is the primary team and the teams scoped from it; anything else the primary alone.
+    /// <c>GetUserViewTeamsAsync</c>: refused unless the caller asks about itself or holds the system
+    /// <c>ViewViews</c> or <c>ViewView</c> in the View; 404 for a View player.api does not have; for the caller
+    /// itself, the teams of the View its primary visibility context reaches, as player.api computes it from
+    /// the primary team's direct permissions (no primary team there is no team at all; <c>ViewView</c> or
+    /// <c>ManageView</c> on it is every team of the View; <c>ViewTeam</c> or <c>ManageTeam</c> is the primary
+    /// team and the teams scoped from it; anything else the primary alone); for another user, 404 if
+    /// player.api has no such user, else every team of the View.
     /// </summary>
-    private ICollection<Team> Roster(Guid viewId, Guid userId)
+    private ICollection<Team> Roster(Guid? currentUser, Guid viewId, Guid userId)
     {
         lock (_gate)
         {
+            var caller = CallerOrThrow(currentUser);
+            var self = currentUser == userId;
+
+            if (!self && !CanViewView(caller, viewId))
+            {
+                throw Forbidden("getUserViewTeams");
+            }
+
             if (!_views.Contains(viewId))
             {
                 throw NotFound($"View {viewId}");
             }
 
-            _callers.TryGetValue(userId, out var caller);
-            var claims = caller?.Claims.Where(x => _teamViews.GetValueOrDefault(x.Key) == viewId).ToArray() ?? [];
+            // player.api creates the caller's own user on its first request, so only another user can be
+            // one it does not have.
+            if (!self && !_callers.ContainsKey(userId))
+            {
+                throw NotFound($"User {userId}");
+            }
+
+            if (!self)
+            {
+                return [.. TeamsIn(viewId).Select(x => TeamFor(caller, x))];
+            }
+
+            var claims = caller.Claims.Where(x => _teamViews.GetValueOrDefault(x.Key) == viewId).ToArray();
             var primary = claims.FirstOrDefault(x => x.Value.Primary);
 
             if (primary.Value is null)
@@ -288,80 +314,127 @@ public sealed class PlayerDirectory
 
             var direct = primary.Value.Direct;
             IEnumerable<Guid> visible = direct.Contains(nameof(AppViewPermission.ViewView)) || direct.Contains(nameof(AppViewPermission.ManageView))
-                ? _teamViews.Where(x => x.Value == viewId).Select(x => x.Key)
+                ? TeamsIn(viewId)
                 : direct.Contains(nameof(AppTeamPermission.ViewTeam)) || direct.Contains(nameof(AppTeamPermission.ManageTeam))
                     ? claims.Where(x => x.Value.Sources.Contains(primary.Key)).Select(x => x.Key).Prepend(primary.Key)
                     : [primary.Key];
 
-            return [.. visible.Distinct().Select(teamId =>
-            {
-                var claim = caller.Claims.GetValueOrDefault(teamId);
-
-                return new Team
-                {
-                    Id = teamId,
-                    Name = _teamNames[teamId],
-                    ViewId = viewId,
-                    IsMember = claim?.Member ?? false,
-                    IsPrimary = claim?.Primary ?? false,
-                };
-            })];
+            return [.. visible.Distinct().Select(x => TeamFor(caller, x))];
         }
     }
 
     /// <summary>
-    /// <c>GetViewTeamsAsync</c>, the privileged listing: every team of the View, for a caller holding the
-    /// system <c>ViewViews</c> or <c>ViewView</c> on the View; 403 for anyone else.
+    /// <c>GetViewTeamsAsync</c>, the privileged listing: refused unless the caller holds the system
+    /// <c>ViewViews</c> or <c>ViewView</c> in the View, then 404 for a View player.api does not have, then
+    /// every team of the View.
     /// </summary>
     private ICollection<Team> AllTeams(Guid? userId, Guid viewId)
     {
         lock (_gate)
         {
+            var caller = CallerOrThrow(userId);
+
+            if (!CanViewView(caller, viewId))
+            {
+                throw Forbidden("getViewTeams");
+            }
+
             if (!_views.Contains(viewId))
             {
                 throw NotFound($"View {viewId}");
             }
 
-            var caller = CallerOrThrow(userId);
-            var viewView = caller.Claims
-                .Where(x => _teamViews.GetValueOrDefault(x.Key) == viewId)
-                .Any(x => x.Value.Permissions.Contains(nameof(AppViewPermission.ViewView)));
+            return [.. TeamsIn(viewId).Select(x => TeamFor(caller, x))];
+        }
+    }
 
-            if (!caller.System.Contains(AppSystemPermission.ViewViews) && !viewView)
+    /// <summary>
+    /// <c>GetTeamAsync</c>: the system <c>ViewViews</c> reads any team (404 for one player.api does not
+    /// have); anyone else is refused a team player.api does not have, and is let read a team only with
+    /// <c>ViewTeam</c> on its claim on that team or <c>ViewView</c> on a claim in the team's View.
+    /// </summary>
+    private Team Team(Guid? userId, Guid teamId)
+    {
+        lock (_gate)
+        {
+            var caller = CallerOrThrow(userId);
+
+            if (!caller.System.Contains(AppSystemPermission.ViewViews))
             {
-                throw Forbidden();
+                if (!_teamViews.TryGetValue(teamId, out var viewId))
+                {
+                    throw Forbidden("getTeam");
+                }
+
+                var viewTeam = caller.Claims.GetValueOrDefault(teamId)?.Permissions.Contains(nameof(AppTeamPermission.ViewTeam)) ?? false;
+
+                if (!viewTeam && !HasViewPermission(caller, viewId, AppViewPermission.ViewView))
+                {
+                    throw Forbidden("getTeam");
+                }
             }
 
-            return [.. _teamViews
-                .Where(x => x.Value == viewId)
-                .Select(x => new Team { Id = x.Key, Name = _teamNames[x.Key], ViewId = viewId })];
+            return _teamViews.ContainsKey(teamId) ? TeamFor(caller, teamId) : throw NotFound($"Team {teamId}");
         }
+    }
+
+    /// <summary>
+    /// <c>GetViewAsync</c>: the system <c>ViewViews</c>, or any claim of the caller's on a team of the View
+    /// (whatever it carries), else 403; then 404 for a View player.api does not have.
+    /// </summary>
+    private View View(Guid? userId, Guid viewId)
+    {
+        lock (_gate)
+        {
+            var caller = CallerOrThrow(userId);
+
+            if (!caller.System.Contains(AppSystemPermission.ViewViews) &&
+                !caller.Claims.Keys.Any(x => _teamViews.GetValueOrDefault(x) == viewId))
+            {
+                throw Forbidden("getView");
+            }
+
+            return _views.Contains(viewId)
+                ? new View { Id = viewId, Name = ViewName(viewId) }
+                : throw NotFound($"View {viewId}");
+        }
+    }
+
+    /// <summary>The system <c>ViewViews</c>, or <c>ViewView</c> on a claim in the View.</summary>
+    private bool CanViewView(PlayerCaller caller, Guid viewId) =>
+        caller.System.Contains(AppSystemPermission.ViewViews) || HasViewPermission(caller, viewId, AppViewPermission.ViewView);
+
+    /// <summary>
+    /// Whether a claim of the caller's on a team of the View carries <paramref name="permission"/>, as
+    /// player.api's <c>TeamPermissionRequirement</c> reads a View permission: from any claim in the View,
+    /// scoped ones included.
+    /// </summary>
+    private bool HasViewPermission(PlayerCaller caller, Guid viewId, AppViewPermission permission) =>
+        caller.Claims
+            .Where(x => _teamViews.GetValueOrDefault(x.Key) == viewId)
+            .Any(x => x.Value.Permissions.Contains(permission.ToString()));
+
+    private IEnumerable<Guid> TeamsIn(Guid viewId) => _teamViews.Where(x => x.Value == viewId).Select(x => x.Key);
+
+    /// <summary>A team as player.api returns it, with the caller's own membership flags on it.</summary>
+    private Team TeamFor(PlayerCaller caller, Guid teamId)
+    {
+        var claim = caller.Claims.GetValueOrDefault(teamId);
+
+        return new Team
+        {
+            Id = teamId,
+            Name = _teamNames[teamId],
+            ViewId = _teamViews[teamId],
+            IsMember = claim?.Member ?? false,
+            IsPrimary = claim?.Primary ?? false,
+        };
     }
 
     private PlayerCaller CallerOrThrow(Guid? userId) =>
         userId is null || userId == Guid.Empty
             ? throw Unauthorized()
             : _callers.GetValueOrDefault(userId.Value) ?? new PlayerCaller();
-
-    private Team Team(Guid teamId)
-    {
-        lock (_gate)
-        {
-            return _teamViews.TryGetValue(teamId, out var viewId)
-                ? new Team { Id = teamId, Name = _teamNames[teamId], ViewId = viewId }
-                : throw NotFound($"Team {teamId}");
-        }
-    }
-
-    private View View(Guid viewId)
-    {
-        lock (_gate)
-        {
-            return _views.Contains(viewId)
-                ? new View { Id = viewId, Name = ViewName(viewId) }
-                : throw NotFound($"View {viewId}");
-        }
-    }
 
     /// <summary><c>GetViewsAsync</c>: every View, for a caller holding the system <c>ViewViews</c>; 403 otherwise.</summary>
     private List<View> Views(Guid? userId)
@@ -370,7 +443,7 @@ public sealed class PlayerDirectory
         {
             if (!CallerOrThrow(userId).System.Contains(AppSystemPermission.ViewViews))
             {
-                throw Forbidden();
+                throw Forbidden("getViews");
             }
 
             return [.. _views.Select(x => new View { Id = x, Name = ViewName(x) })];
@@ -386,8 +459,12 @@ public sealed class PlayerDirectory
     private static ApiException Unauthorized() =>
         new("Unauthorized", 401, null, new Dictionary<string, IEnumerable<string>>(), null);
 
-    private static ApiException Forbidden() =>
-        new("Forbidden", 403, null, new Dictionary<string, IEnumerable<string>>(), null);
+    /// <summary>
+    /// player.api's 403, naming the route that refused (its operation id), so a test asserting on a refusal
+    /// that surfaced as a 500 can say which player.api call it was.
+    /// </summary>
+    private static ApiException Forbidden(string route) =>
+        new($"{route}: Forbidden", 403, null, new Dictionary<string, IEnumerable<string>>(), null);
 
     private static ApiException NotFound(string what) =>
         new($"{what} not found", 404, null, new Dictionary<string, IEnumerable<string>>(), null);

@@ -112,7 +112,7 @@ public class ProxmoxTaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase
 
         Assert.Equal(0, h.Loop.Passes);
         await h.Proxmox.DidNotReceive().GetTasks();
-        Assert.Empty(h.Hub.Sends);
+        Assert.Empty(h.Hub.Calls);
 
         // And the flag it would have cleared is untouched, which is what a disabled poller looks like
         // from the UI: whatever the last enabled pass decided stands.
@@ -181,7 +181,7 @@ public class ProxmoxTaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase
         await h.Loop.Run(h.Service, h.Service.CheckTasks);
 
         Assert.False(await Flagged(VmA));
-        Assert.Empty(h.Hub.Sends);
+        Assert.Empty(h.Hub.Calls);
     }
 
     /// <summary>
@@ -330,7 +330,7 @@ public class ProxmoxTaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase
 
         await h.Loop.Run(h.Service, h.Service.CheckTasks);
 
-        Assert.Single(h.Hub.Of("Progress"));
+        Assert.Single(h.Hub.CallsOf("Progress"));
         Assert.Equal(
             [StartUpid, StopUpid],
             Notifications(h, VmA).Select(x => x.taskId).Order());
@@ -357,7 +357,7 @@ public class ProxmoxTaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase
 
         await h.Loop.Run(h.Service, h.Service.CheckTasks);
 
-        Assert.Equal(2, h.Hub.Of("Progress").Count);
+        Assert.Equal(2, h.Hub.CallsOf("Progress").Count);
         Assert.Equal([VmA.ToString(), VmB.ToString()], h.Hub.Recipients("Progress").Order());
         Assert.Equal(StartUpid, Assert.Single(Notifications(h, VmA)).taskId);
         Assert.Equal(StopUpid, Assert.Single(Notifications(h, VmB)).taskId);
@@ -395,7 +395,7 @@ public class ProxmoxTaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase
 
         await h.Loop.Run(h.Service, h.Service.CheckTasks);
 
-        Assert.Empty(h.Hub.Sends);
+        Assert.Empty(h.Hub.Calls);
         Assert.False(await Flagged(VmA));
     }
 
@@ -418,7 +418,7 @@ public class ProxmoxTaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase
 
         await h.Loop.Run(h.Service, h.Service.CheckTasks);
 
-        Assert.Empty(h.Hub.Sends);
+        Assert.Empty(h.Hub.Calls);
         Assert.False(await Flagged(VmA));
 
         // Dropped as an ordinary outcome, not as a failure: these arrive on every pass of a cluster that
@@ -437,7 +437,7 @@ public class ProxmoxTaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase
 
         await h.Loop.Run(h.Service, h.Service.CheckTasks);
 
-        Assert.Empty(h.Hub.Sends);
+        Assert.Empty(h.Hub.Calls);
         Assert.False(await Flagged(VmA));
     }
 
@@ -613,7 +613,7 @@ public class ProxmoxTaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase
         ProxmoxTaskService Service,
         PollLoop Loop,
         IProxmoxService Proxmox,
-        HubContextHarness<ProgressHub> Hub,
+        HubRecorder<ProgressHub> Hub,
         RecordingLogger<ProxmoxTaskService> Log)
     {
         /// <summary>What the cluster answers when the pass asks for its task list.</summary>
@@ -635,11 +635,11 @@ public class ProxmoxTaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase
         });
 
         var loop = new PollLoop(NewContext, proxmox);
-        var hub = new HubContextHarness<ProgressHub>();
+        var hub = new HubRecorder<ProgressHub>();
         var log = new RecordingLogger<ProxmoxTaskService>();
 
         return new Harness(
-            new ProxmoxTaskService(log, options, loop, hub.Context), loop, proxmox, hub, log);
+            new ProxmoxTaskService(log, options, loop, hub), loop, proxmox, hub, log);
     }
 
     /// <summary>
@@ -700,7 +700,7 @@ public class ProxmoxTaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase
 
     /// <summary>The notifications sent to one Vm's group, as the client would receive them.</summary>
     private static List<Notification> Notifications(Harness h, Guid vmId) =>
-        (List<Notification>)h.Hub.Of("Progress")
-            .Single(x => x.Groups.Contains(vmId.ToString()))
-            .Args[0];
+        (List<Notification>)h.Hub.CallsOf("Progress")
+            .Single(x => x.Names.Contains(vmId.ToString()))
+            .Arguments[0];
 }

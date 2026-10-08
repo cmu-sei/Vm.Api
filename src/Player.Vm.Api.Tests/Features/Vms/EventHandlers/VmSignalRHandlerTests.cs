@@ -39,11 +39,11 @@ namespace Player.Vm.Api.Tests.Features.Vms.EventHandlers;
 public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(fixture)
 {
     private readonly IViewService _views = Substitute.For<IViewService>();
-    private readonly HubContextHarness<VmHub> _hub = new();
+    private readonly HubRecorder<VmHub> _hub = new();
 
-    private VmCreatedSignalRHandler Created => new(Db, TestMapper.Mapper, _views, _hub.Context);
-    private VmUpdatedSignalRHandler Updated => new(Db, TestMapper.Mapper, _views, _hub.Context);
-    private VmDeletedSignalRHandler Deleted => new(Db, TestMapper.Mapper, _views, _hub.Context);
+    private VmCreatedSignalRHandler Created => new(Db, TestMapper.Mapper, _views, _hub);
+    private VmUpdatedSignalRHandler Updated => new(Db, TestMapper.Mapper, _views, _hub);
+    private VmDeletedSignalRHandler Deleted => new(Db, TestMapper.Mapper, _views, _hub);
 
     #region Which groups an announcement reaches
 
@@ -88,7 +88,7 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
 
         Assert.Equal<string>(
             [viewId.ToString(), first.ToString(), second.ToString()],
-            _hub.Of(VmHubMethods.VmCreated).SelectMany(x => x.Groups).ToArray());
+            _hub.CallsOf(VmHubMethods.VmCreated).SelectMany(x => x.Names).ToArray());
     }
 
     [Fact]
@@ -136,7 +136,7 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
 
         await Created.Handle(new EntityCreated<VmEntity>(vm), Ct);
 
-        Assert.Empty(_hub.Sends);
+        Assert.Empty(_hub.Calls);
     }
 
     #endregion
@@ -156,9 +156,9 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
 
         await Created.Handle(new EntityCreated<VmEntity>(vm), Ct);
 
-        var send = Assert.Single(_hub.Of(VmHubMethods.VmCreated));
-        Assert.Equal(vm.Id, Assert.IsType<VmDto>(send.Args[0]).Id);
-        Assert.Null(send.Args[1]);
+        var send = Assert.Single(_hub.CallsOf(VmHubMethods.VmCreated));
+        Assert.Equal(vm.Id, Assert.IsType<VmDto>(send.Arguments[0]).Id);
+        Assert.Null(send.Arguments[1]);
     }
 
     /// <summary>
@@ -177,7 +177,7 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
 
         await Created.Handle(new EntityCreated<VmEntity>(vm), Ct);
 
-        var sent = Assert.IsType<VmDto>(Assert.Single(_hub.Of(VmHubMethods.VmCreated)).Args[0]);
+        var sent = Assert.IsType<VmDto>(Assert.Single(_hub.CallsOf(VmHubMethods.VmCreated)).Arguments[0]);
         Assert.Equal(PowerState.On, sent.PowerState);
         Assert.Equal(["10.0.0.5"], sent.IpAddresses);
         Assert.Equal(VmType.Vsphere, sent.Type);
@@ -198,7 +198,7 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
         await Created.Handle(new EntityCreated<VmEntity>(vm), Ct);
 
         Assert.Equal(PowerState.Unknown, vm.PowerState);
-        var sent = Assert.IsType<VmDto>(Assert.Single(_hub.Of(VmHubMethods.VmCreated)).Args[0]);
+        var sent = Assert.IsType<VmDto>(Assert.Single(_hub.CallsOf(VmHubMethods.VmCreated)).Arguments[0]);
         Assert.Equal(PowerState.On, sent.PowerState);
     }
 
@@ -219,9 +219,9 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
 
         await Created.Handle(new EntityCreated<VmEntity>(vm), Ct);
 
-        var send = Assert.Single(_hub.Of(VmHubMethods.VmCreated));
-        Assert.Equal(vm.Id, Assert.IsType<VmDto>(send.Args[0]).Id);
-        Assert.Equal<string>([teamId.ToString()], send.Groups);
+        var send = Assert.Single(_hub.CallsOf(VmHubMethods.VmCreated));
+        Assert.Equal(vm.Id, Assert.IsType<VmDto>(send.Arguments[0]).Id);
+        Assert.Equal<string>([teamId.ToString()], send.Names);
     }
 
     /// <summary>
@@ -241,8 +241,8 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
 
         await Updated.Handle(TheUpdate(), Ct);
 
-        var send = Assert.Single(_hub.Of(VmHubMethods.VmUpdated));
-        Assert.Equal<string>(["name", "powerState"], (string[])send.Args[1]);
+        var send = Assert.Single(_hub.CallsOf(VmHubMethods.VmUpdated));
+        Assert.Equal<string>(["name", "powerState"], (string[])send.Arguments[1]);
     }
 
     /// <summary>
@@ -263,7 +263,7 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
 
         Assert.Equal<string>(
             ["hasPendingTasks", "ipAddresses"],
-            ((string[])Assert.Single(_hub.Of(VmHubMethods.VmUpdated)).Args[1]).Order());
+            ((string[])Assert.Single(_hub.CallsOf(VmHubMethods.VmUpdated)).Arguments[1]).Order());
     }
 
     /// <summary>
@@ -282,7 +282,7 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
 
         await Updated.Handle(TheUpdate(), Ct);
 
-        var sent = Assert.IsType<VmDto>(Assert.Single(_hub.Of(VmHubMethods.VmUpdated)).Args[0]);
+        var sent = Assert.IsType<VmDto>(Assert.Single(_hub.CallsOf(VmHubMethods.VmUpdated)).Arguments[0]);
         Assert.Equal("renamed", sent.Name);
     }
 
@@ -296,10 +296,10 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
 
         await Created.Handle(new EntityCreated<VmEntity>(vm), Ct);
 
-        var send = _hub.Of(VmHubMethods.VmCreated).Single(x => x.Groups.Contains(first.ToString()));
+        var send = _hub.CallsOf(VmHubMethods.VmCreated).Single(x => x.Names.Contains(first.ToString()));
         Assert.Equal<Guid>(
             new[] { first, second }.Order(),
-            Assert.IsType<VmDto>(send.Args[0]).TeamIds.Order());
+            Assert.IsType<VmDto>(send.Arguments[0]).TeamIds.Order());
     }
 
     /// <summary>
@@ -315,9 +315,9 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
 
         await Deleted.Handle(new EntityDeleted<VmEntity>(vm), Ct);
 
-        var send = Assert.Single(_hub.Of(VmHubMethods.VmDeleted));
-        Assert.Equal(vm.Id, Assert.IsType<Guid>(send.Args[0]));
-        Assert.Single(send.Args);
+        var send = Assert.Single(_hub.CallsOf(VmHubMethods.VmDeleted));
+        Assert.Equal(vm.Id, Assert.IsType<Guid>(send.Arguments[0]));
+        Assert.Single(send.Arguments);
     }
 
     #endregion
@@ -408,9 +408,7 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
         var vm = await Db.Vms.SingleAsync(x => x.Id == seeded.Id, Ct);
         await Deleted.Handle(new EntityDeleted<VmEntity>(vm), Ct);
 
-        Assert.Equal<string>(
-            [HubContextHarness<VmHub>.Everyone],
-            _hub.Recipients(VmHubMethods.VmDeleted));
+        Assert.Equal(HubAudience.All, Assert.Single(_hub.CallsOf(VmHubMethods.VmDeleted)).Audience);
     }
 
     /// <summary>
@@ -426,7 +424,7 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
 
         await Deleted.Handle(new EntityDeleted<VmEntity>(vm), Ct);
 
-        Assert.DoesNotContain(HubContextHarness<VmHub>.Everyone, _hub.Recipients(VmHubMethods.VmDeleted));
+        Assert.DoesNotContain(_hub.CallsOf(VmHubMethods.VmDeleted), x => x.Audience == HubAudience.All);
     }
 
     #endregion

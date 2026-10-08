@@ -39,10 +39,10 @@ namespace Player.Vm.Api.Tests.Features.Vms.EventHandlers;
 public class VmTeamSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(fixture)
 {
     private readonly IViewService _views = Substitute.For<IViewService>();
-    private readonly HubContextHarness<VmHub> _hub = new();
+    private readonly HubRecorder<VmHub> _hub = new();
 
-    private VmTeamCreatedSignalRHandler Created => new(Db, TestMapper.Mapper, _views, _hub.Context);
-    private VmTeamDeletedSignalRHandler Deleted => new(Db, TestMapper.Mapper, _views, _hub.Context);
+    private VmTeamCreatedSignalRHandler Created => new(Db, TestMapper.Mapper, _views, _hub);
+    private VmTeamDeletedSignalRHandler Deleted => new(Db, TestMapper.Mapper, _views, _hub);
 
     #region Who hears that a team gained or lost a Vm
 
@@ -207,8 +207,8 @@ public class VmTeamSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBa
 
         await Created.Handle(new EntityCreated<VmTeam>(TeamRow(vm, teamId)), Ct);
 
-        var send = Assert.Single(_hub.Of(VmHubMethods.VmCreated));
-        Assert.Equal(vm.Id, Assert.IsType<VmDto>(Assert.Single(send.Args)).Id);
+        var send = Assert.Single(_hub.CallsOf(VmHubMethods.VmCreated));
+        Assert.Equal(vm.Id, Assert.IsType<VmDto>(Assert.Single(send.Arguments)).Id);
     }
 
     /// <summary>
@@ -223,8 +223,8 @@ public class VmTeamSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBa
 
         await Deleted.Handle(new EntityDeleted<VmTeam>(TeamRow(vm, teamId)), Ct);
 
-        var send = Assert.Single(_hub.Of(VmHubMethods.VmDeleted));
-        Assert.Equal(vm.Id, Assert.IsType<Guid>(Assert.Single(send.Args)));
+        var send = Assert.Single(_hub.CallsOf(VmHubMethods.VmDeleted));
+        Assert.Equal(vm.Id, Assert.IsType<Guid>(Assert.Single(send.Arguments)));
     }
 
     #endregion
@@ -266,7 +266,7 @@ public class VmTeamSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBa
 
         await Created.Handle(new EntityCreated<VmTeam>(new VmTeam(teamId, Guid.NewGuid())), Ct);
 
-        Assert.Empty(_hub.Sends);
+        Assert.Empty(_hub.Calls);
     }
 
     /// <summary>
@@ -291,9 +291,9 @@ public class VmTeamSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBa
 
         await Deleted.Handle(new EntityDeleted<VmTeam>(new VmTeam(teamId, vmId)), Ct);
 
-        var send = Assert.Single(_hub.Of(VmHubMethods.VmDeleted));
-        Assert.Equal<string>([teamId.ToString()], send.Groups);
-        Assert.Equal(vmId, Assert.IsType<Guid>(Assert.Single(send.Args)));
+        var send = Assert.Single(_hub.CallsOf(VmHubMethods.VmDeleted));
+        Assert.Equal<string>([teamId.ToString()], send.Names);
+        Assert.Equal(vmId, Assert.IsType<Guid>(Assert.Single(send.Arguments)));
     }
 
     #endregion

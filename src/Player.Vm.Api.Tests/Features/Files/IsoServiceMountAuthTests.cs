@@ -78,7 +78,7 @@ public class IsoServiceMountAuthTests
     }
 
     private Task<string> Mount(params Guid[] vmTeamIds) =>
-        Service().ResolveMountValueAsync(VmId, VmType.Proxmox, vmTeamIds, "submitted", CancellationToken.None);
+        Service().ResolveMountValueAsync(VmId, VmType.Proxmox, vmTeamIds, "submitted", TestContext.Current.CancellationToken);
 
     private async Task AssertRefused(params Guid[] vmTeamIds)
     {
@@ -247,7 +247,7 @@ public class IsoServiceMountAuthTests
             .Returns<ICollection<Team>>(_ => throw new ApiException("Forbidden", 403, null, new Dictionary<string, IEnumerable<string>>(), null));
 
     private Task<IReadOnlyList<ViewTeams>> ResolveViewTeams(params Guid[] vmTeamIds) =>
-        Service().ResolveViewTeamsForVmAsync(vmTeamIds, CancellationToken.None);
+        Service().ResolveViewTeamsForVmAsync(vmTeamIds, TestContext.Current.CancellationToken);
 
     [Fact]
     public async Task Picker_OffersAVmTeamTheCallerMayEdit()
@@ -282,19 +282,20 @@ public class IsoServiceMountAuthTests
     }
 
     // vm.api believing the caller holds view-level authority is no guarantee player.api agrees, and a
-    // refusal from the privileged endpoint must not lose a team the mount will accept.
+    // refusal from the privileged endpoint must not lose a team the mount will accept. The caller is a
+    // member of the View's other team, which is what player.api lets read the View itself.
     [Fact]
     public async Task Picker_StillOffersTheTeam_WhenTheAllTeamsListingIsRefused()
     {
         ViewExists(ViewId);
-        CallerIsIn(ViewId);   // no memberships at all
+        CallerIsIn(ViewId, TeamB);
         ControlsEveryVm();
         AllTeamsListingIsRefused(ViewId);
 
-        var team = Assert.Single(Assert.Single(await ResolveViewTeams(TeamA)).Teams);
+        var teams = Assert.Single(await ResolveViewTeams(TeamA)).Teams;
 
-        Assert.Equal(TeamA, team.Id);
-        Assert.Equal(TeamA.ToString(), team.Name);   // degraded to an id-only row rather than dropped
+        // Degraded to an id-only row rather than dropped.
+        Assert.Equal(TeamA.ToString(), Assert.Single(teams, t => t.Id == TeamA).Name);
     }
 
     // An admin on a team the VM is not on sees their own team's ISOs: the mount accepts that scope, so
@@ -425,8 +426,10 @@ public class IsoServiceMountAuthTests
             .Returns<ICollection<Team>>(_ => throw new ApiException("Not Found", 404, null, new Dictionary<string, IEnumerable<string>>(), null));
 
         // Control through the system permission, which answers before PlayerService reads the View's
-        // teams: with the View's teams refused, a team or View grant could not be read either.
+        // teams: with the View's teams refused, a team or View grant could not be read either. ViewViews
+        // is what player.api's all-teams listing and View read accept from a caller with no team there.
         _player.Grant(b => b.Holding(Player.Vm.Api.Infrastructure.Authorization.AppSystemPermission.ControlVms));
+        MayListTheViewsTeams();
 
         var team = Assert.Single(Assert.Single(await ResolveViewTeams(TeamA)).Teams);
 

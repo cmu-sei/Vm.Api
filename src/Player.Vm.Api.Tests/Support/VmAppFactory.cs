@@ -4,7 +4,7 @@
 // The per-class factory variant: vm.api's tests arrange and assert on the NSubstitute doubles below (the
 // hypervisor services, the player.api clients, the task pollers), so one host serves one test class.
 // Hub contexts stay real: HubConnectionTests connects real SignalR clients to the hosted hubs, and the
-// handlers that broadcast are tested against HubContextHarness directly. Program.Main runs
+// handlers that broadcast are tested against HubRecorders of their own. Program.Main runs
 // InitializeDatabase with no switch to skip it, so the host gets a pair of throwaway databases of its own.
 
 using System;

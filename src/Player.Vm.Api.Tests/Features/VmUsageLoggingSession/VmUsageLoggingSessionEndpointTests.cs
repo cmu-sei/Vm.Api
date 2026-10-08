@@ -264,6 +264,49 @@ public class VmUsageLoggingSessionEndpointTests(
     #region The permission each route asks for
 
     /// <summary>
+    /// Every route whose permission is scoped to a View, with the View permission it asks for and the
+    /// message it refuses with. The session, the list filter and the create body all name this test's View.
+    /// </summary>
+    public static TheoryData<string, string, AppViewPermission, string> EveryViewScopedGate => new()
+    {
+        { "GET", "/{id}", AppViewPermission.ViewView, "You do not have permission to view the specified Vm Usage Log" },
+        { "GET", "?viewId={view}", AppViewPermission.ViewView, "You do not have permission to view Vm Usage Logs." },
+        { "GET", "/{id}/download", AppViewPermission.ViewView, "You do not have permission to view the specified Vm Usage Log" },
+        { "POST", "", AppViewPermission.ManageView, "You do not have permission to create a Vm Usage Log" },
+        { "PUT", "/{id}", AppViewPermission.ManageView, "You do not have permission to edit the specified Vm Usage Log" },
+        { "DELETE", "/{id}", AppViewPermission.ManageView, "You do not have permission to delete the specified Vm Usage Log" },
+        { "POST", "/{id}/endsession", AppViewPermission.ManageView, "You do not have permission to end the specified Vm Usage Log" },
+    };
+
+    [Theory]
+    [MemberData(nameof(EveryViewScopedGate))]
+    public async Task EachViewScopedRoute_is_forbidden_for_a_caller_holding_its_permission_only_on_another_view(
+        string method, string suffix, AppViewPermission view, string message)
+    {
+        var session = await SeedSession();
+        var actor = await Actor().Holding(view, Guid.NewGuid()).SeedAsync();
+
+        var response = await SendInThisView(method, suffix, session.Id, Client(actor));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(message, await Title(response));
+    }
+
+    [Theory]
+    [MemberData(nameof(EveryViewScopedGate))]
+    public async Task EachViewScopedRoute_is_allowed_for_a_caller_holding_exactly_its_permission_on_the_view(
+        string method, string suffix, AppViewPermission view, string message)
+    {
+        var session = await SeedSession();
+        var actor = await Actor().Holding(view, _viewId).SeedAsync();
+
+        var response = await SendInThisView(method, suffix, session.Id, Client(actor));
+
+        Assert.True(response.IsSuccessStatusCode, $"{method} {suffix} answered {(int)response.StatusCode}");
+        Assert.DoesNotContain(message, await response.Content.ReadAsStringAsync(Ct));
+    }
+
+    /// <summary>
     /// Every gated route, the permission pair its handler asks player.api for, and the message it refuses
     /// with. <c>report</c> is absent because it does not refuse - see
     /// <see cref="Report_WithoutTheSystemPermission_ReturnsOnlyTheCallersOwnActivity"/>.
@@ -348,49 +391,6 @@ public class VmUsageLoggingSessionEndpointTests(
         Assert.True(
             response.IsSuccessStatusCode,
             $"{method} {suffix} answered {(int)response.StatusCode}");
-        Assert.DoesNotContain(message, await response.Content.ReadAsStringAsync(Ct));
-    }
-
-    /// <summary>
-    /// Every route whose permission is scoped to a View, with the View permission it asks for and the
-    /// message it refuses with. The session, the list filter and the create body all name this test's View.
-    /// </summary>
-    public static TheoryData<string, string, AppViewPermission, string> EveryViewScopedGate => new()
-    {
-        { "GET", "/{id}", AppViewPermission.ViewView, "You do not have permission to view the specified Vm Usage Log" },
-        { "GET", "?viewId={view}", AppViewPermission.ViewView, "You do not have permission to view Vm Usage Logs." },
-        { "GET", "/{id}/download", AppViewPermission.ViewView, "You do not have permission to view the specified Vm Usage Log" },
-        { "POST", "", AppViewPermission.ManageView, "You do not have permission to create a Vm Usage Log" },
-        { "PUT", "/{id}", AppViewPermission.ManageView, "You do not have permission to edit the specified Vm Usage Log" },
-        { "DELETE", "/{id}", AppViewPermission.ManageView, "You do not have permission to delete the specified Vm Usage Log" },
-        { "POST", "/{id}/endsession", AppViewPermission.ManageView, "You do not have permission to end the specified Vm Usage Log" },
-    };
-
-    [Theory]
-    [MemberData(nameof(EveryViewScopedGate))]
-    public async Task EachViewScopedRoute_is_forbidden_for_a_caller_holding_its_permission_only_on_another_view(
-        string method, string suffix, AppViewPermission view, string message)
-    {
-        var session = await SeedSession();
-        var actor = await Actor().Holding(view, Guid.NewGuid()).SeedAsync();
-
-        var response = await SendInThisView(method, suffix, session.Id, Client(actor));
-
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-        Assert.Equal(message, await Title(response));
-    }
-
-    [Theory]
-    [MemberData(nameof(EveryViewScopedGate))]
-    public async Task EachViewScopedRoute_is_allowed_for_a_caller_holding_exactly_its_permission_on_the_view(
-        string method, string suffix, AppViewPermission view, string message)
-    {
-        var session = await SeedSession();
-        var actor = await Actor().Holding(view, _viewId).SeedAsync();
-
-        var response = await SendInThisView(method, suffix, session.Id, Client(actor));
-
-        Assert.True(response.IsSuccessStatusCode, $"{method} {suffix} answered {(int)response.StatusCode}");
         Assert.DoesNotContain(message, await response.Content.ReadAsStringAsync(Ct));
     }
 
@@ -512,6 +512,30 @@ public class VmUsageLoggingSessionEndpointTests(
             await RootClient.GetAsync($"{BaseRoute}/{wanted.Id}", Ct));
 
         Assert.Equal("wanted", result.SessionName);
+    }
+
+    [Fact]
+    public async Task Get_is_allowed_for_a_caller_holding_exactly_ViewView_on_the_sessions_view()
+    {
+        var session = await SeedSession(name: "visible");
+        var actor = await Actor().Holding(AppViewPermission.ViewView, _viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"{BaseRoute}/{session.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("visible", (await Get<SessionView>(response)).SessionName);
+    }
+
+    [Fact]
+    public async Task Get_is_forbidden_for_a_caller_holding_ViewView_only_on_another_view()
+    {
+        var session = await SeedSession();
+        var actor = await Actor().Holding(AppViewPermission.ViewView, Guid.NewGuid()).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"{BaseRoute}/{session.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("You do not have permission to view the specified Vm Usage Log", await Title(response));
     }
 
     #endregion
@@ -912,6 +936,21 @@ public class VmUsageLoggingSessionEndpointTests(
     }
 
     [Fact]
+    public async Task Edit_is_forbidden_for_a_caller_holding_ManageView_only_on_another_view_and_changes_nothing()
+    {
+        var session = await SeedSession(name: "before");
+        var actor = await Actor().Holding(AppViewPermission.ManageView, Guid.NewGuid()).SeedAsync();
+
+        var response = await Client(actor).PutAsync(
+            $"{BaseRoute}/{session.Id}", Body(new { viewId = _viewId, sessionName = "after" }), Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        await using var context = NewLoggingContext();
+        Assert.Equal("before", (await context.VmUsageLoggingSessions.SingleAsync(Ct)).SessionName);
+    }
+
+    [Fact]
     public async Task Edit_WhenRefused_ChangesNothing()
     {
         var session = await SeedSession(name: "before");
@@ -1016,6 +1055,34 @@ public class VmUsageLoggingSessionEndpointTests(
     }
 
     [Fact]
+    public async Task EndSession_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_sessions_view()
+    {
+        var session = await SeedSession(end: DateTimeOffset.MinValue);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, _viewId).SeedAsync();
+
+        var response = await Client(actor).PostAsync($"{BaseRoute}/{session.Id}/endsession", Body(new { }), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await using var context = NewLoggingContext();
+        Assert.True((await context.VmUsageLoggingSessions.SingleAsync(Ct)).SessionEnd > Noon);
+    }
+
+    [Fact]
+    public async Task EndSession_is_forbidden_for_a_caller_holding_ManageView_only_on_another_view_and_leaves_the_session_open()
+    {
+        var session = await SeedSession(end: DateTimeOffset.MinValue);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, Guid.NewGuid()).SeedAsync();
+
+        var response = await Client(actor).PostAsync($"{BaseRoute}/{session.Id}/endsession", Body(new { }), Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        await using var context = NewLoggingContext();
+        Assert.Equal(DateTimeOffset.MinValue, (await context.VmUsageLoggingSessions.SingleAsync(Ct)).SessionEnd);
+    }
+
+    [Fact]
     public async Task EndSession_WhenRefused_LeavesTheSessionOpen()
     {
         var session = await SeedSession(end: DateTimeOffset.MinValue);
@@ -1080,6 +1147,34 @@ public class VmUsageLoggingSessionEndpointTests(
 
         await using var context = NewLoggingContext();
         Assert.Empty(await context.VmUsageLogEntries.ToArrayAsync(Ct));
+    }
+
+    [Fact]
+    public async Task Delete_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_sessions_view()
+    {
+        var session = await SeedSession();
+        var actor = await Actor().Holding(AppViewPermission.ManageView, _viewId).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"{BaseRoute}/{session.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        await using var context = NewLoggingContext();
+        Assert.Empty(await context.VmUsageLoggingSessions.ToArrayAsync(Ct));
+    }
+
+    [Fact]
+    public async Task Delete_is_forbidden_for_a_caller_holding_ManageView_only_on_another_view_and_keeps_the_session()
+    {
+        var session = await SeedSession();
+        var actor = await Actor().Holding(AppViewPermission.ManageView, Guid.NewGuid()).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"{BaseRoute}/{session.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        await using var context = NewLoggingContext();
+        Assert.Single(await context.VmUsageLoggingSessions.ToArrayAsync(Ct));
     }
 
     [Fact]
@@ -1291,6 +1386,18 @@ public class VmUsageLoggingSessionEndpointTests(
         Assert.DoesNotContain('\n', csv.Replace("\r\n", string.Empty));
     }
 
+    [Fact]
+    public async Task Download_is_forbidden_for_a_caller_holding_ViewView_only_on_another_view()
+    {
+        var session = await SeedSession();
+        var actor = await Actor().Holding(AppViewPermission.ViewView, Guid.NewGuid()).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"{BaseRoute}/{session.Id}/download", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("You do not have permission to view the specified Vm Usage Log", await Title(response));
+    }
+
     /// <summary>
     /// The error paths are JSON even though the route declares <c>[Produces("text/csv")]</c>, because the
     /// exception middleware writes the response itself rather than going through content negotiation.
@@ -1472,6 +1579,19 @@ public class VmUsageLoggingSessionEndpointTests(
                 ("bob", "zebra", "vm-1"),
             ],
             result.Select(x => (x.UserName, x.SessionName, x.VmName)));
+    }
+
+    [Fact]
+    public async Task Report_includes_everyones_activity_for_a_caller_holding_exactly_ViewViews()
+    {
+        var session = await SeedSession(start: Noon, end: Noon.AddHours(1));
+        await SeedEntry(session, userId: Guid.NewGuid(), userName: "someone else");
+        var actor = await Actor().Holding(AppSystemPermission.ViewViews).SeedAsync();
+
+        var response = await Client(actor).GetAsync(
+            $"{BaseRoute}/report?reportStart={Query(Noon.AddDays(-1))}&reportEnd={Query(Noon.AddDays(1))}", Ct);
+
+        Assert.Equal("someone else", Assert.Single(await Get<VmUsageReport[]>(response)).UserName);
     }
 
     /// <summary>
@@ -1732,13 +1852,17 @@ public class VmUsageLoggingSessionEndpointTests(
     /// <summary>
     /// Takes one system permission from Root, which holds no View permission, so Root then holds every
     /// system permission but <paramref name="system"/> and nothing else: a refusal names the system
-    /// permission the route asked for. The View permission the same gate accepts is named for the reader;
-    /// Root never held it. Called before Root's first request, which is when its permissions are read.
+    /// permission the route asked for. The View permission the same gate accepts, when there is one, is
+    /// asserted to be one Root does not hold anywhere, so the refusal cannot have been answered by it.
+    /// Called before Root's first request, which is when its permissions are read.
     /// </summary>
     private void Deny(AppSystemPermission system, AppViewPermission? view)
     {
-        _ = view;
-        Factory.Player.Caller(Root.Id).System.Remove(system);
+        var root = Factory.Player.Caller(Root.Id);
+        root.System.Remove(system);
+
+        if (view is { } permission)
+            Assert.DoesNotContain(root.Claims.Values, x => x.Permissions.Contains(permission.ToString()));
     }
 
     #endregion

@@ -39,22 +39,38 @@ public class NetworkServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fix
     #region Read and write gates
 
     [Fact]
-    public async Task Reads_are_forbidden_for_a_caller_holding_only_ViewVms()
+    public async Task GetByViewId_is_forbidden_for_a_caller_holding_only_ViewVms()
     {
         var network = await SeededNetwork();
         Holding(AppSystemPermission.ViewVms);
 
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetByViewId(network.ViewId, Ct));
+    }
+
+    [Fact]
+    public async Task GetById_is_forbidden_for_a_caller_holding_only_ViewVms()
+    {
+        var network = await SeededNetwork();
+        Holding(AppSystemPermission.ViewVms);
+
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetById(network.ViewId, network.Id, Ct));
     }
 
     [Fact]
-    public async Task Reads_WithAViewOnlyPermission_AreAllowed()
+    public async Task GetByViewId_WithAViewOnlyPermission_IsAllowed()
     {
         var network = await SeededNetwork();
         Holding(AppSystemPermission.ViewNetworks);
 
         Assert.Equal<Guid>([network.Id], (await Service.GetByViewId(network.ViewId, Ct)).Select(x => x.Id).ToArray());
+    }
+
+    [Fact]
+    public async Task GetById_WithAViewOnlyPermission_IsAllowed()
+    {
+        var network = await SeededNetwork();
+        Holding(AppSystemPermission.ViewNetworks);
+
         Assert.Equal(network.Id, (await Service.GetById(network.ViewId, network.Id, Ct)).Id);
     }
 

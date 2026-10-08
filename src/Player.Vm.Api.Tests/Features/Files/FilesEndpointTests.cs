@@ -235,13 +235,26 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     [Fact]
+    public async Task Upload_is_allowed_for_a_caller_holding_exactly_UploadViewIsos_on_the_view()
+    {
+        var actor = await Actor()
+            .Holding(AppViewPermission.UploadViewIsos, _viewId)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsync($"/api/views/{_viewId}/isos", Form(file: "boot.iso"), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal<string>([_viewId.ToString()], UploadRequest().ScopeIds);
+    }
+
+    [Fact]
     public async Task Upload_is_forbidden_for_a_caller_holding_only_DeleteViewIsos()
     {
         var actor = await Actor()
             .Holding(AppViewPermission.DeleteViewIsos, _viewId)
             .SeedAsync();
 
-        var response = await Client(actor).PostAsync(IsoRoute, Form(file: "boot.iso"), Ct);
+        var response = await Client(actor).PostAsync($"/api/views/{_viewId}/isos", Form(file: "boot.iso"), Ct);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
         await Factory.IsoProvider.DidNotReceive()
@@ -271,14 +284,51 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     [Fact]
-    public async Task ListView_is_forbidden_for_a_caller_holding_ViewView_only_in_another_view()
+    public async Task ListView_is_allowed_for_a_caller_holding_exactly_ViewView_on_the_view()
     {
-        await RootSees(_viewId, (Guid.NewGuid(), "red"));
+        var teamId = Guid.NewGuid();
+        await RootSees(_viewId, (teamId, "red"));
+        Holds((_viewId, "public.iso"), (teamId, "red-only.iso"));
         var actor = await Actor()
+            .Holding(AppViewPermission.ViewView, _viewId)
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{_viewId}/isos", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<ManagedIsoResult>(JsonOptions, Ct);
+        Assert.Equal<string>(["public.iso"], result.Isos.Select(x => x.Filename));
+        Assert.Contains(result.TeamIsoResults, x => x.TeamId == teamId);
+    }
+
+    // A member of one of the View's teams, holding a View permission that is not one the listing accepts.
+    [Fact]
+    public async Task ListView_is_forbidden_for_a_member_of_a_team_in_the_view_holding_only_UploadViewIsos()
+    {
+        var teamId = Guid.NewGuid();
+        await RootSees(_viewId, (teamId, "red"));
+        var actor = await Actor()
+            .MemberOf(teamId)
+            .Holding(AppViewPermission.UploadViewIsos, _viewId)
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{_viewId}/isos", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    // A member of one of the View's teams, so the listing has a team to show and the permission is what refuses.
+    [Fact]
+    public async Task ListView_is_forbidden_for_a_member_of_the_view_holding_ViewView_only_in_another_view()
+    {
+        var teamId = Guid.NewGuid();
+        await RootSees(_viewId, (teamId, "red"));
+        var actor = await Actor()
+            .MemberOf(teamId)
             .Holding(AppViewPermission.ViewView, Guid.NewGuid())
             .SeedAsync();
 
-        var response = await Client(actor).GetAsync(IsoRoute, Ct);
+        var response = await Client(actor).GetAsync($"/api/views/{_viewId}/isos", Ct);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
@@ -294,6 +344,31 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var response = await Client(operatorWithNoTeam).GetAsync(IsoRoute, Ct);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task ListAll_is_allowed_for_a_caller_holding_exactly_ViewViews()
+    {
+        var other = Guid.NewGuid();
+        Factory.Player.AddView(other);
+        var actor = await Actor().Holding(AppSystemPermission.ViewViews).SeedAsync();
+
+        var response = await Client(actor).GetAsync("/api/isos", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var results = await response.Content.ReadFromJsonAsync<ManagedIsoResult[]>(JsonOptions, Ct);
+        Assert.Equal<Guid>(new[] { _viewId, other }.Order(), results.Select(x => x.ViewId).Order());
+    }
+
+    /// <summary>A caller holding ManageViews alone is answered the listing with a 500.</summary>
+    [Fact]
+    public async Task ListAll_answers_a_caller_holding_only_ManageViews_with_a_server_error()
+    {
+        var actor = await Actor().Holding(AppSystemPermission.ManageViews).SeedAsync();
+
+        var response = await Client(actor).GetAsync("/api/isos", Ct);
+
+        Assert.StartsWith("getViews: Forbidden", (await AssertJsonError(HttpStatusCode.InternalServerError, response)).Detail);
     }
 
     [Fact]
@@ -387,13 +462,27 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     [Fact]
+    public async Task Delete_is_allowed_for_a_caller_holding_exactly_DeleteViewIsos_on_the_view()
+    {
+        var actor = await Actor()
+            .Holding(AppViewPermission.DeleteViewIsos, _viewId)
+            .SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/views/{_viewId}/isos?scope=view&filename=boot.iso", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await Factory.IsoProvider.Received(1)
+            .DeleteAsync(_viewId, _viewId.ToString(), "boot.iso", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
     public async Task Delete_is_forbidden_for_a_caller_holding_only_UploadViewIsos_and_removes_nothing()
     {
         var actor = await Actor()
             .Holding(AppViewPermission.UploadViewIsos, _viewId)
             .SeedAsync();
 
-        var response = await Client(actor).DeleteAsync($"{IsoRoute}?scope=view&filename=boot.iso", Ct);
+        var response = await Client(actor).DeleteAsync($"/api/views/{_viewId}/isos?scope=view&filename=boot.iso", Ct);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
 

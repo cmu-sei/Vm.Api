@@ -84,7 +84,8 @@ and only the edges are replaced.
   count to the other class's, so that between them the two still account for every action and a route
   added to the controller cannot go untested on one side of the flag.
 - `HubConnectionTests` covers the edge of the two SignalR hubs - where they are mapped, who may reach
-  them, and one round trip over a real connection. It is described with the other hub classes below.
+  them, and round trips over real WebSocket connections to each, `VmHub`'s as an actor. It is described
+  with the other hub classes below.
 
 Three classes cover authorization, which is where a green run is easiest to mistake for a safe one:
 every other test in the suite runs as a caller who is allowed to do everything unless it says otherwise,
@@ -148,9 +149,10 @@ both.
   authorization rather than only the negotiate route, that nothing else is mapped as a hub - including
   `Player.Vm.Api.Hubs.VmHub`, a second unmapped copy of the type that would compile and pass everything
   if edited by mistake - and that a broadcast addressed to a joined name actually arrives while one
-  addressed elsewhere does not. Only `ProgressHub` is driven over the connection: a hub invocation is not
-  an HTTP request, so it cannot carry `X-Test-Session`, and a `VmHub` method invoked over a connection
-  would resolve the *host's* database rather than the test's.
+  addressed elsewhere does not. Both hubs are driven over WebSocket connections: an actor connected to
+  `VmHub` joins a View and hears what is sent to its own team's group, and joins a Vm that exists only in
+  its test's database (see How a request finds its database for why that works over a WebSocket and would
+  not over long polling).
 
 `VmUsageLoggingServiceTests` covers `VmUsageLoggingService`, the writer behind that log, directly
 against the usage log database - which sessions a console visit is logged against, what a row says, when
@@ -408,7 +410,8 @@ resolve to the test project's folders, so references to production types are wri
 - `Support/` also holds vm.api's own extras, each named for what it fakes: `FakeProxmoxCluster` (a PVE
   cluster at the socket), `FakeChangeFeed` (vCenter's property collector), `PollLoop` (a counted turn of a
   polling `BackgroundService`, with `PollLoopSmokeTests`), `PlayerDirectory`, `PlayerHarness` and
-  `PlayerServiceSpy` (player.api's side of the seam, below), `RecordingHubHarness` and `HubContextHarness`.
+  `PlayerServiceSpy` (player.api's side of the seam, below, with `PlayerDirectoryTests` pinning the
+  directory to player.api's source), and `RecordingHubHarness`.
 
 ## The database
 
@@ -519,10 +522,13 @@ request reaches them until `CreateHost` returns; after that it throws. `HttpHarn
 request never lands there, that a request with no session header is refused, and that a context resolved
 outside a request after startup throws.
 
-The limit of that mechanism is the hubs. A hub invocation is not an HTTP request, so a hub method
-resolving a `VmContext` gets the host's own throwaway database rather than the calling test's. That is
-why `VmHub` is driven by direct invocation over the test's own context and only `ProgressHub`, which
-touches no database, is driven over a live connection in `HubConnectionTests`.
+Hub invocations reach the calling test's database too, over WebSockets. `HubConnectionTests` connects
+through `Factory.Server.CreateWebSocketClient()` with the actor's identity and the test's `X-Test-Session`
+header on the upgrade request (`SkipNegotiation`, the standard's recipe, CONVENTIONS.md section 1), and
+every invocation on that connection runs inside that request, so `TestDatabaseScope` finds the header and
+`PlayerService` answers for the connected actor. Under long polling each invocation would arrive in a poll
+request carrying no session header. The hub methods' own behaviour is still tested by direct invocation
+(`VmHubGroupTests`, `VmHubPresenceTests`), over the test's own context.
 
 ## Callers and permissions
 
@@ -543,6 +549,18 @@ the membership that grants it. The `GetMy*` routes answer for the user of the re
 (its `sub` claim), and a request with no credentials is refused with a 401, as player.api refuses the empty
 `Authorization` header vm.api forwards for it. A View nobody added answers 404 on its routes, so a test's
 Views have to exist in the directory, which the arrangement helpers see to.
+
+Every route authorizes before it looks anything up, as player.api's `BaseHandler` does: `GetTeamAsync`
+takes the system `ViewViews`, `ViewTeam` on the caller's claim on the team or `ViewView` on a claim in its
+View, and refuses anyone else with a 403, a team player.api does not have included; `GetViewAsync` takes
+`ViewViews` or any claim of the caller's on a team of the View; `GetUserViewTeamsAsync` asked about another
+user takes `ViewViews` or `ViewView` in the View and then answers every team of it; the privileged listings
+answer 403 before 404. Every team returned carries the caller's own `IsMember` and `IsPrimary`, as
+player.api's resolvers set them. `Support/PlayerDirectoryTests.cs` pins each of these rules to player.api's
+source, with the file and lines in each test's summary (the fidelity rule for a sibling-API double,
+CONVENTIONS.md section 1). One consequence shows in the Map tests: `VmService.validateViewAndTeams` looks the
+View and the teams up in player.api as the caller, so a Map write needs `ViewTeam` on its teams besides the
+Map permission (an entry in the defect document).
 
 An actor (`Support/TestActor.cs`) is the identity a request carries (the `sub` and `name` claims the shared
 `TestAuthHandler` mints) and the player.api data its builder steps write under its id:
@@ -593,9 +611,9 @@ a substituted client and `IViewService` answered by a directory of its own, for 
 how a service asks rather than what it is told (one batched question rather than one per team, no elevated
 check for the caller's own Vm), `Support/PlayerServiceSpy.cs` wraps the real service and records each call;
 every answer is still the real one. `PlayerServiceAuthorizationTests` covers `PlayerService` itself against
-the client, and `TestActorTests` pins what the real `PlayerService` derives from each builder step (the
-step's permission passes and its near misses do not) and the directory's fidelity to player.api: the primary
-team, the View teams, the gated listings and what a scoped claim carries.
+the client, `TestActorTests` pins what the real `PlayerService` derives from each builder step (the step's
+permission passes and its near misses do not), and `PlayerDirectoryTests` the directory's fidelity to
+player.api, route by route.
 
 ## The fakes that are not in the standard
 
@@ -609,12 +627,11 @@ team, the View teams, the gated listings and what a scoped claim carries.
   log of every send with the list of groups it was addressed to, because the presence tests assert the
   first and last `ActiveVirtualMachine` across groups and whether one send named several groups, which the
   shared per-group proxies and `Sent<T>` do not express.
-- `Support/HubContextHarness.cs` records what something outside a hub (an entity-event handler, a task
-  poller) sends through an `IHubContext<THub>`. It remains beside the shared `HubRecorder`, which has its
-  `Recipients` and `FailsFor`, because these tests also read what the recorder does not keep: one ordered log
-  of every send with its group and arguments (`Sends`, asserted empty for "nothing was sent at all"), every
-  send of one method across groups (`Of`, counted for "announced twice"), and `Clients.All` among the
-  recipients. A `HubRecorder` reader for the ordered log would let it go. The host itself keeps the real
+- What something outside a hub (an entity-event handler, a task poller) sends through an
+  `IHubContext<THub>` is recorded by a shared `HubRecorder<THub>` the test constructs and hands it: `Calls`,
+  every send in order (asserted empty for "nothing was sent at all"), `CallsOf(method)` (counted for
+  "announced twice", with `HubAudience.All` among the audiences), `Recipients` and `FailsFor`. vm.api's own
+  `HubContextHarness` went once the shared recorder kept the ordered log. The host itself keeps the real
   hub contexts.
 - `Support/TestMapper.cs` is the application's real AutoMapper configuration, built through DI as
   `Startup` builds it (`ConsoleUrlResolver` needs `ConsoleUrlOptions`, registered with recognizable urls).
@@ -647,7 +664,7 @@ reviewer judges against; what follows is how they land in this repository.
    (`DeleteMap_is_forbidden_for_a_caller_holding_only_ViewTeamMaps_and_leaves_the_row`). For a hub method,
    attach the shared `HubHarness` and invoke it directly: the group names are what a hub test is about,
    and only the hub's edge - its mapping, its authorization, a round trip - is worth a live connection.
-   For an entity-event handler, construct it over `Db` with a `HubContextHarness` and call `Handle` with
+   For an entity-event handler, construct it over `Db` with a `HubRecorder<VmHub>` of its own and call `Handle` with
    the notification a real save published - `DatabaseTestBase.Mediator` has recorded them - rather than
    with one written by hand. For anything whose subject is a call *out* of this process, put
    a `StubHttpMessageHandler` of the test's own (with `RefusesUnmatched()`) under the real client instead of
@@ -1001,7 +1018,27 @@ currently tell you.
   are now in that set too, as far as there is anything to deny: `VmHub.JoinUser` is the only hub method
   that refuses a caller, and its refusals are covered; the rest compute what the caller can see rather
   than deciding yes or no, and `ProgressHub` decides nothing at all - characterized above rather than left
-  as a gap.
+  as a gap. The standard's gates check (`check-repo.js gates`, run by `verify.sh`) inventories the
+  authorization call sites it recognizes and finds each one with an allowed case that is not `Root` and a
+  near miss (51 call sites in 47 members, none missing). It does not see every gate in this repository:
+  calls to a `Can*` helper of the class's own, with no service receiver (`NetworkService.CanViewNetworks`
+  and `CanManageNetworks`, `VmService.CanManageMapsForTeamsAsync`, `CanViewMapAsync` and `CanAccessVm` in
+  `GetAsync`, `IsoService.CanUseTeamIsoAsync`, `BulkPowerOperation.CanPerformOperation`), and a hub's
+  connection gate set by `MapHub<T>(...).RequireAuthorization()` in `Startup` rather than by an
+  `[Authorize]` on the hub (it inventories the unmapped `Player.Vm.Api.Hubs.VmHub`'s attribute instead).
+  Those gates were inventoried by hand and have the same pair of tests: the network routes and the Map
+  reads and writes in `NetworksEndpointTests` and `VmsEndpointTests`, the ISO picker and mount in
+  `ProxmoxEndpointTests`, the bulk revert and control checks in `BulkPowerOperationEndpointTests`, and
+  both hubs' connections in `HubConnectionTests`. Nor does it see the default policy's scope requirement
+  (`Startup.ConfigureServices`: an authenticated user carrying each scope of `Authorization:AuthorizationScope`),
+  which guards every `[Authorize]` controller, both hubs and `/metrics`: `DefaultAuthorizationPolicyTests`
+  sends one route per controller and both hubs' negotiate with each scope missing in turn (403), the same
+  with both (the control), and covers `/metrics` with both scopes (200 and the Prometheus text), with no
+  identity (401) and with one scope (403). Two kinds of gate here refuse nobody over HTTP - the usage
+  report narrows to the caller's own activity, and a bulk power command reports an inaccessible Vm as one
+  `"Unauthorized"` entry - so their near misses are handler tests (`GetVmUsageReportHandlerTests`,
+  `BulkPowerOperationHandlerTests`) named for the refusal, beside the endpoint tests that show the same
+  answer on the wire.
 - **The client's half of the hub contract.** Both hubs are now covered - the group names, the presence
   bookkeeping, the calls into the usage log and the writer behind them, and one round trip over a real
   connection - along with the five entity-event handlers that broadcast into `VmHub`'s groups, so both ends
@@ -1014,8 +1051,7 @@ currently tell you.
   strings *the server* uses, and nothing checks that the two agree. Nor do the two server-side ends compare
   themselves to each other - each asserts the same names independently, and a renamed group would have to be
   renamed in both suites - which is a gap a test cannot close without one of them stopping being a test of
-  what the code does. One thing on the server side is still genuinely open: `VmHub` is not driven over a
-  live connection, for the routing reason above.
+  what the code does.
 - **The projections.** The AutoMapper profiles run in every endpoint test, but only the projections those
   tests happen to read are asserted.
 - **What the out-of-process clients assume.** `ViewService`, `AuthenticationService`,
@@ -1057,9 +1093,9 @@ currently tell you.
    it could be covered at all.
 5. ~~The two SignalR hubs, and with them the usage log's writer.~~ Done. `ProgressHub` as a unit, `VmHub`'s group membership and its presence bookkeeping
    against real PostgreSQL, `VmUsageLoggingService` as the writer `VmHub` drives, and the hubs' edge -
-   mapping, authorization and one round trip - over the hosted application. Driving `VmHub` itself over a
-   live connection was deliberately left out: it would need `TestDatabaseScope` keyed on the connection id
-   rather than on a request header, and the hub's own behaviour is already covered by direct invocation.
+   mapping, authorization and one round trip - over the hosted application. `VmHub` is now driven over a
+   live connection too: over a WebSocket the upgrade request carries the session header, so no routing keyed
+   on the connection id was needed.
 6. ~~The entity-event handlers that broadcast into `VmHub`'s groups, which are what is left of the
    application's own surface.~~ Done. `VmSignalRHandlerTests` and `VmTeamSignalRHandlerTests` drive the five
    handlers directly, and `EntityEventBroadcastTests` drives the path from a save through the interceptor and

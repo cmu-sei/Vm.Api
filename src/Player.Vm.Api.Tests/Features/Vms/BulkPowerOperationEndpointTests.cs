@@ -104,6 +104,20 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
         return await context.Vms.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, Ct);
     }
 
+    [Fact]
+    public async Task PowerOn_is_allowed_for_a_caller_holding_exactly_ControlTeamVms_on_the_Vms_team()
+    {
+        var vm = TestData.VsphereVm();
+        await Seed(vm);
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, vm.VmTeams.Single().TeamId).SeedAsync();
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var response = await Client(actor).PostAsJsonAsync("/api/vms/actions/power-on", new { Ids = new[] { vm.Id } }, Ct);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal([vm.Id], (await response.Content.ReadFromJsonAsync<BulkPowerOperation.Response>(JsonOptions, Ct)).Accepted);
+    }
+
     /// <summary>
     /// The reason this layer exists. One Vm vCenter refuses has to come back as one entry in Errors
     /// while its neighbours are still submitted - the vSphere result dictionary used to be discarded
@@ -531,6 +545,8 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
         await Seed(vm);
 
         var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, vm.VmTeams.Single().TeamId).SeedAsync();
+        // What vCenter would answer had the revert been submitted.
+        VsphereReturns(PowerOperation.Revert, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
 
         var result = await Post(Client(actor), "revert", vm.Id);
 
@@ -539,6 +555,29 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
 
         await Factory.Vsphere.DidNotReceive().BulkPowerOperation(
             Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+    }
+
+    /// <summary>
+    /// <c>RevertVms</c> on the Vm's View is what the revert asks; <c>ViewTeamVms</c> on its team is the
+    /// visibility check every bulk operation makes first, and grants no control.
+    /// </summary>
+    [Fact]
+    public async Task Revert_is_allowed_for_a_caller_holding_RevertVms_on_the_Vms_view_and_ViewTeamVms_on_its_team()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = TestData.VsphereVm(teamId, hasSnapshot: true);
+        await Seed(vm);
+        var actor = await Actor()
+            .InView(teamId, viewId)
+            .Holding(AppTeamPermission.ViewTeamVms, teamId)
+            .Holding(AppViewPermission.RevertVms, viewId)
+            .SeedAsync();
+        VsphereReturns(PowerOperation.Revert, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "revert", vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
     }
 
     /// <summary>

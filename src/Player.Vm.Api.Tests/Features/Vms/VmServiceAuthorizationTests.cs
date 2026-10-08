@@ -814,6 +814,39 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         Assert.Equal(expected, maps.Select(x => x.Id).ToHashSet());
     }
 
+    [Fact]
+    public async Task GetViewMaps_leaves_out_the_maps_of_a_team_for_a_caller_holding_ViewTeamMaps_only_on_another_team()
+    {
+        var viewId = Guid.NewGuid();
+        var (teamId, otherTeam) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map(teamIds: [teamId], viewId: viewId);
+        await Seed(map);
+        View(viewId, VisibilityFor(otherTeam), teams: [Team(otherTeam), Team(teamId)]);
+        Grant(b => b.Holding(AppTeamPermission.ViewTeamMaps, otherTeam));
+
+        var maps = await Service.GetViewMapsAsync(viewId, Ct);
+
+        Assert.Empty(maps);
+    }
+
+    [Fact]
+    public async Task GetViewMaps_leaves_out_the_teamless_maps_for_a_caller_holding_ViewViewMaps_only_in_another_view()
+    {
+        var viewId = Guid.NewGuid();
+        var teamId = Guid.NewGuid();
+        var teamless = Map(teamIds: [], viewId: viewId);
+        var teamScoped = Map(teamIds: [teamId], viewId: viewId);
+        await Seed(teamless, teamScoped);
+        View(viewId, VisibilityFor(teamId), teams: [Team(teamId)]);
+        Grant(b => b
+            .Holding(AppTeamPermission.ViewTeamMaps, teamId)
+            .Holding(AppViewPermission.ViewViewMaps, Guid.NewGuid()));
+
+        var maps = await Service.GetViewMapsAsync(viewId, Ct);
+
+        Assert.Equal<Guid>([teamScoped.Id], maps.Select(x => x.Id).ToArray());
+    }
+
     /// <summary>
     /// Every Map's teams are asked about in one call, not one permission check per Map.
     /// </summary>
@@ -874,6 +907,8 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
         _player.Directory.AddView(viewId);
         _player.Directory.PlaceTeam(teamId, Guid.NewGuid());
+        // The system ViewViews, so player.api answers both lookups and the View check is what refuses.
+        Grant(b => b.Holding(AppSystemPermission.ViewViews));
 
         var ex = await Assert.ThrowsAsync<ForbiddenException>(
             () => Service.CreateMapAsync(new VmMapCreateForm { Name = "m", TeamIds = [teamId] }, viewId, Ct));
@@ -881,17 +916,20 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         Assert.Contains("is not a member of the specified view", ex.Message);
     }
 
+    // ViewTeam lets player.api answer the team lookup, so the refusal is the Map permission's.
     [Fact]
-    public async Task CreateMap_is_forbidden_for_a_caller_holding_only_ViewTeamMaps()
+    public async Task CreateMap_is_forbidden_for_a_caller_holding_ViewTeam_and_ViewTeamMaps_without_ManageTeamMaps()
     {
         var viewId = Guid.NewGuid();
         var teamId = Guid.NewGuid();
 
         ViewWithTeams(viewId, teamId);
-        Grant(b => b.Holding(AppTeamPermission.ViewTeamMaps, teamId));
+        Grant(b => b.Holding(AppTeamPermission.ViewTeam, teamId).Holding(AppTeamPermission.ViewTeamMaps, teamId));
 
-        await Assert.ThrowsAsync<ForbiddenException>(
+        var ex = await Assert.ThrowsAsync<ForbiddenException>(
             () => Service.CreateMapAsync(new VmMapCreateForm { Name = "m", TeamIds = [teamId] }, viewId, Ct));
+
+        Assert.Equal("Insufficient Permissions", ex.Message);
     }
 
     /// <summary>
@@ -902,11 +940,14 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task CreateMap_of_a_teamless_map_is_forbidden_for_a_caller_holding_only_ManageTeamMaps()
     {
         var viewId = Guid.NewGuid();
-        ViewWithTeams(viewId);
-        Grant(b => b.Holding(AppTeamPermission.ManageTeamMaps));
+        var teamId = Guid.NewGuid();
+        ViewWithTeams(viewId, teamId);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeamMaps, teamId));
 
-        await Assert.ThrowsAsync<ForbiddenException>(
+        var ex = await Assert.ThrowsAsync<ForbiddenException>(
             () => Service.CreateMapAsync(new VmMapCreateForm { Name = "m", TeamIds = [] }, viewId, Ct));
+
+        Assert.Equal("Insufficient Permissions", ex.Message);
     }
 
     [Fact]
@@ -934,9 +975,13 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Seed(map);
         ViewWithTeams(viewId, fromTeam, toTeam);
         CanManageMapsOnly(toTeam);
+        // What player.api's team lookup asks, so the refusal is the stored team's gate.
+        Grant(b => b.Holding(AppTeamPermission.ViewTeam, toTeam));
 
-        await Assert.ThrowsAsync<ForbiddenException>(
+        var ex = await Assert.ThrowsAsync<ForbiddenException>(
             () => Service.UpdateMapAsync(UpdateForm(toTeam), map.Id, Ct));
+
+        Assert.Equal("Insufficient Permissions", ex.Message);
     }
 
     // A Map with no teams stands for the View as a whole, so moving it onto a team takes the View-level
@@ -950,9 +995,12 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Seed(map);
         ViewWithTeams(viewId, toTeam);
         CanManageMapsOnly(toTeam);
+        Grant(b => b.Holding(AppTeamPermission.ViewTeam, toTeam));
 
-        await Assert.ThrowsAsync<ForbiddenException>(
+        var ex = await Assert.ThrowsAsync<ForbiddenException>(
             () => Service.UpdateMapAsync(UpdateForm(toTeam), map.Id, Ct));
+
+        Assert.Equal("Insufficient Permissions", ex.Message);
     }
 
     [Fact]
@@ -964,6 +1012,8 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Seed(map);
         ViewWithTeams(viewId, fromTeam, toTeam);
         CanManageMapsOnly(fromTeam, toTeam);
+        // What player.api's team lookup asks of a caller without a View-wide grant.
+        Grant(b => b.Holding(AppTeamPermission.ViewTeam, toTeam));
 
         var updated = await Service.UpdateMapAsync(UpdateForm(toTeam), map.Id, Ct);
 

@@ -211,6 +211,53 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal("Insufficient Permissions", await Title(response));
     }
 
+    [Fact]
+    public async Task GetConsole_is_forbidden_for_a_caller_holding_ViewTeamVms_only_on_another_team()
+    {
+        var vm = await SeedProxmoxVm();
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync($"{Route(vm.Id)}/console", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("Insufficient Permissions", await Title(response));
+        await Factory.Proxmox.DidNotReceive().GetConsole(Arg.Any<ProxmoxVmInfo>());
+    }
+
+    [Fact]
+    public async Task GetIsos_is_forbidden_for_a_caller_holding_ViewTeamVms_only_on_another_team()
+    {
+        var vm = await SeedProxmoxVm();
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync($"{Route(vm.Id)}/isos", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("Insufficient Permissions", await Title(response));
+    }
+
+    [Fact]
+    public async Task ChangeNetwork_is_forbidden_for_a_caller_holding_ViewTeamVms_only_on_another_team()
+    {
+        var vm = await SeedProxmoxVm();
+        await Seed(Network("vmbr9"));
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync(
+            $"{Route(vm.Id)}/actions/change-network", new { Adapter = "net0", Network = "vmbr9" }, Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("Insufficient Permissions", await Title(response));
+
+        await AssertNoNetworkChange();
+    }
+
     /// <summary>
     /// The personal-Vm rule, the second half of <c>CanAccessVm</c>: a Vm assigned to a user is that
     /// user's, and reaching it needs a view-wide permission rather than only membership of its team.
@@ -817,6 +864,46 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         await Factory.IsoProvider.DidNotReceive().ListAsync(Arg.Any<Guid?>(), Arg.Any<CancellationToken>());
     }
 
+    /// <summary>A caller controlling every Vm through the system permission, with no team in the View, is answered the ISO picker with a 500.</summary>
+    [Fact]
+    public async Task GetIsos_answers_a_caller_holding_ControlVms_with_no_team_in_the_view_with_a_server_error()
+    {
+        var vm = await SeedProxmoxVm();
+        var actor = await Actor().Holding(AppSystemPermission.ControlVms).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"{Route(vm.Id)}/isos", Ct);
+
+        Assert.StartsWith("getView: Forbidden", (await AssertJsonError(HttpStatusCode.InternalServerError, response)).Detail);
+    }
+
+    [Fact]
+    public async Task GetIsos_offers_the_teams_isos_to_a_caller_holding_exactly_ControlTeamVms_on_the_Vms_team()
+    {
+        var vm = await SeedProxmoxVm();
+        TheVmCanReachATeamIso(vm);
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, _teamId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"{Route(vm.Id)}/isos", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = Assert.Single(await response.Content.ReadFromJsonAsync<MountableIsoResult[]>(JsonOptions, Ct));
+        Assert.Equal(_teamId, Assert.Single(result.TeamIsoResults).TeamId);
+    }
+
+    // Seeing the Vm lists its picker, but a team's ISOs are offered only to a caller who may mount them.
+    [Fact]
+    public async Task GetIsos_leaves_out_the_teams_isos_for_a_caller_holding_only_ViewTeamVms_on_the_Vms_team()
+    {
+        var vm = await SeedProxmoxVm();
+        TheVmCanReachATeamIso(vm);
+        var actor = await Actor().Holding(AppTeamPermission.ViewTeamVms, _teamId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"{Route(vm.Id)}/isos", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(Assert.Single(await response.Content.ReadFromJsonAsync<MountableIsoResult[]>(JsonOptions, Ct)).TeamIsoResults);
+    }
+
     /// <summary>
     /// A Vm whose teams player.api places in no View has no ISO scope to list, and that is an empty
     /// picker rather than an error.
@@ -871,6 +958,40 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
             .MountIso(Arg.Any<ProxmoxVmInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task MountIso_of_another_teams_iso_is_allowed_for_a_caller_holding_exactly_ControlTeamVms_on_both_teams()
+    {
+        var vm = await SeedProxmoxVm();
+        var otherTeam = AnotherTeamsIsoIsSubmitted(vm);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ControlTeamVms, _teamId)
+            .Holding(AppTeamPermission.ControlTeamVms, otherTeam)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync(
+            $"{Route(vm.Id)}/actions/mount-iso", new { Iso = "isos:iso/submitted.iso" }, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("isos:iso/canonical.iso", ProxmoxCall(nameof(IProxmoxService.MountIso))[1]);
+    }
+
+    [Fact]
+    public async Task MountIso_of_another_teams_iso_is_forbidden_for_a_caller_holding_ControlTeamVms_only_on_the_Vms_team()
+    {
+        var vm = await SeedProxmoxVm();
+        AnotherTeamsIsoIsSubmitted(vm);
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, _teamId).SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync(
+            $"{Route(vm.Id)}/actions/mount-iso", new { Iso = "isos:iso/submitted.iso" }, Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("The specified iso is not available to this Vm", await Title(response));
+
+        await Factory.Proxmox.DidNotReceive()
+            .MountIso(Arg.Any<ProxmoxVmInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("")]
@@ -905,6 +1026,26 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var call = ProxmoxCall(nameof(IProxmoxService.ChangeNetwork));
         Assert.Equal("net0", call[1]);
         Assert.Equal("vmbr9", call[2]);
+    }
+
+    /// <summary>
+    /// Seeing the Vm is the whole of the permission the route asks for; the network shared with the
+    /// caller's team is what makes the target one it may choose.
+    /// </summary>
+    [Fact]
+    public async Task ChangeNetwork_is_allowed_for_a_caller_holding_exactly_ViewTeamVms_on_the_Vms_team()
+    {
+        var vm = await SeedProxmoxVm();
+        await Seed(Network("vmbr9"));
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, _teamId)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync(
+            $"{Route(vm.Id)}/actions/change-network", new { Adapter = "net0", Network = "vmbr9" }, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("vmbr9", ProxmoxCall(nameof(IProxmoxService.ChangeNetwork))[2]);
     }
 
     /// <summary>
@@ -1084,6 +1225,29 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Factory.Player.PlaceTeam(_teamId, _viewId, "team-1");
         Factory.Player.AddView(_viewId, "view-1");
         Factory.Player.Caller(Root.Id).ClaimOn(_teamId).Primary = true;
+    }
+
+    /// <summary>The storage this Vm's node can reach holds one ISO of the Vm's team.</summary>
+    private void TheVmCanReachATeamIso(VmEntity vm) =>
+        Factory.IsoProvider.ListForVmAsync(vm.Id, _viewId, Arg.Any<CancellationToken>())
+            .Returns(new Dictionary<Guid, IReadOnlyList<IsoListingEntry>>
+            {
+                [_teamId] = [new IsoListingEntry("team.iso", "isos:iso/team.iso")],
+            });
+
+    /// <summary>
+    /// A second team of this test's View, and the submitted mount value decoding to an ISO of that team's:
+    /// the scope <c>IsoService.ResolveMountValueAsync</c> asks the caller's control of.
+    /// </summary>
+    private Guid AnotherTeamsIsoIsSubmitted(VmEntity vm)
+    {
+        var otherTeam = Guid.NewGuid();
+        Factory.Player.PlaceTeam(otherTeam, _viewId);
+        Factory.IsoProvider
+            .ResolveMountTargetAsync(vm.Id, "isos:iso/submitted.iso", Arg.Any<CancellationToken>())
+            .Returns(new IsoMountTarget(_viewId, otherTeam, "boot.iso", "isos:iso/canonical.iso"));
+
+        return otherTeam;
     }
 
     private void PowerCommandsReturn(string taskId)

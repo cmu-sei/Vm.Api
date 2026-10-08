@@ -44,7 +44,7 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
 {
     private readonly IViewService _views = Substitute.For<IViewService>();
     private readonly IConnectionService _connections = Substitute.For<IConnectionService>();
-    private readonly HubContextHarness<VmHub> _hub = new();
+    private readonly HubRecorder<VmHub> _hub = new();
 
     private ServiceProvider _provider;
     private VmContext _app;
@@ -65,7 +65,7 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
             cfg.RegisterServicesFromAssemblies(typeof(Player.Vm.Api.Startup).Assembly));
         services.AddSingleton(_views);
         services.AddSingleton(_connections);
-        services.AddSingleton(_hub.Context);
+        services.AddSingleton<IHubContext<VmHub>>(_hub);
         services.AddSingleton(TestMapper.Mapper);
 
         // Resolved lazily: the context needs the provider it will publish through, so one of the two has
@@ -132,12 +132,12 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
         App.Add(new VmEntity { Name = "vm", VmTeams = [new VmTeam { TeamId = teamId }] });
         await App.SaveChangesAsync(Ct);
 
-        var sends = _hub.Of(VmHubMethods.VmCreated);
+        var sends = _hub.CallsOf(VmHubMethods.VmCreated);
         Assert.Equal<string>(
             [viewId.ToString(), teamId.ToString()],
             _hub.Recipients(VmHubMethods.VmCreated));
         Assert.Equal(4, sends.Count);
-        Assert.Equal(2, sends.Count(x => x.Args.Length == 2));
+        Assert.Equal(2, sends.Count(x => x.Arguments.Length == 2));
     }
 
     /// <summary>
@@ -156,8 +156,8 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
         vm.PowerState = PowerState.On;
         await App.SaveChangesAsync(Ct);
 
-        var send = Assert.Single(_hub.Of(VmHubMethods.VmUpdated), x => x.Groups.Contains(teamId.ToString()));
-        Assert.Equal<string>(["powerState"], (string[])send.Args[1]);
+        var send = Assert.Single(_hub.CallsOf(VmHubMethods.VmUpdated), x => x.Names.Contains(teamId.ToString()));
+        Assert.Equal<string>(["powerState"], (string[])send.Arguments[1]);
         Assert.Equal<string>(
             [viewId.ToString(), teamId.ToString()],
             _hub.Recipients(VmHubMethods.VmUpdated));
@@ -182,8 +182,8 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
         Assert.Equal<string>(
             [viewId.ToString(), teamId.ToString()],
             _hub.Recipients(VmHubMethods.VmDeleted));
-        Assert.Equal(4, _hub.Of(VmHubMethods.VmDeleted).Count);
-        Assert.All(_hub.Sends, x => Assert.Equal(seeded.Id, x.Args[0]));
+        Assert.Equal(4, _hub.CallsOf(VmHubMethods.VmDeleted).Count);
+        Assert.All(_hub.Calls, x => Assert.Equal(seeded.Id, x.Arguments[0]));
     }
 
     /// <summary>
@@ -204,7 +204,7 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
         Assert.Equal<string>(
             [viewId.ToString(), teamId.ToString()],
             _hub.Recipients(VmHubMethods.VmCreated));
-        Assert.Equal(2, _hub.Sends.Count);
+        Assert.Equal(2, _hub.Calls.Count);
     }
 
     /// <summary>
@@ -246,7 +246,7 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
         App.Add(new VmEntity { Name = "vm", VmTeams = [new VmTeam { TeamId = teamId }] });
         await App.SaveChangesAsync(Ct);
 
-        Assert.Empty(_hub.Sends);
+        Assert.Empty(_hub.Calls);
         await using var context = NewContext();
         Assert.Equal("vm", (await context.Vms.SingleAsync(Ct)).Name);
     }

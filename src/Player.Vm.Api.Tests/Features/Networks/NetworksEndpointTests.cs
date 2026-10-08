@@ -252,21 +252,185 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
         Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
     }
 
-    // A ForbiddenException from the service is a 403, not a 500 and not an empty 200.
+    #endregion
+
+    #region Each gate, held exactly
+
+    // Each route once with exactly the View permission it asks for on the network's View, and once with
+    // that permission on another View or with its read-only neighbour. A ForbiddenException from the
+    // service is a 403, not a 500 and not an empty 200.
+
     [Fact]
-    public async Task Reads_are_forbidden_for_a_caller_holding_ViewNetworks_only_in_another_view()
+    public async Task GetByViewId_is_allowed_for_a_caller_holding_exactly_ViewNetworks_on_the_view()
     {
         var network = Network(Guid.NewGuid(), "vlan-10");
         await Seed(network);
-        var actor = await Actor()
-            .Holding(AppViewPermission.ViewNetworks, Guid.NewGuid())
-            .SeedAsync();
+        var actor = await Actor().Holding(AppViewPermission.ViewNetworks, network.ViewId).SeedAsync();
 
-        var byView = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks", Ct);
-        var byId = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks/{network.Id}", Ct);
+        var response = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks", Ct);
 
-        Assert.Equal(HttpStatusCode.Forbidden, byView.StatusCode);
-        Assert.Equal(HttpStatusCode.Forbidden, byId.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal<Guid>([network.Id], (await response.Content.ReadFromJsonAsync<ViewNetworkModel[]>(JsonOptions, Ct)).Select(x => x.Id));
+    }
+
+    [Fact]
+    public async Task GetByViewId_is_forbidden_for_a_caller_holding_ViewNetworks_only_in_another_view()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var actor = await Actor().Holding(AppViewPermission.ViewNetworks, Guid.NewGuid()).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetById_is_allowed_for_a_caller_holding_exactly_ViewNetworks_on_the_view()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var actor = await Actor().Holding(AppViewPermission.ViewNetworks, network.ViewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks/{network.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(network.Id, (await response.Content.ReadFromJsonAsync<ViewNetworkModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetById_is_forbidden_for_a_caller_holding_ViewNetworks_only_in_another_view()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var actor = await Actor().Holding(AppViewPermission.ViewNetworks, Guid.NewGuid()).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks/{network.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Fact]
+    public async Task Create_is_allowed_for_a_caller_holding_exactly_ManageNetworks_on_the_view()
+    {
+        var viewId = Guid.NewGuid();
+        Factory.Player.AddView(viewId);
+        var actor = await Actor().Holding(AppViewPermission.ManageNetworks, viewId).SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync($"/api/views/{viewId}/networks", Form("vlan-10", "created"), Ct);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Equal("created", context.ViewNetworks.Single(x => x.ViewId == viewId).Name);
+    }
+
+    [Fact]
+    public async Task Create_is_forbidden_for_a_caller_holding_ManageNetworks_only_in_another_view_and_stores_nothing()
+    {
+        var viewId = Guid.NewGuid();
+        Factory.Player.AddView(viewId);
+        var actor = await Actor().Holding(AppViewPermission.ManageNetworks, Guid.NewGuid()).SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync($"/api/views/{viewId}/networks", Form("vlan-10", "created"), Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Empty(context.ViewNetworks.Where(x => x.ViewId == viewId));
+    }
+
+    [Fact]
+    public async Task Create_is_forbidden_for_a_caller_holding_only_ViewNetworks_on_the_view_and_stores_nothing()
+    {
+        var viewId = Guid.NewGuid();
+        Factory.Player.AddView(viewId);
+        var actor = await Actor().Holding(AppViewPermission.ViewNetworks, viewId).SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync($"/api/views/{viewId}/networks", Form("vlan-10", "created"), Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Empty(context.ViewNetworks.Where(x => x.ViewId == viewId));
+    }
+
+    [Fact]
+    public async Task Update_is_allowed_for_a_caller_holding_exactly_ManageNetworks_on_the_view()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10", name: "before");
+        await Seed(network);
+        var actor = await Actor().Holding(AppViewPermission.ManageNetworks, network.ViewId).SeedAsync();
+
+        var response = await Client(actor).PutAsJsonAsync(
+            $"/api/views/{network.ViewId}/networks/{network.Id}", Form("vlan-10", "after"), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Equal("after", context.ViewNetworks.Single(x => x.Id == network.Id).Name);
+    }
+
+    [Fact]
+    public async Task Update_is_forbidden_for_a_caller_holding_ManageNetworks_only_in_another_view_and_leaves_the_name()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10", name: "before");
+        await Seed(network);
+        var actor = await Actor().Holding(AppViewPermission.ManageNetworks, Guid.NewGuid()).SeedAsync();
+
+        var response = await Client(actor).PutAsJsonAsync(
+            $"/api/views/{network.ViewId}/networks/{network.Id}", Form("vlan-10", "after"), Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Equal("before", context.ViewNetworks.Single(x => x.Id == network.Id).Name);
+    }
+
+    [Fact]
+    public async Task Update_is_forbidden_for_a_caller_holding_only_ViewNetworks_on_the_view_and_leaves_the_name()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10", name: "before");
+        await Seed(network);
+        var actor = await Actor().Holding(AppViewPermission.ViewNetworks, network.ViewId).SeedAsync();
+
+        var response = await Client(actor).PutAsJsonAsync(
+            $"/api/views/{network.ViewId}/networks/{network.Id}", Form("vlan-10", "after"), Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Equal("before", context.ViewNetworks.Single(x => x.Id == network.Id).Name);
+    }
+
+    [Fact]
+    public async Task Delete_is_allowed_for_a_caller_holding_exactly_ManageNetworks_on_the_view()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var actor = await Actor().Holding(AppViewPermission.ManageNetworks, network.ViewId).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/views/{network.ViewId}/networks/{network.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Empty(context.ViewNetworks.Where(x => x.Id == network.Id));
+    }
+
+    [Fact]
+    public async Task Delete_is_forbidden_for_a_caller_holding_ManageNetworks_only_in_another_view_and_leaves_the_row()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var actor = await Actor().Holding(AppViewPermission.ManageNetworks, Guid.NewGuid()).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/views/{network.ViewId}/networks/{network.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Single(context.ViewNetworks.Where(x => x.Id == network.Id));
     }
 
     [Fact]
@@ -286,6 +450,10 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
         await using var context = NewContext();
         Assert.Single(context.ViewNetworks.Where(x => x.Id == network.Id));
     }
+
+    #endregion
+
+    #region When player.api fails
 
     /// <summary>
     /// player.api answering 404 for a view is a 404 here, not a 500: the middleware unwraps

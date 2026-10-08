@@ -124,7 +124,7 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
         await poller.Run();
 
         Assert.Empty(vcenter.Filters);
-        Assert.Empty(poller.Hub.Sends);
+        Assert.Empty(poller.Hub.Calls);
         Assert.Empty(poller.Errors);
     }
 
@@ -330,7 +330,7 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
         // which is what says the second finished - broadcasts included, since they happen in its scope.
         await poller.Run(passes: 2);
 
-        Assert.Single(poller.Hub.Of(Progress));
+        Assert.Single(poller.Hub.CallsOf(Progress));
         Assert.Empty(poller.Errors);
     }
 
@@ -364,7 +364,7 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
 
         await poller.Run();
 
-        Assert.Single(poller.Hub.Of(Progress));
+        Assert.Single(poller.Hub.CallsOf(Progress));
         Assert.Equal<string>(["task-1", "task-2"], Notifications(poller, VmA).Select(x => x.taskId));
     }
 
@@ -381,7 +381,7 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
 
         await poller.Run();
 
-        Assert.Equal(2, poller.Hub.Of(Progress).Count);
+        Assert.Equal(2, poller.Hub.CallsOf(Progress).Count);
         Assert.Equal("task-a", Assert.Single(Notifications(poller, VmA)).taskId);
         Assert.Equal("task-b", Assert.Single(Notifications(poller, VmB)).taskId);
     }
@@ -405,7 +405,7 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
 
         await poller.Run();
 
-        Assert.Empty(poller.Hub.Sends);
+        Assert.Empty(poller.Hub.Calls);
         Assert.Empty(poller.Errors);
     }
 
@@ -424,7 +424,7 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
 
         await poller.Run();
 
-        Assert.Empty(poller.Hub.Sends);
+        Assert.Empty(poller.Hub.Calls);
         poller.Connections.DidNotReceive().GetVmIdByRef(Arg.Any<string>(), Arg.Any<string>());
     }
 
@@ -450,7 +450,7 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
 
         await poller.Run();
 
-        Assert.Empty(poller.Hub.Sends);
+        Assert.Empty(poller.Hub.Calls);
     }
 
     #endregion
@@ -868,9 +868,9 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
 
     /// <summary>The notifications one group was sent, flattened in the order they were broadcast.</summary>
     private static List<Notification> Notifications(Poller poller, Guid vmId) =>
-        [.. poller.Hub.Of(Progress)
-            .Where(x => x.Groups.Contains(vmId.ToString()))
-            .SelectMany(x => (List<Notification>)x.Args[0])];
+        [.. poller.Hub.CallsOf(Progress)
+            .Where(x => x.Names.Contains(vmId.ToString()))
+            .SelectMany(x => (List<Notification>)x.Arguments[0])];
 
     private static VmEntity VsphereVm(Guid id, bool pending = false) =>
         new() { Id = id, Name = $"vm-{id.ToString()[..4]}", Type = VmType.Vsphere, HasPendingTasks = pending };
@@ -1059,12 +1059,12 @@ public class TaskServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fixtur
             monitor.CurrentValue.Returns(options);
 
             Service = new TaskService(
-                monitor, Log, Hub.Context, Connections, Loop, Health);
+                monitor, Log, Hub, Connections, Loop, Health);
         }
 
         public IConnectionService Connections { get; } = Substitute.For<IConnectionService>();
 
-        public HubContextHarness<ProgressHub> Hub { get; } = new();
+        public HubRecorder<ProgressHub> Hub { get; } = new();
 
         public RecordingLogger<TaskService> Log { get; } = new();
 
