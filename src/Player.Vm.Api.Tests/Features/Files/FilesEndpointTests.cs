@@ -333,6 +333,63 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
+    /// <summary>
+    /// The listing's team branch: <c>ViewTeam</c> on the caller's primary team in the View, and no View
+    /// permission, lists that team's ISOs.
+    /// </summary>
+    [Fact]
+    public async Task ListView_is_allowed_for_a_caller_holding_exactly_ViewTeam_on_a_team_of_the_view()
+    {
+        var teamId = Guid.NewGuid();
+        await RootSees(_viewId, (teamId, "red"));
+        Holds((_viewId, "public.iso"), (teamId, "red-only.iso"));
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeam, teamId)
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync(IsoRoute, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<ManagedIsoResult>(JsonOptions, Ct);
+        Assert.Equal<string>(["public.iso"], result.Isos.Select(x => x.Filename));
+        Assert.Equal(teamId, Assert.Single(result.TeamIsoResults).TeamId);
+    }
+
+    [Fact]
+    public async Task ListView_is_allowed_for_a_caller_holding_exactly_ManageTeam_on_a_team_of_the_view()
+    {
+        var teamId = Guid.NewGuid();
+        await RootSees(_viewId, (teamId, "red"));
+        Holds((_viewId, "public.iso"), (teamId, "red-only.iso"));
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ManageTeam, teamId)
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync(IsoRoute, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<ManagedIsoResult>(JsonOptions, Ct);
+        Assert.Equal<string>(["public.iso"], result.Isos.Select(x => x.Filename));
+        Assert.Equal(teamId, Assert.Single(result.TeamIsoResults).TeamId);
+    }
+
+    // A member of one of the View's teams, so the listing has a team to show, holding the team permission the
+    // listing accepts on a team of another View.
+    [Fact]
+    public async Task ListView_is_forbidden_for_a_member_of_the_view_holding_ViewTeam_only_on_a_team_of_another_view()
+    {
+        var teamId = Guid.NewGuid();
+        await RootSees(_viewId, (teamId, "red"));
+        var actor = await Actor()
+            .MemberOf(teamId)
+            .Holding(AppTeamPermission.ViewTeam, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync(IsoRoute, Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
     // A caller with no team in the View is refused, whatever it holds system-wide: the listing is per-team,
     // and there is nothing here for it.
     [Fact]

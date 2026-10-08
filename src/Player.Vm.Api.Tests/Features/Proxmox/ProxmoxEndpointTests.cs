@@ -389,6 +389,105 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     /// <summary>
+    /// <c>ControlViewVms</c> is carried on the caller's own team in the Vm's View, not on the Vm's team, so
+    /// the editing gate reaches it through the View: no team permission on the Vm's team is held.
+    /// </summary>
+    [Theory]
+    [InlineData("POST", "/actions/power-on", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/power-off", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/reboot", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/shutdown", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/mount-iso", HttpStatusCode.BadRequest)]
+    [InlineData("POST", "/actions/run-guest-process", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/run-guest-process-fast", HttpStatusCode.OK)]
+    public async Task EditingRoutes_are_allowed_for_a_caller_holding_exactly_ControlViewVms_on_the_Vms_view(
+        string method, string suffix, HttpStatusCode expected)
+    {
+        var vm = await SeedProxmoxVm();
+        var actor = await Actor()
+            .Holding(AppViewPermission.ControlViewVms, _viewId)
+            .SeedAsync();
+
+        var response = await Send(method, suffix, vm.Id, Client(actor));
+
+        // The empty body passes the gate and nothing else checks permission; mount-iso then wants an iso.
+        Assert.Equal(expected, response.StatusCode);
+    }
+
+    /// <summary>
+    /// <c>ViewTeamVms</c> on the Vm's team lets the caller see the Vm, and <c>ControlViewVms</c> in another
+    /// View is the very permission the editing gate asks for, held where it does not reach this Vm.
+    /// </summary>
+    [Theory]
+    [InlineData("POST", "/actions/power-on")]
+    [InlineData("POST", "/actions/power-off")]
+    [InlineData("POST", "/actions/reboot")]
+    [InlineData("POST", "/actions/shutdown")]
+    [InlineData("POST", "/actions/mount-iso")]
+    [InlineData("POST", "/actions/run-guest-process")]
+    [InlineData("POST", "/actions/run-guest-process-fast")]
+    public async Task EditingRoutes_are_forbidden_for_a_caller_holding_ControlViewVms_only_on_another_view(string method, string suffix)
+    {
+        var vm = await SeedProxmoxVm();
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, _teamId)
+            .Holding(AppViewPermission.ControlViewVms, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Send(method, suffix, vm.Id, Client(actor));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("You do not have permission to edit this Vm", await Title(response));
+    }
+
+    [Theory]
+    [InlineData("POST", "/actions/power-on", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/power-off", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/reboot", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/shutdown", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/mount-iso", HttpStatusCode.BadRequest)]
+    [InlineData("POST", "/actions/run-guest-process", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/run-guest-process-fast", HttpStatusCode.OK)]
+    public async Task EditingRoutes_are_allowed_for_a_caller_holding_exactly_the_system_ControlVms(
+        string method, string suffix, HttpStatusCode expected)
+    {
+        var vm = await SeedProxmoxVm();
+        var actor = await Actor()
+            .Holding(AppSystemPermission.ControlVms)
+            .SeedAsync();
+
+        var response = await Send(method, suffix, vm.Id, Client(actor));
+
+        // The empty body passes the gate and nothing else checks permission; mount-iso then wants an iso.
+        Assert.Equal(expected, response.StatusCode);
+    }
+
+    /// <summary>
+    /// The system <c>ViewVms</c> sees every Vm, which is the read the editing routes make first, and
+    /// controls none of them.
+    /// </summary>
+    [Theory]
+    [InlineData("POST", "/actions/power-on")]
+    [InlineData("POST", "/actions/power-off")]
+    [InlineData("POST", "/actions/reboot")]
+    [InlineData("POST", "/actions/shutdown")]
+    [InlineData("POST", "/actions/mount-iso")]
+    [InlineData("POST", "/actions/run-guest-process")]
+    [InlineData("POST", "/actions/run-guest-process-fast")]
+    public async Task EditingRoutes_are_forbidden_for_a_caller_holding_only_the_system_ViewVms(string method, string suffix)
+    {
+        var vm = await SeedProxmoxVm();
+        var actor = await Actor()
+            .Holding(AppSystemPermission.ViewVms)
+            .SeedAsync();
+
+        var response = await Send(method, suffix, vm.Id, Client(actor));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("You do not have permission to edit this Vm", await Title(response));
+    }
+
+    /// <summary>
     /// The snapshot and guest-file routes ask for a View permission through the Vm's team, so the same
     /// permission on another View does not reach them.
     /// </summary>
@@ -990,6 +1089,66 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         await Factory.Proxmox.DidNotReceive()
             .MountIso(Arg.Any<ProxmoxVmInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// <c>ControlViewVms</c> in the View controls every team's Vms there, so it passes both the editing gate
+    /// and the check on the submitted ISO's team.
+    /// </summary>
+    [Fact]
+    public async Task MountIso_of_another_teams_iso_is_allowed_for_a_caller_holding_exactly_ControlViewVms_on_the_view()
+    {
+        var vm = await SeedProxmoxVm();
+        AnotherTeamsIsoIsSubmitted(vm);
+        var actor = await Actor()
+            .Holding(AppViewPermission.ControlViewVms, _viewId)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync(
+            $"{Route(vm.Id)}/actions/mount-iso", new { Iso = "isos:iso/submitted.iso" }, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("isos:iso/canonical.iso", ProxmoxCall(nameof(IProxmoxService.MountIso))[1]);
+    }
+
+    /// <summary>
+    /// <c>ControlTeamVms</c> on the Vm's team passes the editing gate, so the refusal is the ISO team check's,
+    /// and <c>ControlViewVms</c> is held in another View, where it does not reach the ISO's team.
+    /// </summary>
+    [Fact]
+    public async Task MountIso_of_another_teams_iso_is_forbidden_for_a_caller_holding_ControlViewVms_only_on_another_view()
+    {
+        var vm = await SeedProxmoxVm();
+        AnotherTeamsIsoIsSubmitted(vm);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ControlTeamVms, _teamId)
+            .Holding(AppViewPermission.ControlViewVms, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync(
+            $"{Route(vm.Id)}/actions/mount-iso", new { Iso = "isos:iso/submitted.iso" }, Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("The specified iso is not available to this Vm", await Title(response));
+
+        await Factory.Proxmox.DidNotReceive()
+            .MountIso(Arg.Any<ProxmoxVmInfo>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task MountIso_of_another_teams_iso_is_allowed_for_a_caller_holding_exactly_the_system_ControlVms()
+    {
+        var vm = await SeedProxmoxVm();
+        AnotherTeamsIsoIsSubmitted(vm);
+        var actor = await Actor()
+            .Holding(AppSystemPermission.ControlVms)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync(
+            $"{Route(vm.Id)}/actions/mount-iso", new { Iso = "isos:iso/submitted.iso" }, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("isos:iso/canonical.iso", ProxmoxCall(nameof(IProxmoxService.MountIso))[1]);
     }
 
     [Theory]

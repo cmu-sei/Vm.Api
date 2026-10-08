@@ -4,7 +4,7 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 1,732 tests. All of them run today; nothing is skipped.
+The suite contains 1,927 tests. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
 Docker: no network, no vCenter and no Proxmox cluster. The unit tests need not even that.

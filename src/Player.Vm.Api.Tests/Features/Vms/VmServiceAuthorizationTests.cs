@@ -7,6 +7,7 @@ using System.Linq;
 using System.Security.Claims;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Networks;
@@ -753,6 +754,18 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         await Assert.ThrowsAsync<ForbiddenException>(() => Service.DeleteMapAsync(map.Id, Ct));
     }
 
+    // The system grant is asked with the View id and no teams for a teamless Map, and answers for every View.
+    [Fact]
+    public async Task DeleteMap_of_a_teamless_map_is_allowed_for_a_caller_holding_exactly_the_system_ManageMaps()
+    {
+        var map = Map(teamIds: []);
+        await Seed(map);
+        CanManageMaps(true);
+
+        Assert.True(await Service.DeleteMapAsync(map.Id, Ct));
+        Assert.False(await ReadBack(db => db.Maps.AnyAsync(x => x.Id == map.Id, Ct)));
+    }
+
     /// <summary>
     /// null, so the controller answers 404. An unknown View must not read as a View with no maps, which
     /// is why GetViewMapsAsync probes the teams endpoint even though it filters on the Map permissions.
@@ -1018,6 +1031,26 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var updated = await Service.UpdateMapAsync(UpdateForm(toTeam), map.Id, Ct);
 
         Assert.Equal<Guid>([toTeam], updated.TeamIds);
+        Assert.Equal<Guid>([toTeam], (await ReadBack(db => db.Maps.SingleAsync(x => x.Id == map.Id, Ct))).TeamIds);
+    }
+
+    // ViewViews is what player.api's View and team reads ask of a caller with no claim in the View; the Map
+    // gate does not accept it, so the system ManageMaps is what manages both the old team and the new one.
+    [Fact]
+    public async Task UpdateMap_moving_a_map_between_teams_is_allowed_for_a_caller_holding_ManageMaps_and_ViewViews()
+    {
+        var viewId = Guid.NewGuid();
+        var (fromTeam, toTeam) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map(teamIds: [fromTeam], viewId: viewId);
+        await Seed(map);
+        ViewWithTeams(viewId, fromTeam, toTeam);
+        CanManageMaps(true);
+        Grant(b => b.Holding(AppSystemPermission.ViewViews));
+
+        var updated = await Service.UpdateMapAsync(UpdateForm(toTeam), map.Id, Ct);
+
+        Assert.Equal<Guid>([toTeam], updated.TeamIds);
+        Assert.Equal<Guid>([toTeam], (await ReadBack(db => db.Maps.SingleAsync(x => x.Id == map.Id, Ct))).TeamIds);
     }
 
     #endregion

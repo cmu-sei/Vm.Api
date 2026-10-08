@@ -1383,6 +1383,155 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Empty(context.Maps.Where(x => x.Id == map.Id));
     }
 
+    [Fact]
+    public async Task DeleteMap_is_allowed_for_a_caller_holding_exactly_the_system_ManageMaps()
+    {
+        var map = Map([Guid.NewGuid()]);
+        await Seed(map);
+        var actor = await Actor().Holding(AppSystemPermission.ManageMaps).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/views/maps/{map.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Empty(context.Maps.Where(x => x.Id == map.Id));
+    }
+
+    // The system ViewMaps reads every Map, and changes none.
+    [Fact]
+    public async Task DeleteMap_is_forbidden_for_a_caller_holding_only_the_system_ViewMaps_and_leaves_the_row()
+    {
+        var map = Map([Guid.NewGuid()]);
+        await Seed(map);
+        var actor = await Actor().Holding(AppSystemPermission.ViewMaps).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/views/maps/{map.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Single(context.Maps.Where(x => x.Id == map.Id));
+    }
+
+    // ViewViews as well, because the create reads the View and the team from player.api as the caller, and
+    // player.api's reads ask for it of a caller with no claim in the View. The Map gate does not accept it.
+    [Fact]
+    public async Task CreateMap_is_allowed_for_a_caller_holding_ManageMaps_and_ViewViews()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        View(viewId, teamId);
+        var actor = await Actor()
+            .Holding(AppSystemPermission.ManageMaps, AppSystemPermission.ViewViews)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync($"/api/views/{viewId}/map", MapCreateForm(teamId), Ct);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Equal<Guid>([teamId], context.Maps.Single(x => x.ViewId == viewId).TeamIds);
+    }
+
+    // The same player.api reads, passed by ViewViews, so the refusal is the Map gate's.
+    [Fact]
+    public async Task CreateMap_is_forbidden_for_a_caller_holding_ViewMaps_and_ViewViews_and_stores_nothing()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        View(viewId, teamId);
+        var actor = await Actor()
+            .Holding(AppSystemPermission.ViewMaps, AppSystemPermission.ViewViews)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync($"/api/views/{viewId}/map", MapCreateForm(teamId), Ct);
+
+        Assert.Equal("Insufficient Permissions", (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
+
+        await using var context = NewContext();
+        Assert.Empty(context.Maps.Where(x => x.ViewId == viewId));
+    }
+
+    // ManageViewMaps is carried on the caller's own team in the Map's View, which covers every team there.
+    [Fact]
+    public async Task DeleteMap_is_allowed_for_a_caller_holding_exactly_ManageViewMaps_on_the_maps_view()
+    {
+        var map = Map([Guid.NewGuid()]);
+        await Seed(map);
+        var actor = await Actor().Holding(AppViewPermission.ManageViewMaps, map.ViewId).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/views/maps/{map.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Empty(context.Maps.Where(x => x.Id == map.Id));
+    }
+
+    // A member of the Map's team, holding the View permission the delete accepts in another View.
+    [Fact]
+    public async Task DeleteMap_is_forbidden_for_a_member_of_the_maps_team_holding_ManageViewMaps_only_in_another_view_and_leaves_the_row()
+    {
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId]);
+        await Seed(map);
+        var actor = await Actor()
+            .MemberOf(teamId)
+            .Holding(AppViewPermission.ManageViewMaps, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/views/maps/{map.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Single(context.Maps.Where(x => x.Id == map.Id));
+    }
+
+    // ViewTeam on the new team as well, for player.api's team lookup; the Map gate does not accept it, and
+    // ManageViewMaps in the View covers both the team the Map is on and the one it moves to.
+    [Fact]
+    public async Task UpdateMap_moving_a_map_between_teams_is_allowed_for_a_caller_holding_ManageViewMaps_on_the_maps_view_and_ViewTeam_on_the_new_team()
+    {
+        var (teamId, otherTeam) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map([teamId]);
+        await Seed(map);
+        View(map.ViewId, teamId, otherTeam);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeam, otherTeam)
+            .Holding(AppViewPermission.ManageViewMaps, map.ViewId)
+            .SeedAsync();
+
+        var response = await Client(actor).PutAsJsonAsync($"/api/views/maps/{map.Id}", MapUpdateForm(otherTeam, "after"), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Equal<Guid>([otherTeam], context.Maps.Single(x => x.Id == map.Id).TeamIds);
+    }
+
+    // The caller may read and manage the team the Map moves to, so the destination check passes and the
+    // refusal is the check on the team the Map is on, where ManageViewMaps held in another View does not reach.
+    [Fact]
+    public async Task UpdateMap_off_its_team_is_forbidden_for_a_caller_holding_ManageViewMaps_only_in_another_view_and_leaves_the_teams()
+    {
+        var (teamId, otherTeam) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map([teamId]);
+        await Seed(map);
+        View(map.ViewId, teamId, otherTeam);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ManageTeamMaps, otherTeam)
+            .Holding(AppTeamPermission.ViewTeam, otherTeam)
+            .Holding(AppViewPermission.ManageViewMaps, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Client(actor).PutAsJsonAsync($"/api/views/maps/{map.Id}", MapUpdateForm(otherTeam, "after"), Ct);
+
+        Assert.Equal("Insufficient Permissions", (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
+
+        await using var context = NewContext();
+        Assert.Equal<Guid>([teamId], context.Maps.Single(x => x.Id == map.Id).TeamIds);
+    }
+
     #endregion
 
     #region Helpers

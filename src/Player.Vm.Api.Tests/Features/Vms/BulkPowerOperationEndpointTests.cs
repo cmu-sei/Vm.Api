@@ -119,6 +119,84 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
     }
 
     /// <summary>
+    /// <c>ControlViewVms</c> is carried on the caller's own team in the Vm's View, not on the Vm's team, so
+    /// both the visibility check and the control check reach it through the View.
+    /// </summary>
+    [Fact]
+    public async Task PowerOn_is_allowed_for_a_caller_holding_exactly_ControlViewVms_on_the_Vms_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = TestData.VsphereVm(teamId);
+        await Seed(vm);
+        var actor = await Actor()
+            .InView(teamId, viewId)
+            .Holding(AppViewPermission.ControlViewVms, viewId)
+            .SeedAsync();
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "power-on", vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
+    }
+
+    /// <summary>
+    /// <c>ViewTeamVms</c> on the Vm's team passes the visibility check, so the entry is the control check's,
+    /// and <c>ControlViewVms</c> is held in another View, where it does not reach this Vm.
+    /// </summary>
+    [Fact]
+    public async Task PowerOn_refuses_a_caller_holding_ControlViewVms_only_on_another_view_with_an_Insufficient_Permissions_entry()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = TestData.VsphereVm(teamId);
+        await Seed(vm);
+        var actor = await Actor()
+            .InView(teamId, viewId)
+            .Holding(AppTeamPermission.ViewTeamVms, teamId)
+            .Holding(AppViewPermission.ControlViewVms, Guid.NewGuid())
+            .SeedAsync();
+        // What vCenter would answer had the power-on been submitted.
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "power-on", vm.Id);
+
+        Assert.Equal("Insufficient Permissions", result.Errors.For(vm.Id));
+        Assert.Empty(result.Accepted);
+        await Factory.Vsphere.DidNotReceive().BulkPowerOperation(Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+    }
+
+    [Fact]
+    public async Task PowerOn_is_allowed_for_a_caller_holding_exactly_the_system_ControlVms()
+    {
+        var vm = TestData.VsphereVm();
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ControlVms).SeedAsync();
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "power-on", vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
+    }
+
+    /// <summary>The system <c>ViewVms</c> sees every Vm and controls none of them.</summary>
+    [Fact]
+    public async Task PowerOn_refuses_a_caller_holding_only_the_system_ViewVms_with_an_Insufficient_Permissions_entry()
+    {
+        var vm = TestData.VsphereVm();
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ViewVms).SeedAsync();
+        // What vCenter would answer had the power-on been submitted.
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "power-on", vm.Id);
+
+        Assert.Equal("Insufficient Permissions", result.Errors.For(vm.Id));
+        Assert.Empty(result.Accepted);
+        await Factory.Vsphere.DidNotReceive().BulkPowerOperation(Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+    }
+
+    /// <summary>
     /// The reason this layer exists. One Vm vCenter refuses has to come back as one entry in Errors
     /// while its neighbours are still submitted - the vSphere result dictionary used to be discarded
     /// here, so the caller was told everything went fine.

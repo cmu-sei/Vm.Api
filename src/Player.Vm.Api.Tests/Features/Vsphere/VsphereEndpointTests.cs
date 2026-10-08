@@ -375,6 +375,113 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     /// <summary>
+    /// <c>ControlViewVms</c> is carried on the caller's own team in the Vm's View, not on the Vm's team, so
+    /// the editing gate reaches it through the View: no team permission on the Vm's team is held.
+    /// </summary>
+    [Theory]
+    [InlineData("POST", "/actions/power-on", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/power-off", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/reboot", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/shutdown", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/mount-iso", HttpStatusCode.BadRequest)]
+    [InlineData("POST", "/actions/set-resolution", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/validate-credentials", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/run-guest-process", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/run-guest-process-fast", HttpStatusCode.OK)]
+    public async Task EditingRoutes_are_allowed_for_a_caller_holding_exactly_ControlViewVms_on_the_Vms_view(
+        string method, string suffix, HttpStatusCode expected)
+    {
+        var vm = await SeedVsphereVm();
+        var actor = await Actor()
+            .Holding(AppViewPermission.ControlViewVms, _viewId)
+            .SeedAsync();
+
+        var response = await Send(method, suffix, vm.Id, Client(actor));
+
+        // The empty body passes the gate and nothing else checks permission; mount-iso then wants an iso.
+        Assert.Equal(expected, response.StatusCode);
+    }
+
+    /// <summary>
+    /// <c>ViewTeamVms</c> on the Vm's team lets the caller see the Vm, and <c>ControlViewVms</c> in another
+    /// View is the very permission the editing gate asks for, held where it does not reach this Vm.
+    /// </summary>
+    [Theory]
+    [InlineData("POST", "/actions/power-on")]
+    [InlineData("POST", "/actions/power-off")]
+    [InlineData("POST", "/actions/reboot")]
+    [InlineData("POST", "/actions/shutdown")]
+    [InlineData("POST", "/actions/mount-iso")]
+    [InlineData("POST", "/actions/set-resolution")]
+    [InlineData("POST", "/actions/validate-credentials")]
+    [InlineData("POST", "/actions/run-guest-process")]
+    [InlineData("POST", "/actions/run-guest-process-fast")]
+    public async Task EditingRoutes_are_forbidden_for_a_caller_holding_ControlViewVms_only_on_another_view(string method, string suffix)
+    {
+        var vm = await SeedVsphereVm();
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, _teamId)
+            .Holding(AppViewPermission.ControlViewVms, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Send(method, suffix, vm.Id, Client(actor));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("You do not have permission to edit this Vm", await Title(response));
+    }
+
+    [Theory]
+    [InlineData("POST", "/actions/power-on", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/power-off", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/reboot", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/shutdown", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/mount-iso", HttpStatusCode.BadRequest)]
+    [InlineData("POST", "/actions/set-resolution", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/validate-credentials", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/run-guest-process", HttpStatusCode.OK)]
+    [InlineData("POST", "/actions/run-guest-process-fast", HttpStatusCode.OK)]
+    public async Task EditingRoutes_are_allowed_for_a_caller_holding_exactly_the_system_ControlVms(
+        string method, string suffix, HttpStatusCode expected)
+    {
+        var vm = await SeedVsphereVm();
+        var actor = await Actor()
+            .Holding(AppSystemPermission.ControlVms)
+            .SeedAsync();
+
+        var response = await Send(method, suffix, vm.Id, Client(actor));
+
+        // The empty body passes the gate and nothing else checks permission; mount-iso then wants an iso.
+        Assert.Equal(expected, response.StatusCode);
+    }
+
+    /// <summary>
+    /// The system <c>ViewVms</c> sees every Vm, which is the read the editing routes make first, and
+    /// controls none of them.
+    /// </summary>
+    [Theory]
+    [InlineData("POST", "/actions/power-on")]
+    [InlineData("POST", "/actions/power-off")]
+    [InlineData("POST", "/actions/reboot")]
+    [InlineData("POST", "/actions/shutdown")]
+    [InlineData("POST", "/actions/mount-iso")]
+    [InlineData("POST", "/actions/set-resolution")]
+    [InlineData("POST", "/actions/validate-credentials")]
+    [InlineData("POST", "/actions/run-guest-process")]
+    [InlineData("POST", "/actions/run-guest-process-fast")]
+    public async Task EditingRoutes_are_forbidden_for_a_caller_holding_only_the_system_ViewVms(string method, string suffix)
+    {
+        var vm = await SeedVsphereVm();
+        var actor = await Actor()
+            .Holding(AppSystemPermission.ViewVms)
+            .SeedAsync();
+
+        var response = await Send(method, suffix, vm.Id, Client(actor));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("You do not have permission to edit this Vm", await Title(response));
+    }
+
+    /// <summary>
     /// The snapshot and guest-file routes ask for a View permission through the Vm's team, so the same
     /// permission on another View does not reach them.
     /// </summary>
