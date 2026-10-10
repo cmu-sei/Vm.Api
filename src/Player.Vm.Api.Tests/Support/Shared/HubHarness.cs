@@ -126,6 +126,44 @@ public sealed class HubHarness
         Assert.Empty(Sends(proxy, method));
     }
 
+    /// <summary>
+    /// The audiences the hub addressed, in order: each member of <see cref="Clients"/> it read
+    /// (<c>Caller</c>, <c>Group</c>, <c>Groups</c>, <c>OthersInGroup</c>, <c>All</c>, <c>Others</c>,
+    /// <c>Client</c>, <c>User</c>, ...), named as <c>nameof(IHubCallerClients.X)</c> names it.
+    /// </summary>
+    /// <remarks>
+    /// The proxies are substitutes, so a hub that sends through an audience the test does not read (a
+    /// broadcast to <c>All</c> where the test reads one group) passes a test that only asks what the group
+    /// received. <see cref="AssertAddressedOnly"/> and <see cref="NothingAddressed"/> close that gap.
+    /// </remarks>
+    public IReadOnlyList<string> Addressed =>
+        [.. Clients.ReceivedCalls()
+            .Select(x => x.GetMethodInfo().Name)
+            .Select(name => name.StartsWith("get_", StringComparison.Ordinal) ? name[4..] : name)];
+
+    /// <summary>
+    /// Fails unless every audience the hub addressed is one of <paramref name="members"/>
+    /// (<c>nameof(IHubCallerClients.OthersInGroup)</c>, ...), and unless the hub left the connection alone:
+    /// it read no <c>Context.Features</c> and did not abort it.
+    /// </summary>
+    public void AssertAddressedOnly(params string[] members)
+    {
+        Assert.All(Addressed, member => Assert.Contains(member, members));
+        AssertConnectionUntouched();
+    }
+
+    /// <summary>Fails if the hub addressed any audience, read <c>Context.Features</c> or aborted the connection.</summary>
+    public void NothingAddressed()
+    {
+        Assert.Empty(Addressed);
+        AssertConnectionUntouched();
+    }
+
+    private void AssertConnectionUntouched() =>
+        Assert.DoesNotContain(
+            Context.ReceivedCalls(),
+            x => x.GetMethodInfo().Name is "get_" + nameof(HubCallerContext.Features) or nameof(HubCallerContext.Abort));
+
     private IReadOnlyList<string> GroupChanges(string method) =>
         [.. Groups.ReceivedCalls()
             .Where(x => x.GetMethodInfo().Name == method)

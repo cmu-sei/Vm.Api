@@ -72,6 +72,13 @@ public abstract class ApiTestBase<TContext>(ITestDatabaseSessionSource<TContext>
     private HttpClient _unauthenticated;
 
     /// <summary>
+    /// The value of this test's <see cref="TestDatabaseScope.HeaderName"/> header, which every client
+    /// <see cref="ClientFor"/> builds sends: what a request or a hub connection the test builds by hand
+    /// sends too, so the host resolves this test's database.
+    /// </summary>
+    protected string SessionId => _sessionId.ToString();
+
+    /// <summary>
     /// A client acting as the user <paramref name="userId"/>, named <paramref name="name"/>. Cached, so
     /// repeated calls share one client and its headers. The user's permissions are whatever the rows the
     /// test seeded grant through the real claims transformer.
