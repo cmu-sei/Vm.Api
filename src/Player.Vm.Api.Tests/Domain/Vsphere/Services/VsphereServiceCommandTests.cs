@@ -196,11 +196,7 @@ public class VsphereServiceCommandTests
         await vcenter.Client.Received(1).PowerOnVM_TaskAsync(reference, null);
     }
 
-    // INTENTIONAL, DO NOT "FIX": a failed power-on reports the same string as a successful one. The UI
-    // powers on a whole multi-select in one gesture, and a VM that raced into the on state between the
-    // state check and the call (or sits on a host that is briefly unreachable) must not turn the user's
-    // batch red. The catch block assigns "poweron error" and the line after it overwrites that
-    // unconditionally - the dead assignment is the swallow.
+    /// <summary>A rejected power-on task is reported as submitted.</summary>
     [Fact]
     public async Task PowerOn_WhenVcenterRejectsTheTask_StillReportsSubmitted()
     {

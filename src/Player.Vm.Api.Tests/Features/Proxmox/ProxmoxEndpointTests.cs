@@ -557,6 +557,75 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
     }
 
+    // The read routes ask CanAccessVm alone, so each Vm read value it accepts reads the Vm, and a caller
+    // holding a neighbouring permission, or the View value in another View, is refused there.
+
+    [Theory]
+    [InlineData(AppSystemPermission.ViewVms)]
+    [InlineData(AppSystemPermission.ControlVms)]
+    public async Task Get_is_allowed_for_a_caller_holding_exactly_a_system_Vm_read_permission(AppSystemPermission permission)
+    {
+        var vm = await SeedProxmoxVm();
+        var actor = await Actor().Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync(Route(vm.Id), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, (await response.Content.ReadFromJsonAsync<ProxmoxVirtualMachine>(JsonOptions, Ct)).Id);
+    }
+
+    [Theory]
+    [InlineData(AppViewPermission.ViewViewVms)]
+    [InlineData(AppViewPermission.ControlViewVms)]
+    public async Task Get_is_allowed_for_a_caller_holding_exactly_a_Vm_read_permission_on_the_Vms_view(AppViewPermission permission)
+    {
+        var vm = await SeedProxmoxVm();
+        var actor = await Actor().Holding(permission, _viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync(Route(vm.Id), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, (await response.Content.ReadFromJsonAsync<ProxmoxVirtualMachine>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task Get_is_allowed_for_a_caller_holding_exactly_ControlTeamVms_on_the_Vms_team()
+    {
+        var vm = await SeedProxmoxVm();
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, _teamId).SeedAsync();
+
+        var response = await Client(actor).GetAsync(Route(vm.Id), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, (await response.Content.ReadFromJsonAsync<ProxmoxVirtualMachine>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task Get_is_forbidden_for_a_caller_holding_only_the_system_ViewMaps()
+    {
+        var vm = await SeedProxmoxVm();
+        var actor = await Actor().Holding(AppSystemPermission.ViewMaps).SeedAsync();
+
+        var response = await Client(actor).GetAsync(Route(vm.Id), Ct);
+
+        await AssertStatus(HttpStatusCode.Forbidden, response);
+        Assert.Equal("Insufficient Permissions", await Title(response));
+    }
+
+    [Fact]
+    public async Task Get_is_forbidden_for_a_caller_holding_ViewViewVms_only_in_another_view()
+    {
+        var vm = await SeedProxmoxVm();
+        var otherView = Guid.NewGuid();
+        Factory.Player.AddView(otherView);
+        var actor = await Actor().Holding(AppViewPermission.ViewViewVms, otherView).SeedAsync();
+
+        var response = await Client(actor).GetAsync(Route(vm.Id), Ct);
+
+        await AssertStatus(HttpStatusCode.Forbidden, response);
+        Assert.Equal("Insufficient Permissions", await Title(response));
+    }
+
     #endregion
 
     #region Power

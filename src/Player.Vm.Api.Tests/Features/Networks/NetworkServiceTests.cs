@@ -198,6 +198,77 @@ public class NetworkServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fix
         Assert.Equal(["vlan-10", "vlan-20"], effective.AllowedNetworks.Keys.OrderBy(x => x));
     }
 
+    [Fact]
+    public async Task Effective_allows_every_network_in_the_view_for_a_caller_holding_exactly_ManageNetworks()
+    {
+        var viewId = Guid.NewGuid();
+        var unassigned = Network(viewId, "vlan-10");
+        var otherTeams = Network(viewId, "vlan-20", teamIds: [Guid.NewGuid()]);
+        await Seed(unassigned, otherTeams);
+
+        Holding(AppSystemPermission.ManageNetworks);
+
+        var effective = await Service.GetEffectiveNetworkPermissions(
+            viewId, [Guid.NewGuid()], VmType.Vsphere, Instance, Ct);
+
+        Assert.Equal(["vlan-10", "vlan-20"], effective.AllowedNetworks.Keys.OrderBy(x => x));
+    }
+
+    // The View permission is read through the caller's own team in the View the Vm's team is in.
+    [Fact]
+    public async Task Effective_allows_every_network_in_the_view_for_a_caller_holding_exactly_ViewNetworks_on_the_view()
+    {
+        var (viewId, vmTeam) = (Guid.NewGuid(), Guid.NewGuid());
+        var unassigned = Network(viewId, "vlan-10");
+        var otherTeams = Network(viewId, "vlan-20", teamIds: [Guid.NewGuid()]);
+        await Seed(unassigned, otherTeams);
+        _player.Directory.PlaceTeam(vmTeam, viewId);
+
+        Grant(b => b.Holding(AppViewPermission.ViewNetworks, viewId));
+
+        var effective = await Service.GetEffectiveNetworkPermissions(
+            viewId, [vmTeam], VmType.Vsphere, Instance, Ct);
+
+        Assert.Equal(["vlan-10", "vlan-20"], effective.AllowedNetworks.Keys.OrderBy(x => x));
+    }
+
+    [Fact]
+    public async Task Effective_allows_every_network_in_the_view_for_a_caller_holding_exactly_ManageNetworks_on_the_view()
+    {
+        var (viewId, vmTeam) = (Guid.NewGuid(), Guid.NewGuid());
+        var unassigned = Network(viewId, "vlan-10");
+        var otherTeams = Network(viewId, "vlan-20", teamIds: [Guid.NewGuid()]);
+        await Seed(unassigned, otherTeams);
+        _player.Directory.PlaceTeam(vmTeam, viewId);
+
+        Grant(b => b.Holding(AppViewPermission.ManageNetworks, viewId));
+
+        var effective = await Service.GetEffectiveNetworkPermissions(
+            viewId, [vmTeam], VmType.Vsphere, Instance, Ct);
+
+        Assert.Equal(["vlan-10", "vlan-20"], effective.AllowedNetworks.Keys.OrderBy(x => x));
+    }
+
+    // ViewNetworks in another View is no View-wide access here: only the caller's own team's network is allowed.
+    [Fact]
+    public async Task Effective_leaves_out_other_teams_networks_for_a_caller_holding_ViewNetworks_only_in_another_view()
+    {
+        var (viewId, myTeam, theirTeam) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        var mine = Network(viewId, "vlan-10", teamIds: [myTeam]);
+        var theirs = Network(viewId, "vlan-20", teamIds: [theirTeam]);
+        var unassigned = Network(viewId, "vlan-30");
+        await Seed(mine, theirs, unassigned);
+        _player.Directory.PlaceTeam(myTeam, viewId);
+        _player.Directory.PlaceTeam(theirTeam, viewId);
+
+        Grant(b => b.MemberOf(myTeam).Holding(AppViewPermission.ViewNetworks, Guid.NewGuid()));
+
+        var effective = await Service.GetEffectiveNetworkPermissions(
+            viewId, [myTeam, theirTeam], VmType.Vsphere, Instance, Ct);
+
+        Assert.Equal(["vlan-10"], effective.AllowedNetworks.Keys);
+    }
+
     /// <summary>
     /// The segmentation guard. Without view-wide access, a network is only allowed if one of its team ids
     /// is a team the caller is actually on - so a team cannot reach the network of a team beside it, which

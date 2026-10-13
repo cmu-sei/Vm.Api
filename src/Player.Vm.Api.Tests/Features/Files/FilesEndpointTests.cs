@@ -261,6 +261,140 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
             .UploadAsync(Arg.Any<IsoUploadRequest>(), Arg.Any<CancellationToken>());
     }
 
+    [Fact]
+    public async Task Upload_to_a_team_is_allowed_for_a_caller_holding_exactly_UploadTeamIsos_on_that_team()
+    {
+        var teamId = Guid.NewGuid();
+        Factory.Player.PlaceTeam(teamId, _viewId);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.UploadTeamIsos, teamId)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsync(
+            $"/api/views/{_viewId}/isos", Form(file: "boot.iso", scope: "team", teamIds: [teamId.ToString()]), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal<string>([teamId.ToString()], UploadRequest().ScopeIds);
+    }
+
+    // UploadViewIsos is View-wide, so it admits an upload into any team of the View with no claim on that team.
+    [Fact]
+    public async Task Upload_to_a_team_is_allowed_for_a_caller_holding_exactly_UploadViewIsos_on_the_view()
+    {
+        var teamId = Guid.NewGuid();
+        Factory.Player.PlaceTeam(teamId, _viewId);
+        var actor = await Actor()
+            .Holding(AppViewPermission.UploadViewIsos, _viewId)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsync(
+            $"/api/views/{_viewId}/isos", Form(file: "boot.iso", scope: "team", teamIds: [teamId.ToString()]), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal<string>([teamId.ToString()], UploadRequest().ScopeIds);
+    }
+
+    [Fact]
+    public async Task Upload_to_a_team_is_forbidden_for_a_caller_holding_UploadTeamIsos_only_on_another_team_of_the_view_and_writes_nothing()
+    {
+        // Gate: src/Player.Vm.Api/Features/Files/IsoService.cs#IsoService.ResolveUploadScopeIdsAsync:2
+        var (target, other) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(target, _viewId);
+        Factory.Player.PlaceTeam(other, _viewId);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.UploadTeamIsos, other)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsync(
+            $"/api/views/{_viewId}/isos", Form(file: "boot.iso", scope: "team", teamIds: [target.ToString()]), Ct);
+
+        Assert.Equal(
+            "You do not have permission to upload files for this Team",
+            (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
+        await Factory.IsoProvider.DidNotReceive()
+            .UploadAsync(Arg.Any<IsoUploadRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Upload_to_a_team_is_forbidden_for_a_caller_holding_UploadViewIsos_only_in_another_view_and_writes_nothing()
+    {
+        // Gate: src/Player.Vm.Api/Features/Files/IsoService.cs#IsoService.ResolveUploadScopeIdsAsync:2
+        var target = Guid.NewGuid();
+        Factory.Player.PlaceTeam(target, _viewId);
+        var actor = await Actor()
+            .Holding(AppViewPermission.UploadViewIsos, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsync(
+            $"/api/views/{_viewId}/isos", Form(file: "boot.iso", scope: "team", teamIds: [target.ToString()]), Ct);
+
+        Assert.Equal(
+            "You do not have permission to upload files for this Team",
+            (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
+        await Factory.IsoProvider.DidNotReceive()
+            .UploadAsync(Arg.Any<IsoUploadRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    // The permission is checked per selected team, so the first team passing does not carry the second:
+    // the refusal comes from the loop's second pass, and nothing is written to either team.
+    [Fact]
+    public async Task Upload_to_two_teams_is_forbidden_for_a_caller_holding_UploadTeamIsos_on_only_the_first_and_writes_nothing()
+    {
+        // Gate: src/Player.Vm.Api/Features/Files/IsoService.cs#IsoService.ResolveUploadScopeIdsAsync:2
+        var (first, second) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(first, _viewId);
+        Factory.Player.PlaceTeam(second, _viewId);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.UploadTeamIsos, first)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsync(
+            $"/api/views/{_viewId}/isos",
+            Form(file: "boot.iso", scope: "team", teamIds: [first.ToString(), second.ToString()]),
+            Ct);
+
+        Assert.Equal(
+            "You do not have permission to upload files for this Team",
+            (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
+        await Factory.IsoProvider.DidNotReceive()
+            .UploadAsync(Arg.Any<IsoUploadRequest>(), Arg.Any<CancellationToken>());
+    }
+
+    // No team ids: the target is the caller's primary team in the View, its first membership there.
+    [Fact]
+    public async Task Upload_to_the_primary_team_is_allowed_for_a_caller_holding_exactly_UploadTeamIsos_on_its_primary_team()
+    {
+        var teamId = Guid.NewGuid();
+        Factory.Player.PlaceTeam(teamId, _viewId);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.UploadTeamIsos, teamId)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsync(
+            $"/api/views/{_viewId}/isos", Form(file: "boot.iso", scope: "team"), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal<string>([teamId.ToString()], UploadRequest().ScopeIds);
+    }
+
+    [Fact]
+    public async Task Upload_to_the_primary_team_is_forbidden_for_a_caller_holding_UploadTeamIsos_only_on_a_team_of_another_view()
+    {
+        // Data-row gate: the caller's primary team in the View, which this caller has none of, is the only grant.
+        var actor = await Actor()
+            .Holding(AppTeamPermission.UploadTeamIsos, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsync(
+            $"/api/views/{_viewId}/isos", Form(file: "boot.iso", scope: "team"), Ct);
+
+        Assert.Equal(
+            "You do not have an active team in this View",
+            (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
+        await Factory.IsoProvider.DidNotReceive()
+            .UploadAsync(Arg.Any<IsoUploadRequest>(), Arg.Any<CancellationToken>());
+    }
+
     #endregion
 
     #region Listing
@@ -291,6 +425,24 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Holds((_viewId, "public.iso"), (teamId, "red-only.iso"));
         var actor = await Actor()
             .Holding(AppViewPermission.ViewView, _viewId)
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{_viewId}/isos", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<ManagedIsoResult>(JsonOptions, Ct);
+        Assert.Equal<string>(["public.iso"], result.Isos.Select(x => x.Filename));
+        Assert.Contains(result.TeamIsoResults, x => x.TeamId == teamId);
+    }
+
+    [Fact]
+    public async Task ListView_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_view()
+    {
+        var teamId = Guid.NewGuid();
+        await RootSees(_viewId, (teamId, "red"));
+        Holds((_viewId, "public.iso"), (teamId, "red-only.iso"));
+        var actor = await Actor()
+            .Holding(AppViewPermission.ManageView, _viewId)
             .SeedAsync();
 
         var response = await Client(actor).GetAsync($"/api/views/{_viewId}/isos", Ct);
@@ -543,6 +695,80 @@ public class FilesEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
 
+        await Factory.IsoProvider.DidNotReceive().DeleteAsync(
+            Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Delete_from_a_team_is_allowed_for_a_caller_holding_exactly_DeleteTeamIsos_on_that_team()
+    {
+        var teamId = Guid.NewGuid();
+        Factory.Player.PlaceTeam(teamId, _viewId);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.DeleteTeamIsos, teamId)
+            .SeedAsync();
+
+        var response = await Client(actor).DeleteAsync(
+            $"/api/views/{_viewId}/isos?scope=team&filename=boot.iso&teamId={teamId}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await Factory.IsoProvider.Received(1)
+            .DeleteAsync(_viewId, teamId.ToString(), "boot.iso", Arg.Any<CancellationToken>());
+    }
+
+    // DeleteViewIsos is View-wide, so it admits a delete from any team of the View with no claim on that team.
+    [Fact]
+    public async Task Delete_from_a_team_is_allowed_for_a_caller_holding_exactly_DeleteViewIsos_on_the_view()
+    {
+        var teamId = Guid.NewGuid();
+        Factory.Player.PlaceTeam(teamId, _viewId);
+        var actor = await Actor()
+            .Holding(AppViewPermission.DeleteViewIsos, _viewId)
+            .SeedAsync();
+
+        var response = await Client(actor).DeleteAsync(
+            $"/api/views/{_viewId}/isos?scope=team&filename=boot.iso&teamId={teamId}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await Factory.IsoProvider.Received(1)
+            .DeleteAsync(_viewId, teamId.ToString(), "boot.iso", Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Delete_from_a_team_is_forbidden_for_a_caller_holding_DeleteViewIsos_only_in_another_view_and_removes_nothing()
+    {
+        var teamId = Guid.NewGuid();
+        Factory.Player.PlaceTeam(teamId, _viewId);
+        var actor = await Actor()
+            .Holding(AppViewPermission.DeleteViewIsos, Guid.NewGuid())
+            .SeedAsync();
+
+        var response = await Client(actor).DeleteAsync(
+            $"/api/views/{_viewId}/isos?scope=team&filename=boot.iso&teamId={teamId}", Ct);
+
+        Assert.Equal(
+            "You do not have permission to delete files for this Team",
+            (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
+        await Factory.IsoProvider.DidNotReceive().DeleteAsync(
+            Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
+    }
+
+    [Fact]
+    public async Task Delete_from_a_team_is_forbidden_for_a_caller_holding_DeleteTeamIsos_only_on_another_team_of_the_view_and_removes_nothing()
+    {
+        var (target, other) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(target, _viewId);
+        Factory.Player.PlaceTeam(other, _viewId);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.DeleteTeamIsos, other)
+            .SeedAsync();
+
+        var response = await Client(actor).DeleteAsync(
+            $"/api/views/{_viewId}/isos?scope=team&filename=boot.iso&teamId={target}", Ct);
+
+        Assert.Equal(
+            "You do not have permission to delete files for this Team",
+            (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
         await Factory.IsoProvider.DidNotReceive().DeleteAsync(
             Arg.Any<Guid>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<CancellationToken>());
     }

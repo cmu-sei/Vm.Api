@@ -344,6 +344,23 @@ public class IsoServiceMountAuthTests
         Assert.Contains(teams, t => t.Id == TeamA);
     }
 
+    // Membership is not the test - CanUseTeamIsoAsync is: the team the caller is only scoped into is offered,
+    // named from the privileged listing, while the Vm's own team, which the caller may not control, is not.
+    [Fact]
+    public async Task Picker_OffersTheScopedTeam_ButNotAVmTeamTheCallerMayNotControl()
+    {
+        var primary = Guid.NewGuid();
+        ViewExists(ViewId);
+        ViewHasTeams(ViewId, TeamA, TeamB, primary);
+        _player.Grant(b => b.PrimaryOn(primary).Holding(AppTeamPermission.ControlTeamVms, primary).SeesScoped(TeamB));
+        MayListTheViewsTeams();
+
+        var teams = Assert.Single(await ResolveViewTeams(TeamA)).Teams;
+
+        Assert.Equal(new[] { TeamB, primary }.Order(), teams.Select(t => t.Id).Order());
+        Assert.Equal("all-bbbb", Assert.Single(teams, t => t.Id == TeamB).Name);
+    }
+
     // Widening the candidates to the whole View does not widen who may use them.
     [Fact]
     public async Task Picker_OmitsAViewTeamTheCallerMayNotEdit()

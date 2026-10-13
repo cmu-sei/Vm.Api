@@ -518,6 +518,79 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
             (await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct)).Select(x => x.Id).OrderBy(x => x));
     }
 
+    // Only a team's map, so the team-map filter decides alone; the system Map permission answers for every team.
+    [Theory]
+    [InlineData(AppSystemPermission.ViewMaps)]
+    [InlineData(AppSystemPermission.ManageMaps)]
+    public async Task GetViewMaps_includes_a_teams_map_for_a_caller_holding_exactly_a_system_Map_read_permission(AppSystemPermission permission)
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map([teamId], viewId);
+        await Seed(map);
+        var actor = await Actor().Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/viewMaps/{viewId}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(map.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Theory]
+    [InlineData(AppViewPermission.ViewViewMaps)]
+    [InlineData(AppViewPermission.ManageViewMaps)]
+    public async Task GetViewMaps_includes_a_teams_map_for_a_caller_holding_exactly_a_Map_read_permission_on_the_view(AppViewPermission permission)
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map([teamId], viewId);
+        await Seed(map);
+        var actor = await Actor().Holding(permission, viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/viewMaps/{viewId}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(map.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetViewMaps_includes_a_teams_map_for_a_caller_holding_exactly_ManageTeamMaps_on_the_team()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map([teamId], viewId);
+        await Seed(map);
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeamMaps, teamId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/viewMaps/{viewId}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(map.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetViewMaps_leaves_out_the_maps_of_a_team_for_a_caller_holding_only_the_system_ViewVms()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        await Seed(Map([teamId], viewId));
+        var actor = await Actor().Holding(AppSystemPermission.ViewVms).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/viewMaps/{viewId}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct));
+    }
+
+    [Fact]
+    public async Task GetViewMaps_leaves_out_the_maps_of_a_team_for_a_caller_holding_only_ViewViewVms_on_the_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        await Seed(Map([teamId], viewId));
+        var actor = await Actor().Holding(AppViewPermission.ViewViewVms, viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/viewMaps/{viewId}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct));
+    }
+
     [Fact]
     public async Task GetViewMaps_leaves_out_the_maps_of_a_team_for_a_caller_holding_ViewTeamMaps_only_on_another_team()
     {
@@ -1019,6 +1092,90 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Empty(await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct));
     }
 
+    // A member of the View's team, so the team is visible; the system Vm permission answers for its Vms.
+    [Theory]
+    [InlineData(AppSystemPermission.ViewVms)]
+    [InlineData(AppSystemPermission.ControlVms)]
+    public async Task GetByViewId_is_allowed_for_a_member_holding_exactly_a_system_Vm_read_permission(AppSystemPermission permission)
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        var actor = await Actor().InView(teamId, viewId).MemberOf(teamId).Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/vms", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    // The View permission is carried on the claim of the caller's own team in the View.
+    [Theory]
+    [InlineData(AppViewPermission.ViewViewVms)]
+    [InlineData(AppViewPermission.ControlViewVms)]
+    public async Task GetByViewId_is_allowed_for_a_member_holding_exactly_a_Vm_read_permission_on_the_view(AppViewPermission permission)
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        var actor = await Actor().InView(teamId, viewId).MemberOf(teamId).Holding(permission, viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/vms", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetByViewId_is_allowed_for_a_caller_holding_exactly_ControlTeamVms_on_a_team_of_the_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        var actor = await Actor().InView(teamId, viewId).Holding(AppTeamPermission.ControlTeamVms, teamId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/vms", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    // A member of the View's team, holding the system Map permission beside the Vm one it lacks.
+    [Fact]
+    public async Task GetByViewId_excludes_the_vms_of_a_team_for_a_member_holding_only_the_system_ViewMaps()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        await Seed(Vm([teamId]));
+        var actor = await Actor()
+            .InView(teamId, viewId)
+            .MemberOf(teamId)
+            .Holding(AppSystemPermission.ViewMaps)
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/vms", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct));
+    }
+
+    // A member of the View's team, holding the View Map permission beside the Vm one it lacks, on that team.
+    [Fact]
+    public async Task GetByViewId_excludes_the_vms_of_a_team_for_a_member_holding_only_ViewViewMaps_on_the_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        await Seed(Vm([teamId]));
+        var actor = await Actor()
+            .InView(teamId, viewId)
+            .MemberOf(teamId)
+            .Holding(AppViewPermission.ViewViewMaps, viewId)
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/vms", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct));
+    }
+
     [Fact]
     public async Task GetAllByViewId_is_allowed_for_a_caller_holding_exactly_ViewViewVms_on_the_view()
     {
@@ -1062,14 +1219,67 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     [Fact]
-    public async Task Create_is_forbidden_for_a_caller_holding_ManageTeam_only_on_another_team_and_stores_nothing()
+    public async Task Create_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_teams_view()
     {
-        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, Guid.NewGuid()).SeedAsync();
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(teamId, viewId);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, viewId).SeedAsync();
+        var form = CreateForm(teamId, "new-vm");
+
+        var response = await Client(actor).PostAsJsonAsync("/api/vms", form, Ct);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Single(context.Vms.Where(x => x.Id == form.Id));
+    }
+
+    [Fact]
+    public async Task Create_is_allowed_for_a_caller_holding_exactly_ManageViews()
+    {
+        var actor = await Actor().Holding(AppSystemPermission.ManageViews).SeedAsync();
         var form = CreateForm(Guid.NewGuid(), "new-vm");
 
         var response = await Client(actor).PostAsJsonAsync("/api/vms", form, Ct);
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Single(context.Vms.Where(x => x.Id == form.Id));
+    }
+
+    [Fact]
+    public async Task Create_is_forbidden_for_a_caller_holding_ManageTeam_only_on_another_team_and_stores_nothing()
+    {
+        // Gate: src/Player.Vm.Api/Features/Vms/VmService.cs#VmService.CreateAsync
+        var (viewId, target, other) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(target, viewId);
+        Factory.Player.PlaceTeam(other, viewId);
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, other).SeedAsync();
+        var form = CreateForm(target, "new-vm");
+
+        var response = await Client(actor).PostAsJsonAsync("/api/vms", form, Ct);
+
+        Assert.Equal("Insufficient Permissions", (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
+
+        await using var context = NewContext();
+        Assert.Empty(context.Vms.Where(x => x.Id == form.Id));
+    }
+
+    // Each of the form's teams is checked on its own, so managing the first does not carry the second.
+    [Fact]
+    public async Task Create_on_two_teams_is_forbidden_for_a_caller_holding_ManageTeam_on_only_the_first_and_stores_nothing()
+    {
+        // Gate: src/Player.Vm.Api/Features/Vms/VmService.cs#VmService.CreateAsync
+        var (viewId, first, second) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(first, viewId);
+        Factory.Player.PlaceTeam(second, viewId);
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, first).SeedAsync();
+        var form = new VmCreateForm { Id = Guid.NewGuid(), Name = "new-vm", TeamIds = [first, second] };
+
+        var response = await Client(actor).PostAsJsonAsync("/api/vms", form, Ct);
+
+        Assert.Equal("Insufficient Permissions", (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
 
         await using var context = NewContext();
         Assert.Empty(context.Vms.Where(x => x.Id == form.Id));
@@ -1534,7 +1744,855 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
     #endregion
 
+    #region Every value and tier the Vm and map gates read
+
+    // Each permission value a gate accepts, held alone by a caller who is not Root, and for each tier of a
+    // gate a near miss of its own: a neighbouring system permission, or the same View permission in
+    // another View player.api knows. The Vm reads and the map reads are neighbours of each other.
+
+    /// <summary>The title <c>ForbiddenException()</c> carries, which every VmService gate without a message of its own answers with.</summary>
+    private const string Refused = "Insufficient Permissions";
+
+    /// <summary>The title of the personal-Vm refusal in <c>CanAccessVm</c>.</summary>
+    private const string PersonalRefused = "This machine belongs to another user";
+
+    /// <summary>The title <c>GetMapAsync</c> refuses with.</summary>
+    private const string MapRefused = "You do not have access to this map";
+
+    [Fact]
+    public async Task GetAll_is_allowed_for_a_caller_holding_exactly_ControlVms()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ControlVms).SeedAsync();
+
+        var response = await Client(actor).GetAsync("/api/vms", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(vm.Id, (await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct)).Select(x => x.Id));
+    }
+
+    [Fact]
+    public async Task GetAll_is_forbidden_for_a_caller_holding_only_the_system_ViewMaps()
+    {
+        await Seed(Vm([Guid.NewGuid()]));
+        var actor = await Actor().Holding(AppSystemPermission.ViewMaps).SeedAsync();
+
+        var response = await Client(actor).GetAsync("/api/vms", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    [Theory]
+    [InlineData(AppSystemPermission.ViewVms)]
+    [InlineData(AppSystemPermission.ControlVms)]
+    public async Task Get_is_allowed_for_a_caller_holding_exactly_a_system_Vm_read_permission(AppSystemPermission permission)
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+        var actor = await Actor().Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, (await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Theory]
+    [InlineData(AppViewPermission.ViewViewVms)]
+    [InlineData(AppViewPermission.ControlViewVms)]
+    public async Task Get_is_allowed_for_a_caller_holding_exactly_a_Vm_read_permission_on_the_Vms_view(AppViewPermission permission)
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(teamId, viewId);
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        var actor = await Actor().Holding(permission, viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, (await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task Get_is_allowed_for_a_caller_holding_exactly_ControlTeamVms_on_the_Vms_team()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, teamId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, (await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task Get_is_forbidden_for_a_caller_holding_only_the_system_ViewMaps()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ViewMaps).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    [Fact]
+    public async Task Get_is_forbidden_for_a_caller_holding_ViewViewVms_only_in_another_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(teamId, viewId);
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppViewPermission.ViewViewVms, AnotherKnownView()).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    [Theory]
+    [InlineData(AppSystemPermission.ViewVms)]
+    [InlineData(AppSystemPermission.ControlVms)]
+    public async Task Get_of_another_users_personal_vm_is_allowed_for_a_caller_holding_exactly_a_system_Vm_read_permission(AppSystemPermission permission)
+    {
+        var vm = Vm([Guid.NewGuid()], userId: Guid.NewGuid());
+        await Seed(vm);
+        var actor = await Actor().Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, (await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Theory]
+    [InlineData(AppViewPermission.ViewViewVms)]
+    [InlineData(AppViewPermission.ControlViewVms)]
+    public async Task Get_of_another_users_personal_vm_is_allowed_for_a_caller_holding_exactly_a_Vm_read_permission_on_the_Vms_view(AppViewPermission permission)
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(teamId, viewId);
+        var vm = Vm([teamId], userId: Guid.NewGuid());
+        await Seed(vm);
+        var actor = await Actor().Holding(permission, viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, (await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct)).Id);
+    }
+
+    // ViewTeamVms on the Vm's team passes the team check, so the personal-Vm check is the one that refuses.
+    [Fact]
+    public async Task Get_of_another_users_personal_vm_is_forbidden_for_a_caller_holding_ViewTeamVms_and_only_the_system_ViewMaps()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = Vm([teamId], userId: Guid.NewGuid());
+        await Seed(vm);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, teamId)
+            .Holding(AppSystemPermission.ViewMaps)
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
+
+        await AssertRefused(response, PersonalRefused);
+    }
+
+    [Fact]
+    public async Task Get_of_another_users_personal_vm_is_forbidden_for_a_caller_holding_ViewTeamVms_and_ViewViewVms_only_in_another_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(teamId, viewId);
+        var vm = Vm([teamId], userId: Guid.NewGuid());
+        await Seed(vm);
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, teamId)
+            .Holding(AppViewPermission.ViewViewVms, AnotherKnownView())
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
+
+        await AssertRefused(response, PersonalRefused);
+    }
+
+    // A member of the team, so it sees the team, and the Vm permission is what the gate reads.
+    [Theory]
+    [InlineData(AppSystemPermission.ViewVms)]
+    [InlineData(AppSystemPermission.ControlVms)]
+    public async Task GetByTeamId_is_allowed_for_a_member_holding_exactly_a_system_Vm_read_permission(AppSystemPermission permission)
+    {
+        var teamId = Guid.NewGuid();
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        var actor = await Actor().MemberOf(teamId).Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/teams/{teamId}/vms", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Theory]
+    [InlineData(AppViewPermission.ViewViewVms)]
+    [InlineData(AppViewPermission.ControlViewVms)]
+    public async Task GetByTeamId_is_allowed_for_a_member_holding_exactly_a_Vm_read_permission_on_the_teams_view(AppViewPermission permission)
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        var actor = await Actor().InView(teamId, viewId).MemberOf(teamId).Holding(permission, viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/teams/{teamId}/vms", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetByTeamId_is_allowed_for_a_caller_holding_exactly_ControlTeamVms_on_the_team()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, teamId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/teams/{teamId}/vms", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetByTeamId_is_forbidden_for_a_member_of_the_team_holding_only_the_system_ViewMaps()
+    {
+        var teamId = Guid.NewGuid();
+        await Seed(Vm([teamId]));
+        var actor = await Actor().MemberOf(teamId).Holding(AppSystemPermission.ViewMaps).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/teams/{teamId}/vms", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    [Fact]
+    public async Task GetByTeamId_is_forbidden_for_a_member_of_the_team_holding_ViewViewVms_only_in_another_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        await Seed(Vm([teamId]));
+        var actor = await Actor()
+            .InView(teamId, viewId)
+            .MemberOf(teamId)
+            .Holding(AppViewPermission.ViewViewVms, AnotherKnownView())
+            .SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/teams/{teamId}/vms", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    [Theory]
+    [InlineData(AppSystemPermission.ViewVms)]
+    [InlineData(AppSystemPermission.ControlVms)]
+    public async Task GetAllByViewId_is_allowed_for_a_caller_holding_exactly_a_system_Vm_read_permission(AppSystemPermission permission)
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        Roster(viewId, teamId);
+        var actor = await Actor().Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/vms/all", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetAllByViewId_is_allowed_for_a_caller_holding_exactly_ControlViewVms_on_the_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        Roster(viewId, teamId);
+        var actor = await Actor().Holding(AppViewPermission.ControlViewVms, viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/vms/all", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(vm.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetAllByViewId_is_forbidden_for_a_caller_holding_only_the_system_ViewMaps()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        await Seed(Vm([teamId]));
+        Roster(viewId, teamId);
+        Factory.Player.AddView(viewId);
+        var actor = await Actor().Holding(AppSystemPermission.ViewMaps).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/vms/all", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    [Fact]
+    public async Task GetAllByViewId_is_forbidden_for_a_caller_holding_ViewViewVms_only_in_another_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        await Seed(Vm([teamId]));
+        Roster(viewId, teamId);
+        Factory.Player.AddView(viewId);
+        var actor = await Actor().Holding(AppViewPermission.ViewViewVms, AnotherKnownView()).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/vms/all", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    [Fact]
+    public async Task GetAllMaps_is_allowed_for_a_caller_holding_exactly_ManageMaps()
+    {
+        var map = Map([Guid.NewGuid()]);
+        await Seed(map);
+        var actor = await Actor().Holding(AppSystemPermission.ManageMaps).SeedAsync();
+
+        var response = await Client(actor).GetAsync("/api/views/maps", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(map.Id, (await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct)).Select(x => x.Id));
+    }
+
+    [Fact]
+    public async Task GetAllMaps_is_forbidden_for_a_caller_holding_only_the_system_ViewVms()
+    {
+        await Seed(Map([Guid.NewGuid()]));
+        var actor = await Actor().Holding(AppSystemPermission.ViewVms).SeedAsync();
+
+        var response = await Client(actor).GetAsync("/api/views/maps", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    // Only a teamless map, so the View-level check decides alone.
+    [Theory]
+    [InlineData(AppSystemPermission.ViewMaps)]
+    [InlineData(AppSystemPermission.ManageMaps)]
+    public async Task GetViewMaps_includes_the_teamless_maps_for_a_caller_holding_exactly_a_system_Map_read_permission(AppSystemPermission permission)
+    {
+        var viewId = Guid.NewGuid();
+        var teamless = Map([], viewId);
+        await Seed(teamless);
+        var actor = await Actor().Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/viewMaps/{viewId}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(teamless.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetViewMaps_includes_the_teamless_maps_for_a_caller_holding_exactly_ManageViewMaps_on_the_view()
+    {
+        var viewId = Guid.NewGuid();
+        var teamless = Map([], viewId);
+        await Seed(teamless);
+        var actor = await Actor().Holding(AppViewPermission.ManageViewMaps, viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/viewMaps/{viewId}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(teamless.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetViewMaps_leaves_out_the_teamless_maps_for_a_caller_holding_only_the_system_ViewVms()
+    {
+        var viewId = Guid.NewGuid();
+        await Seed(Map([], viewId));
+        var actor = await Actor().Holding(AppSystemPermission.ViewVms).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/viewMaps/{viewId}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Empty(await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct));
+    }
+
+    [Theory]
+    [InlineData(AppSystemPermission.ViewMaps)]
+    [InlineData(AppSystemPermission.ManageMaps)]
+    public async Task GetAllViewMaps_is_allowed_for_a_caller_holding_exactly_a_system_Map_read_permission(AppSystemPermission permission)
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map([teamId], viewId);
+        await Seed(map);
+        Roster(viewId, teamId);
+        var actor = await Actor().Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/maps/all", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(map.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetAllViewMaps_is_allowed_for_a_caller_holding_exactly_ManageViewMaps_on_the_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var map = Map([teamId], viewId);
+        await Seed(map);
+        Roster(viewId, teamId);
+        var actor = await Actor().Holding(AppViewPermission.ManageViewMaps, viewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/maps/all", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(map.Id, Assert.Single(await response.Content.ReadFromJsonAsync<VmMapModel[]>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetAllViewMaps_is_forbidden_for_a_caller_holding_only_the_system_ViewVms()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        await Seed(Map([teamId], viewId));
+        Roster(viewId, teamId);
+        var actor = await Actor().Holding(AppSystemPermission.ViewVms).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/maps/all", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    [Fact]
+    public async Task GetAllViewMaps_is_forbidden_for_a_caller_holding_ViewViewMaps_only_in_another_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        await Seed(Map([teamId], viewId));
+        Roster(viewId, teamId);
+        var actor = await Actor().Holding(AppViewPermission.ViewViewMaps, AnotherKnownView()).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{viewId}/maps/all", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    [Theory]
+    [InlineData(AppSystemPermission.ViewMaps)]
+    [InlineData(AppSystemPermission.ManageMaps)]
+    public async Task GetMap_is_allowed_for_a_caller_holding_exactly_a_system_Map_read_permission(AppSystemPermission permission)
+    {
+        var map = Map([Guid.NewGuid()]);
+        await Seed(map);
+        var actor = await Actor().Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/{map.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(map.Id, (await response.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Theory]
+    [InlineData(AppViewPermission.ViewViewMaps)]
+    [InlineData(AppViewPermission.ManageViewMaps)]
+    public async Task GetMap_is_allowed_for_a_caller_holding_exactly_a_Map_read_permission_on_the_maps_view(AppViewPermission permission)
+    {
+        var map = Map([Guid.NewGuid()]);
+        await Seed(map);
+        var actor = await Actor().Holding(permission, map.ViewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/{map.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(map.Id, (await response.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetMap_is_allowed_for_a_caller_holding_exactly_ManageTeamMaps_on_the_maps_team()
+    {
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId]);
+        await Seed(map);
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeamMaps, teamId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/{map.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(map.Id, (await response.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetMap_is_forbidden_for_a_caller_holding_only_the_system_ViewVms()
+    {
+        var map = Map([Guid.NewGuid()]);
+        await Seed(map);
+        var actor = await Actor().Holding(AppSystemPermission.ViewVms).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/{map.Id}", Ct);
+
+        await AssertRefused(response, MapRefused);
+    }
+
+    [Fact]
+    public async Task GetMap_is_forbidden_for_a_caller_holding_ViewViewMaps_only_in_another_view()
+    {
+        var map = Map([Guid.NewGuid()]);
+        await Seed(map);
+        var actor = await Actor().Holding(AppViewPermission.ViewViewMaps, AnotherKnownView()).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/maps/{map.Id}", Ct);
+
+        await AssertRefused(response, MapRefused);
+    }
+
+    [Theory]
+    [InlineData(AppSystemPermission.ViewMaps)]
+    [InlineData(AppSystemPermission.ManageMaps)]
+    public async Task GetTeamMap_is_allowed_for_a_caller_holding_exactly_a_system_Map_read_permission(AppSystemPermission permission)
+    {
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId]);
+        await Seed(map);
+        var actor = await Actor().Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/teams/{teamId}/map", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(map.Id, (await response.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Theory]
+    [InlineData(AppViewPermission.ViewViewMaps)]
+    [InlineData(AppViewPermission.ManageViewMaps)]
+    public async Task GetTeamMap_is_allowed_for_a_caller_holding_exactly_a_Map_read_permission_on_the_teams_view(AppViewPermission permission)
+    {
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId]);
+        await Seed(map);
+        var actor = await Actor().Holding(permission, map.ViewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/teams/{teamId}/map", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(map.Id, (await response.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetTeamMap_is_allowed_for_a_caller_holding_exactly_ManageTeamMaps_on_the_team()
+    {
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId]);
+        await Seed(map);
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeamMaps, teamId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/teams/{teamId}/map", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(map.Id, (await response.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetTeamMap_is_forbidden_for_a_caller_holding_only_the_system_ViewVms()
+    {
+        var teamId = Guid.NewGuid();
+        await Seed(Map([teamId]));
+        var actor = await Actor().Holding(AppSystemPermission.ViewVms).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/teams/{teamId}/map", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    [Fact]
+    public async Task GetTeamMap_is_forbidden_for_a_caller_holding_ViewViewMaps_only_in_another_view()
+    {
+        var teamId = Guid.NewGuid();
+        await Seed(Map([teamId]));
+        var actor = await Actor().Holding(AppViewPermission.ViewViewMaps, AnotherKnownView()).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/teams/{teamId}/map", Ct);
+
+        await AssertRefused(response, Refused);
+    }
+
+    [Fact]
+    public async Task Create_is_forbidden_for_a_caller_holding_only_the_system_ViewViews_and_stores_nothing()
+    {
+        var actor = await Actor().Holding(AppSystemPermission.ViewViews).SeedAsync();
+        var form = CreateForm(Guid.NewGuid(), "new-vm");
+
+        var response = await Client(actor).PostAsJsonAsync("/api/vms", form, Ct);
+
+        await AssertRefused(response, Refused);
+
+        await using var context = NewContext();
+        Assert.Empty(context.Vms.Where(x => x.Id == form.Id));
+    }
+
+    [Fact]
+    public async Task Create_is_forbidden_for_a_caller_holding_ManageView_only_in_another_view_and_stores_nothing()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(teamId, viewId);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, AnotherKnownView()).SeedAsync();
+        var form = CreateForm(teamId, "new-vm");
+
+        var response = await Client(actor).PostAsJsonAsync("/api/vms", form, Ct);
+
+        await AssertRefused(response, Refused);
+
+        await using var context = NewContext();
+        Assert.Empty(context.Vms.Where(x => x.Id == form.Id));
+    }
+
+    [Fact]
+    public async Task Update_is_forbidden_for_a_caller_holding_only_the_system_ViewViews_and_leaves_the_name()
+    {
+        var vm = Vm([Guid.NewGuid()], name: "before");
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ViewViews).SeedAsync();
+
+        var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
+
+        await AssertRefused(response, Refused);
+
+        await using var context = NewContext();
+        Assert.Equal("before", context.Vms.Single(x => x.Id == vm.Id).Name);
+    }
+
+    [Fact]
+    public async Task Update_is_forbidden_for_a_caller_holding_ManageView_only_in_another_view_and_leaves_the_name()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(teamId, viewId);
+        var vm = Vm([teamId], name: "before");
+        await Seed(vm);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, AnotherKnownView()).SeedAsync();
+
+        var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
+
+        await AssertRefused(response, Refused);
+
+        await using var context = NewContext();
+        Assert.Equal("before", context.Vms.Single(x => x.Id == vm.Id).Name);
+    }
+
+    [Fact]
+    public async Task Delete_is_allowed_for_a_caller_holding_exactly_ManageViews()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ManageViews).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/vms/{vm.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Empty(context.Vms.Where(x => x.Id == vm.Id));
+    }
+
+    [Fact]
+    public async Task Delete_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_Vms_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(teamId, viewId);
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, viewId).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/vms/{vm.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Empty(context.Vms.Where(x => x.Id == vm.Id));
+    }
+
+    [Fact]
+    public async Task Delete_is_forbidden_for_a_caller_holding_only_the_system_ViewViews_and_leaves_the_row()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ViewViews).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/vms/{vm.Id}", Ct);
+
+        await AssertRefused(response, Refused);
+
+        await using var context = NewContext();
+        Assert.Single(context.Vms.Where(x => x.Id == vm.Id));
+    }
+
+    [Fact]
+    public async Task Delete_is_forbidden_for_a_caller_holding_ManageView_only_in_another_view_and_leaves_the_row()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(teamId, viewId);
+        var vm = Vm([teamId]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, AnotherKnownView()).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/vms/{vm.Id}", Ct);
+
+        await AssertRefused(response, Refused);
+
+        await using var context = NewContext();
+        Assert.Single(context.Vms.Where(x => x.Id == vm.Id));
+    }
+
+    [Fact]
+    public async Task AddToTeam_is_allowed_for_a_caller_holding_exactly_ManageViews()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+        var target = Guid.NewGuid();
+        var actor = await Actor().Holding(AppSystemPermission.ManageViews).SeedAsync();
+
+        var response = await Client(actor).PostAsync($"/api/teams/{target}/vms/{vm.Id}", null, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Single(context.VmTeams.Where(x => x.VmId == vm.Id && x.TeamId == target));
+    }
+
+    [Fact]
+    public async Task AddToTeam_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_target_teams_view()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+        var (viewId, target) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(target, viewId);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, viewId).SeedAsync();
+
+        var response = await Client(actor).PostAsync($"/api/teams/{target}/vms/{vm.Id}", null, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Single(context.VmTeams.Where(x => x.VmId == vm.Id && x.TeamId == target));
+    }
+
+    [Fact]
+    public async Task AddToTeam_is_forbidden_for_a_caller_holding_only_the_system_ViewViews()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+        var target = Guid.NewGuid();
+        var actor = await Actor().Holding(AppSystemPermission.ViewViews).SeedAsync();
+
+        var response = await Client(actor).PostAsync($"/api/teams/{target}/vms/{vm.Id}", null, Ct);
+
+        await AssertRefused(response, Refused);
+
+        await using var context = NewContext();
+        Assert.Empty(context.VmTeams.Where(x => x.VmId == vm.Id && x.TeamId == target));
+    }
+
+    [Fact]
+    public async Task AddToTeam_is_forbidden_for_a_caller_holding_ManageView_only_in_another_view()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+        var (viewId, target) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(target, viewId);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, AnotherKnownView()).SeedAsync();
+
+        var response = await Client(actor).PostAsync($"/api/teams/{target}/vms/{vm.Id}", null, Ct);
+
+        await AssertRefused(response, Refused);
+
+        await using var context = NewContext();
+        Assert.Empty(context.VmTeams.Where(x => x.VmId == vm.Id && x.TeamId == target));
+    }
+
+    [Fact]
+    public async Task RemoveFromTeam_is_allowed_for_a_caller_holding_exactly_ManageViews()
+    {
+        var (removed, kept) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm([removed, kept]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ManageViews).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/teams/{removed}/vms/{vm.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Equal<Guid>([kept], context.VmTeams.Where(x => x.VmId == vm.Id).Select(x => x.TeamId).ToArray());
+    }
+
+    [Fact]
+    public async Task RemoveFromTeam_is_allowed_for_a_caller_holding_exactly_ManageView_on_that_teams_view()
+    {
+        var (viewId, removed, kept) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(removed, viewId);
+        var vm = Vm([removed, kept]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, viewId).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/teams/{removed}/vms/{vm.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Equal<Guid>([kept], context.VmTeams.Where(x => x.VmId == vm.Id).Select(x => x.TeamId).ToArray());
+    }
+
+    [Fact]
+    public async Task RemoveFromTeam_is_forbidden_for_a_caller_holding_only_the_system_ViewViews()
+    {
+        var (removed, kept) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm([removed, kept]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ViewViews).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/teams/{removed}/vms/{vm.Id}", Ct);
+
+        await AssertRefused(response, Refused);
+
+        await using var context = NewContext();
+        Assert.Equal(2, context.VmTeams.Count(x => x.VmId == vm.Id));
+    }
+
+    [Fact]
+    public async Task RemoveFromTeam_is_forbidden_for_a_caller_holding_ManageView_only_in_another_view()
+    {
+        var (viewId, removed, kept) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(removed, viewId);
+        var vm = Vm([removed, kept]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, AnotherKnownView()).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/teams/{removed}/vms/{vm.Id}", Ct);
+
+        await AssertRefused(response, Refused);
+
+        await using var context = NewContext();
+        Assert.Equal(2, context.VmTeams.Count(x => x.VmId == vm.Id));
+    }
+
+    #endregion
+
     #region Helpers
+
+    /// <summary>A View player.api knows, with nothing of this test's in it: the "another View" of a near miss.</summary>
+    private Guid AnotherKnownView()
+    {
+        var viewId = Guid.NewGuid();
+        Factory.Player.AddView(viewId);
+        return viewId;
+    }
+
+    /// <summary>A 403 whose title is the one the gate under test refuses with.</summary>
+    private async Task AssertRefused(HttpResponseMessage response, string title) =>
+        Assert.Equal(title, (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
 
     private static IEnumerable<Guid> Sorted(params Guid[] ids) => ids.OrderBy(x => x);
 

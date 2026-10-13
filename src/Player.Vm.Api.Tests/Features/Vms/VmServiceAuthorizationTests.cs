@@ -1145,7 +1145,10 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     [Fact]
     public async Task Create_is_forbidden_for_a_caller_holding_ManageTeam_on_only_one_of_its_teams()
     {
-        var (first, second) = (Guid.NewGuid(), Guid.NewGuid());
+        // Gate: src/Player.Vm.Api/Features/Vms/VmService.cs#VmService.CreateAsync
+        var (viewId, first, second) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(first, viewId);
+        _player.Directory.PlaceTeam(second, viewId);
         Grant(b => b.Holding(AppTeamPermission.ManageTeam, first));
 
         var form = new VmCreateForm { Id = Guid.NewGuid(), Name = "new", TeamIds = [first, second] };

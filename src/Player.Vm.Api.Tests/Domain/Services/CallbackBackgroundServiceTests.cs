@@ -403,11 +403,13 @@ public class CallbackBackgroundServiceTests(DatabaseFixture fixture) : DatabaseT
         var service = Service();
         await service.StartAsync(Ct);
 
+        // An event's row is removed in a save after the one that deletes its maps, so the wait covers both.
         await Eventually(
-            async context => await context.Maps.AnyAsync(Ct) ? null : "",
-            "both stored events to be processed");
+            async context => await context.Maps.AnyAsync(Ct) || await context.WebhookEvents.AnyAsync(Ct) ? null : "",
+            "both stored events to be processed and removed");
 
         await using var reader = NewContext();
+        Assert.Empty(await reader.Maps.ToListAsync(Ct));
         Assert.Empty(await reader.WebhookEvents.ToListAsync(Ct));
     }
 

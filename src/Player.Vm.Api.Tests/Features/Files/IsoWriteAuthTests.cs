@@ -117,6 +117,7 @@ public class IsoWriteAuthTests
     [Fact]
     public async Task TeamScopedUpload_is_refused_for_a_caller_holding_UploadTeamIsos_only_on_another_team()
     {
+        // Gate: src/Player.Vm.Api/Features/Files/IsoService.cs#IsoService.ResolveUploadScopeIdsAsync:2
         AllowTeam(AppTeamPermission.UploadTeamIsos, TeamB);
 
         var ex = await Assert.ThrowsAsync<ForbiddenException>(() => ResolveUpload("team", TeamA));
@@ -129,9 +130,12 @@ public class IsoWriteAuthTests
     [Fact]
     public async Task TeamScopedUpload_WhereOnlyOneOfTheSelectedTeamsIsPermitted_IsRefusedEntirely()
     {
+        // Gate: src/Player.Vm.Api/Features/Files/IsoService.cs#IsoService.ResolveUploadScopeIdsAsync:2
         AllowTeam(AppTeamPermission.UploadTeamIsos, TeamA);
 
-        await Assert.ThrowsAsync<ForbiddenException>(() => ResolveUpload("team", TeamA, TeamB));
+        var ex = await Assert.ThrowsAsync<ForbiddenException>(() => ResolveUpload("team", TeamA, TeamB));
+
+        Assert.Equal("You do not have permission to upload files for this Team", ex.Message);
     }
 
     [Fact]

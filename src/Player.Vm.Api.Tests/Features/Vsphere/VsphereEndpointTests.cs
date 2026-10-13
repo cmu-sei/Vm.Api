@@ -1323,6 +1323,79 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     /// <summary>
+    /// Seeing the Vm is the whole of the permission the route asks for; the network shared with the
+    /// caller's team is what makes the target one it may choose.
+    /// </summary>
+    [Fact]
+    public async Task ChangeNetwork_is_allowed_for_a_caller_holding_exactly_ViewTeamVms_on_the_Vms_team()
+    {
+        var vm = await SeedVsphereVm();
+        await Seed(Network("dvportgroup-51", "red-team-lan"));
+        VCenterReportsNetworks("dvportgroup-51");
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, _teamId)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync(
+            $"{Route(vm.Id)}/actions/change-network",
+            new { Adapter = "Network adapter 1", Network = "dvportgroup-51" },
+            Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("dvportgroup-51", VsphereCall(nameof(IVsphereService.ReconfigureVm))[3]);
+    }
+
+    [Fact]
+    public async Task ChangeNetwork_is_forbidden_for_a_caller_holding_ViewTeamVms_on_the_Vms_team_naming_a_network_outside_its_list()
+    {
+        var vm = await SeedVsphereVm();
+        await Seed(Network("dvportgroup-51", "red-team-lan"));
+        // Data-row gate: the view-network row seeded above, shared with the Vm's team, is the only network the caller may choose.
+        VCenterReportsNetworks("dvportgroup-51", "dvportgroup-99");
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, _teamId)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync(
+            $"{Route(vm.Id)}/actions/change-network",
+            new { Adapter = "Network adapter 1", Network = "dvportgroup-99" },
+            Ct);
+
+        Assert.Equal(
+            "The target network is not in your allowed networks list",
+            (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
+
+        await AssertNoReconfigure();
+    }
+
+    // Without View-wide network access, a network shared only with another team is not in the caller's list,
+    // and with nothing left in it the change is refused outright.
+    [Fact]
+    public async Task ChangeNetwork_is_forbidden_for_a_caller_holding_ViewTeamVms_on_the_Vms_team_naming_a_network_shared_only_with_another_team()
+    {
+        var vm = await SeedVsphereVm();
+        var theirs = Network("dvportgroup-51", "blue-team-lan");
+        theirs.TeamIds = [Guid.NewGuid()];
+        await Seed(theirs);
+        // Data-row gate: the view-network row seeded above, shared only with another team, is what the caller names.
+        VCenterReportsNetworks("dvportgroup-51");
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, _teamId)
+            .SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync(
+            $"{Route(vm.Id)}/actions/change-network",
+            new { Adapter = "Network adapter 1", Network = "dvportgroup-51" },
+            Ct);
+
+        Assert.Equal(
+            "You do not have permission to change networks on this VM",
+            (await AssertJsonError(HttpStatusCode.Forbidden, response)).Title);
+
+        await AssertNoReconfigure();
+    }
+
+    /// <summary>
     /// No networks registered for the View means no permission to change one - the allowed list is the
     /// permission, so an empty one is a refusal rather than an empty menu.
     /// </summary>

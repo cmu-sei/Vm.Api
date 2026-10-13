@@ -274,6 +274,32 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
     }
 
     [Fact]
+    public async Task GetByViewId_is_allowed_for_a_caller_holding_exactly_ManageNetworks_on_the_view()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var actor = await Actor().Holding(AppViewPermission.ManageNetworks, network.ViewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal<Guid>([network.Id], (await response.Content.ReadFromJsonAsync<ViewNetworkModel[]>(JsonOptions, Ct)).Select(x => x.Id));
+    }
+
+    [Fact]
+    public async Task GetByViewId_is_allowed_for_a_caller_holding_exactly_the_system_ManageNetworks()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var actor = await Actor().Holding(AppSystemPermission.ManageNetworks).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal<Guid>([network.Id], (await response.Content.ReadFromJsonAsync<ViewNetworkModel[]>(JsonOptions, Ct)).Select(x => x.Id));
+    }
+
+    [Fact]
     public async Task GetByViewId_is_forbidden_for_a_caller_holding_ViewNetworks_only_in_another_view()
     {
         var network = Network(Guid.NewGuid(), "vlan-10");
@@ -299,6 +325,19 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
     }
 
     [Fact]
+    public async Task GetById_is_allowed_for_a_caller_holding_exactly_ManageNetworks_on_the_view()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var actor = await Actor().Holding(AppViewPermission.ManageNetworks, network.ViewId).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks/{network.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(network.Id, (await response.Content.ReadFromJsonAsync<ViewNetworkModel>(JsonOptions, Ct)).Id);
+    }
+
+    [Fact]
     public async Task GetById_is_forbidden_for_a_caller_holding_ViewNetworks_only_in_another_view()
     {
         var network = Network(Guid.NewGuid(), "vlan-10");
@@ -316,6 +355,21 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
         var viewId = Guid.NewGuid();
         Factory.Player.AddView(viewId);
         var actor = await Actor().Holding(AppViewPermission.ManageNetworks, viewId).SeedAsync();
+
+        var response = await Client(actor).PostAsJsonAsync($"/api/views/{viewId}/networks", Form("vlan-10", "created"), Ct);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        await using var context = NewContext();
+        Assert.Equal("created", context.ViewNetworks.Single(x => x.ViewId == viewId).Name);
+    }
+
+    [Fact]
+    public async Task Create_is_allowed_for_a_caller_holding_exactly_the_system_ManageNetworks()
+    {
+        var viewId = Guid.NewGuid();
+        Factory.Player.AddView(viewId);
+        var actor = await Actor().Holding(AppSystemPermission.ManageNetworks).SeedAsync();
 
         var response = await Client(actor).PostAsJsonAsync($"/api/views/{viewId}/networks", Form("vlan-10", "created"), Ct);
 
