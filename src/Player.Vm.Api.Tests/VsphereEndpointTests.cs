@@ -342,6 +342,31 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     }
 
     /// <summary>
+    /// The snapshot and guest-file permissions exist only at View level, so a system administrator who is
+    /// on none of the Vm's teams reaches these routes through the system Vm-control permission instead.
+    /// Without it, a role with every system permission is refused unless it is also added to a team.
+    /// </summary>
+    [Theory]
+    [InlineData("GET", "/snapshots")]
+    [InlineData("POST", "/actions/snapshots")]
+    [InlineData("DELETE", "/actions/snapshots/snap-1")]
+    [InlineData("POST", "/actions/revert")]
+    [InlineData("POST", "/actions/revert-to-snapshot")]
+    [InlineData("POST", "/actions/read-guest-file")]
+    [InlineData("POST", "/actions/file-url")]
+    [InlineData("POST", "/actions/upload-file")]
+    public async Task SnapshotAndGuestFileRoutes_WithOnlyTheSystemVmControlPermission_AreAllowed(
+        string method, string suffix)
+    {
+        var vm = await SeedVsphereVm();
+        AllowOnly(AppSystemPermission.ControlVms);
+
+        var response = await Send(method, suffix, vm.Id);
+
+        Assert.True(response.IsSuccessStatusCode, $"{method} {suffix} was {response.StatusCode}");
+    }
+
+    /// <summary>
     /// The other half of the map, and the half a permission check added in the wrong place would break:
     /// reading a Vm with its console ticket, its tools status and its mountable ISOs asks player.api for
     /// no permission at all beyond being able to see the Vm's teams. A team member with nothing else must
@@ -1395,6 +1420,24 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     /// </summary>
     private void DenyEveryPermission() =>
         Factory.PlayerApi.Can(default, default, default, default, default, Ct).ReturnsForAnyArgs(false);
+
+    /// <summary>
+    /// Answers yes only to a question that accepts this system permission - a system-level role holder
+    /// with no View or team permission on the Vm's teams.
+    /// </summary>
+    private void AllowOnly(AppSystemPermission permission)
+    {
+        DenyEveryPermission();
+
+        Factory.PlayerApi.Can(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Is<AppSystemPermission[]>(x => x != null && x.Contains(permission)),
+                Arg.Any<AppViewPermission[]>(),
+                Arg.Any<AppTeamPermission[]>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
+    }
 
     /// <summary>The arguments of the single call to the named <c>IVsphereService</c> method.</summary>
     private object[] VsphereCall(string methodName) => Assert.Single(VsphereCalls(methodName));

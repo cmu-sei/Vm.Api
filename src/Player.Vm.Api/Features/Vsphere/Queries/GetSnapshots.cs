@@ -45,7 +45,7 @@ namespace Player.Vm.Api.Features.Vsphere
 
             public async Task<List<VmSnapshot>> Handle(Query request, CancellationToken cancellationToken)
             {
-                var vm = await base.GetVm(request.Id, [], [AppViewPermission.RevertVms], [], cancellationToken, "You do not have permission to view snapshots for this vm.");
+                var vm = await base.GetVm(request.Id, [AppSystemPermission.ControlVms], [AppViewPermission.RevertVms], [], cancellationToken, "You do not have permission to view snapshots for this vm.");
                 return await _vsphereService.GetSnapshots(vm.Id);
             }
         }

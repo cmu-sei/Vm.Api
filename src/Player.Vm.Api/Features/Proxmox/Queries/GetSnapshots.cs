@@ -38,7 +38,7 @@ namespace Player.Vm.Api.Features.Proxmox.Queries
 
             public async Task<List<ProxmoxSnapshot>> Handle(Query request, CancellationToken cancellationToken)
             {
-                var vm = await GetVm(request.Id, [], [AppViewPermission.RevertVms], [], cancellationToken,
+                var vm = await GetVm(request.Id, [AppSystemPermission.ControlVms], [AppViewPermission.RevertVms], [], cancellationToken,
                     "You do not have permission to view snapshots for this vm.");
                 return await _proxmoxService.GetSnapshots(vm.ProxmoxVmInfo);
             }

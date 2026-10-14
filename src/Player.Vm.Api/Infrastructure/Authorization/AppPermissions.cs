@@ -23,7 +23,10 @@ public enum AppSystemPermission
     /// <summary>View every Vm console in the system without being able to interact with them.</summary>
     ViewVms,
 
-    /// <summary>Interact with and control every Vm in the system.</summary>
+    /// <summary>
+    /// Interact with and control every Vm in the system - including what the View permissions
+    /// DownloadVmFiles, UploadVmFiles and RevertVms gate, which have no system counterpart of their own.
+    /// </summary>
     ControlVms,
 
     /// <summary>View every Map in the system without being able to change them.</summary>

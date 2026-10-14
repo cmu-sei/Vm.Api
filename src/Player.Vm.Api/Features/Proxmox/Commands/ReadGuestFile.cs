@@ -37,7 +37,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
 
             public async Task<string> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await GetVm(request.Id, [], [AppViewPermission.DownloadVmFiles], [], cancellationToken,
+                var vm = await GetVm(request.Id, [AppSystemPermission.ControlVms], [AppViewPermission.DownloadVmFiles], [], cancellationToken,
                     "You do not have permission to download files from this vm.");
                 return await _proxmoxService.ReadGuestFile(vm.ProxmoxVmInfo, request.GuestFilePath);
             }

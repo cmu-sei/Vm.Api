@@ -563,6 +563,37 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmApiFacto
         Assert.Equal([vm.Id], result.Accepted);
     }
 
+    /// <summary>
+    /// <c>RevertVms</c> has no system counterpart, so a system administrator on none of the Vm's teams
+    /// reverts through the system Vm-control permission, the same one the other operations accept.
+    /// </summary>
+    [Fact]
+    public async Task Revert_IsAllowedWithOnlyTheSystemVmControlPermission()
+    {
+        var vm = VmApiFactory.VsphereVm(hasSnapshot: true);
+        await Seed(vm);
+
+        Factory.PlayerApi
+            .Can(default, default, default, default, default, Ct)
+            .ReturnsForAnyArgs(false);
+        Factory.PlayerApi
+            .Can(
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Any<IEnumerable<Guid>>(),
+                Arg.Is<AppSystemPermission[]>(x => x != null && x.Contains(AppSystemPermission.ControlVms)),
+                Arg.Any<AppViewPermission[]>(),
+                Arg.Any<AppTeamPermission[]>(),
+                Arg.Any<CancellationToken>())
+            .Returns(true);
+
+        VsphereReturns(PowerOperation.Revert, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post("revert", vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
+    }
+
     #endregion
 
     // The endpoints are behind the default authorization policy, which the substituted player.api has

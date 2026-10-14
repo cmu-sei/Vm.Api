@@ -42,7 +42,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
 
             public async Task<string> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await GetVm(request.Id, [], [AppViewPermission.UploadVmFiles], [], cancellationToken,
+                var vm = await GetVm(request.Id, [AppSystemPermission.ControlVms], [AppViewPermission.UploadVmFiles], [], cancellationToken,
                     "You do not have permission to upload files to this vm.");
 
                 foreach (var formFile in request.Files)
