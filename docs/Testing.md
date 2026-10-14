@@ -4,15 +4,17 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 1,927 tests. All of them run today; nothing is skipped.
+The suite contains 2,057 tests in 61 classes. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
-Docker: no network, no vCenter and no Proxmox cluster. The unit tests need not even that.
+Docker: no vCenter, no Proxmox cluster and no player.api. Docker pulls the `postgres:16-alpine` image the
+first time it is needed. The unit tests need not even that.
 
 Many of the classes are isolated unit tests. They construct the thing under test
-directly and substitute its collaborators. `VsphereIsoProviderTests` and `VsphereServiceCommandTests`
-are the largest and most important of them: they drive `VsphereService` and its ISO provider through a
-substituted `IVimClient`, which is the only seam between those and a live vCenter.
+directly and substitute its collaborators. `VsphereServiceCommandTests` and `VsphereIsoStorageGroupTests`
+are among the most important of them: they drive the real `VsphereService` (the second through
+`VsphereIsoProvider`) through a substituted `IVimClient`, which is the only seam between it and a live
+vCenter. `VsphereIsoProviderTests` covers the provider itself over a substituted `IVsphereService`.
 
 Six of them are the Proxmox driver, and they are substituted a layer lower than that. `ProxmoxService`
 builds its own `PveClient` in its constructor out of `IHttpClientFactory.CreateClient("proxmox")`, so
@@ -87,9 +89,12 @@ and only the edges are replaced.
   them, and round trips over real WebSocket connections to each, `VmHub`'s as an actor. It is described
   with the other hub classes below.
 
-Three classes cover authorization, which is where a green run is easiest to mistake for a safe one:
-every other test in the suite runs as a caller who is allowed to do everything unless it says otherwise,
-so these are the only place the decision itself is under test rather than a route's use of it.
+Three classes cover authorization in the services, which is where a green run is easiest to mistake for
+a safe one: most other tests in the suite run as a caller who is allowed to do everything unless they say
+otherwise, so these, `IsoWriteAuthTests` and `IsoServiceMountAuthTests` (the same for `IsoService`'s write
+and mount gates, which live in the service rather than in the handlers), and the per-gate allowed and
+near-miss cases of the endpoint classes (see Callers and permissions) are where the decision itself is
+under test rather than a route's use of it.
 
 - `PlayerServiceAuthorizationTests` drives `PlayerService` against a substituted `IPlayerApiClient`.
   This is where every authorization decision in the application ends up and nothing above it re-checks
@@ -104,13 +109,17 @@ so these are the only place the decision itself is under test rather than a rout
   team's network, and so the only thing that makes a range with several teams in it separable at all.
 
 The two service classes talk to real PostgreSQL, because some of the filtering they are asked about
-happens in SQL, but they construct the service directly rather than going over HTTP. Eight of the classes
-below are built the same way - `VmHubGroupTests`, `VmHubPresenceTests`, `VmUsageLoggingServiceTests`, the
-three entity-event handler classes, `CallbackBackgroundServiceTests` and `ProxmoxServiceVmLookupTests` - as
-are the four poller classes and `PollLoopSmokeTests`, which makes fifteen in the suite that need a
-database without needing a host, against twelve that need a host and twenty-five that need neither.
-The pollers need one because writing `HasPendingTasks` and `PowerState` is most of what they do, and a
-pass writes through a context of its own: a value read any other way could be one the pass never saved.
+happens in SQL, but they construct the service directly rather than going over HTTP. Most of the
+database-backed classes below are built the same way - `VmHubGroupTests`, `VmHubPresenceTests`,
+`VmUsageLoggingServiceTests`, `VmSignalRHandlerTests`, `VmTeamSignalRHandlerTests`,
+`CallbackBackgroundServiceTests` and `ProxmoxServiceVmLookupTests` - as are `TaskServiceTests`,
+`ProxmoxTaskServiceTests`, `ProxmoxStateServiceTests`, `ConnectionServiceTests` and `PollLoopSmokeTests`.
+With `EntityEventBroadcastTests`, `XApiServiceTests`, the three handler classes
+`BulkPowerOperationHandlerTests`, `GetVmUsageReportHandlerTests` and `WriteHandlerCancellationTests`,
+and `DatabaseHarnessTests`, that makes twenty in the suite that need a database without needing a host,
+against thirteen that need a host and twenty-eight that need neither. The pollers need one because
+writing `HasPendingTasks` and `PowerState` is most of what they do, and a pass writes through a context of
+its own: a value read any other way could be one the pass never saved.
 
 Four classes cover the two SignalR hubs, which carry everything the application pushes rather than
 answers: console progress while a VM boots, and who else is looking at a machine. A hub is not reachable
@@ -161,14 +170,15 @@ It is separated from the hub that calls it because the rules it applies are its 
 the intersection between the caller's teams and the session's, and a close filter with three clauses. It
 is also the only place a usage log row is written by the application rather than seeded by a test.
 
-Four classes cover the background pollers that broadcast into `ProgressHub`'s groups and keep
-`Vm.HasPendingTasks` and `Vm.PowerState` in step with the hypervisor. They are the loops behind the
-spinner, the progress bar and the power indicator, and until recently none of the four had a test: every
+Five classes cover the background services that keep `Vm.HasPendingTasks` and `Vm.PowerState` in step
+with the hypervisor: the three pollers, two of which (the task pollers) also broadcast into `ProgressHub`'s
+groups, and the vSphere change-feed watcher and connection service. They are the loops behind the
+spinner, the progress bar and the power indicator, and until recently none of them had a test: every
 other class in the suite substitutes them away, because a `BackgroundService` whose loop returns nothing
 and signals nothing is not assertable from outside.
 
 `Support/PollLoop.cs` is what makes one assertable, and reading it first is worth more than reading
-any of the four classes. It is the `IServiceProvider` the loop resolves its per-pass scope from, so a pass
+any of the five classes. It is the `IServiceProvider` the loop resolves its per-pass scope from, so a pass
 is one `CreateScope` - which makes passes countable, and makes a pass asked for past its allowance
 refusable with an exception each service's own `catch` already swallows. That refusal is a barrier: the
 extra turn does no work and cannot write to the database the test is about to read. Timing is deliberately
@@ -258,7 +268,7 @@ and nothing compares the two.
 call to player.api over HTTP, and it is the input every one of these names is computed from.
 
 Four classes cover the things every other class substitutes: the clients that talk out of this process, to
-player.api and to the identity provider. They are the only classes in the suite whose seam is the socket
+player.api and to the identity provider. Like the Proxmox driver classes, their seam is the socket
 rather than an interface - the shared `StubHttpMessageHandler`'s route rules, with `RefusesUnmatched()`,
 described below - so the generated `PlayerApiClient`'s routes and deserialization, IdentityModel's token
 request and Polly's retry policy all run for real, and what is asserted is the request that went out and
@@ -320,7 +330,7 @@ CI greps for. Never set `diagnosticMessages` in `xunit.runner.json`: the run the
 The leading dot in a filter (`~.VmsEndpointTests`) keeps a class name from also matching every class that
 ends with it.
 
-A full run takes about thirty seconds, container start and both sets of migrations included. About five
+A full run takes about forty seconds, container start and both sets of migrations included. About five
 of those are one test: `CallbackBackgroundServiceTests.WhenTheFirstAttemptFails_TheEventIsKeptAndRetried`
 waits out the real first retry delay, which is the shortest one the service has.
 
@@ -391,12 +401,15 @@ so that a project cannot pin itself to a different version of a shared package.
 
 ## Layout
 
-The test project mirrors `Player.Vm.Api`: a test of `Features/Vms/VmController` lives in
-`Features/Vms/`, of `Domain/Proxmox/Services/ProxmoxService` in `Domain/Proxmox/Services/`, of
-`Infrastructure/HttpHandlers/AuthenticatingHandler` in `Infrastructure/HttpHandlers/`, each in the
-matching `Player.Vm.Api.Tests.<folder>` namespace. (Inside those namespaces `Domain.` and `Features.`
-resolve to the test project's folders, so references to production types are written in full,
-`Player.Vm.Api.Domain.Models.Vm`, or through an alias such as `VmEntity`.) `Support/` holds the harness:
+The test project's top level holds `Domain/`, `Features/` and `Infrastructure/`, `Support/`,
+`AssemblyFixtures.cs` (the assembly fixture declaration), the project file and the three files copied from
+the standard (Build settings above). The three source folders mirror `Player.Vm.Api`: a test of
+`Features/Vms/VmController` lives in `Features/Vms/`, of `Domain/Proxmox/Services/ProxmoxService` in
+`Domain/Proxmox/Services/`, of `Infrastructure/HttpHandlers/AuthenticatingHandler` in
+`Infrastructure/HttpHandlers/`, each in the matching `Player.Vm.Api.Tests.<folder>` namespace. (Inside
+those namespaces `Domain.` and `Features.` resolve to the test project's folders, so references to
+production types are written in full, `Player.Vm.Api.Domain.Models.Vm`, or through an alias such as
+`VmEntity`.) `Support/` holds the harness:
 
 - `Support/Shared/` - the standard's shared files, byte-identical in every Crucible API and never edited
   here: `PostgresTestDatabase`, `ITestDatabase`, `TestDatabaseScope`, `DatabaseTestBase<TContext>`,
@@ -595,14 +608,22 @@ and `_second` pin it: one fixed id, `ViewVms` in one test and `ControlVms` in th
 Within a test an actor's answers are read once and kept, so a test never changes an actor's system
 permissions after its first request.
 
-Each gate is tested from both sides with an actor: allowed for a caller holding exactly the permission it
-asks for on the resource's own team or View
-(`Get_is_allowed_for_a_caller_holding_exactly_ViewTeamVms_on_the_Vms_team`), and refused for one holding that
-permission on another team or View, or its neighbour
-(`Delete_is_forbidden_for_a_caller_holding_ManageTeam_only_on_another_team_and_leaves_the_row`). The route
-classes also keep a wrong-question denial per gate family: `AllBut(permission)` in the vSphere and Proxmox
-classes is a caller holding everything Root does but the asked permission, and `Deny(system, view)` in the
-usage-log class takes the asked system permission from Root.
+Each gate is tested from both sides with an actor, and `Root` is never the caller of either side. For
+every authorization call site, each permission value it reads has an allowed test whose caller holds
+exactly that value on the resource's own team or View
+(`Get_is_allowed_for_a_caller_holding_exactly_ViewTeamVms_on_the_Vms_team`). That includes the values a
+site passes through the `PlayerService` helpers and the `AppPermissions` arrays: `CanViewVms` reads
+`AppPermissions.VmReadSystem`, `VmReadView` and `VmReadTeam` (`ViewVms` or `ControlVms`, `ViewViewVms` or
+`ControlViewVms`, `ViewTeamVms` or `ControlTeamVms`), so a site that calls it needs six allowed tests;
+`CanViewMaps` reads the three `MapRead*` arrays the same way, and `CanManageTeams` reads `ManageViews`,
+`ManageView` and `ManageTeam`. Each tier of a multi-tier gate (system, view, team) has a near miss of its
+own: a caller holding a neighbouring permission of that tier, or the same value in another View
+player.api knows, refused by that site
+(`Delete_is_forbidden_for_a_caller_holding_ManageTeam_only_on_another_team_and_leaves_the_row`). A caller
+holding nothing is not a near miss. The route classes also keep a wrong-question denial per gate family:
+`AllBut(permission)` in the vSphere and Proxmox classes is a caller holding everything Root does but the
+asked permission, and `Deny(system, view)` in the usage-log class takes the asked system permission from
+Root.
 
 Service tests that construct a service directly use `Support/PlayerHarness.cs`: the real `PlayerService` over
 a substituted client and `IViewService` answered by a directory of its own, for one caller
@@ -685,7 +706,13 @@ reviewer judges against; what follows is how they land in this repository.
    Comments should explain what a test pins and why it matters, not what the next line does.
 7. For an authorization test of a service, construct the service with `PlayerHarness.Service` (the real
    `PlayerService`) and `TestMapper.Mapper`, and arrange the caller as player.api data with
-   `_player.Grant(...)`. Never substitute `IPlayerService`: it is the code that decides.
+   `_player.Grant(...)`. Never substitute `IPlayerService`: it is the code that decides. Whether the test
+   is a service or an endpoint test, every authorization call site it touches needs, for each permission
+   value the site reads (directly, through a `PlayerService` helper such as `CanViewVms`, `CanViewMaps` or
+   `CanManageTeams`, or through an `AppPermissions` array), an allowed test whose caller holds exactly that
+   value and is not `Root`, and each tier of a multi-tier gate (system, view, team) needs a near miss of its
+   own: a caller holding a neighbouring permission of that tier, or the same value in another View
+   player.api knows, refused by that site. Callers and permissions above has the examples.
 8. Break the production code and check the test fails, then restore it (copy the file aside first, or
    `git checkout -- <file>` only if it was unmodified). For an authorization gate this is the standard's
    broken-gate check (`CONVENTIONS.md` section 5): break the gate at that endpoint's call site so it always
@@ -791,8 +818,8 @@ classes build their entities inline rather than through `Support/TestData.cs`.
 
 `.github/workflows/build-and-test.yml` is the standard's workflow, copied by `agent-docs/api-testing/sync.sh`
 with this repository's test project filled in and not edited here (it replaced the earlier `test.yml`). It
-runs on pull requests and on pushes to `main`: restore, build the solution (which also compiles
-`Player.Vm.Api.Client` under `TreatWarningsAsErrors`), and
+runs on pull requests and on pushes to `main`: restore, build the solution (`Player.Vm.Api` and the test
+project; `Player.Vm.Api.Client` is not in `Player.Vm.Api.sln` and is built only by `client.yml`), and
 `dotnet test src/Player.Vm.Api.Tests -- xUnit.DiagnosticMessages=true`, then confirms the log carries
 `[Player.Vm.Api.Tests] database provider: PostgreSQL`, so a harness change cannot silently stop exercising
 the production database. The SDK comes from `global.json`. There is no database service block:
@@ -837,7 +864,7 @@ A coverage gate would reward the one kind of test that never has to be.
 
 The second reason is that the figure is not a fact about the code on its own. Coverage says what
 nothing *executed*. Mutation testing says what nothing *asserts*, and the two find different things:
-`Startup` reports 94.3% covered because every endpoint test hosts the application, and almost nothing
+`Startup` reports 93.4% covered because every endpoint test hosts the application, and almost nothing
 in the suite asserts anything about it at all. Read a coverage number as a lower bound on the untested
 surface, never as an upper bound on the tested one.
 
@@ -849,47 +876,49 @@ So: a map for deciding what to test next, and nothing else. It has no vote on wh
 matter to any figure quoted from it. The test assembly and any `*.Migrations.PostgreSQL` assembly are
 excluded by name; EF's migrations under `Data/Migrations` are excluded by file, because the
 harness migrates the template database once per run and would report them as well covered while
-proving nothing; auto-implemented property accessors are skipped, so that a number does not move
+proving nothing; so is any source that compiles in from a NuGet package (`**/.nuget/packages/**/*.cs`);
+auto-implemented property accessors are skipped, so that a number does not move
 whenever a DTO grows a field; generated and `[Obsolete]` members are out; and so is the test assembly,
 whose own coverage would be near total by construction.
 
-One surprise in the output is not a mistake: the `Crucible.Common.EntityEvents` types are listed
-because that package compiles into this assembly rather than shipping as one. `EntityEventInterceptor`
-at 66.4% is code this repository's tests can and do exercise - `EntityEventBroadcastTests` is what
-reaches it - not a dependency's internals leaking into the report.
+The package exclusion is what keeps `Crucible.Common.EntityEvents` out of the report: it ships its
+implementation as content files, so `EntityEventInterceptor` and the rest compile into this assembly, and
+no assembly filter could reach them. They are still exercised - `EntityEventBroadcastTests` runs the
+interceptor - but they are a dependency's code and are not counted.
 
 ## The shape of it
 
-As of the run after roadmap item 12: **72.5% of lines** (6,436 of 8,872 coverable), 69.0% of
-branches, 80.0% of methods, across 166 classes. That single number is close to meaningless on its
-own, because of where the untested lines are:
+On the current tree: **80.8% of lines** (7,921 of 9,806 coverable) and 74.2% of branches, across 164
+classes. That single number is close to meaningless on its own, because of where the untested lines
+are:
 
 ```
-  Features                        96.8%       104 untested of 3,236
+  Features                        97.0%       100 untested of 3,385
   Domain.Proxmox                  90.2%        95 of 973
   Domain.Models                   86.5%        12 of 89
-  Domain.Services                 84.8%       120 of 789
-  Infrastructure                  75.4%       135 of 548
-  Crucible.Common (in-assembly)   68.1%        79 of 248
-  Domain.Vsphere                  29.2%     1,856 of 2,622
+  Infrastructure                  85.6%        81 of 561
+  Domain.Services                 80.5%       271 of 1,390
+  Domain.Vsphere                  57.6%     1,288 of 3,037
 ```
 
-1,951 of the 2,436 untested lines - 80% of them - are still the two hypervisor drivers, but that gap is
+1,383 of the 1,885 untested lines - 73% of them - are still the two hypervisor drivers, but that gap is
 no longer one thing, it is no longer the whole of either namespace, and it is now almost entirely one of
 the two. `Domain.Proxmox` went from 9.0% to 90.2% without a cluster, because the Proxmox driver's seam is
 a substituted `HttpClient` rather than an interface - `ProxmoxService` alone went from 3.7% to **99.4%**
 (508 of 511 lines), and both of its background services are at 100%. `Domain.Vsphere` went
-from 15.6% to 29.2% for a different reason: not the driver, which can still only be reached through
-`IVimClient`, but the two pollers above it, which needed no vCenter at all and are now at 100%. What is
-left in each namespace is the client and the connection cache, plus the ISO upload path on the Proxmox
-side. The application's own request-handling surface, the `Features`
-tree, is at 96.8%, and `Domain.Services` - which is where the four out-of-process clients live - went from
-48.3% to 83.9% when they were covered. Whatever this suite is short of, it is not breadth over the code
-that answers a request, and it is no longer breadth over the code that calls out of the process either.
+from 15.6% to 57.6% for a different reason: not the driver, which can still only be reached through
+`IVimClient`, but the services above it - `TaskService` at 100%, and `VsphereMachineWatcher` and
+`ConnectionService` at 93.5% and 77.5% over `FakeChangeFeed`. What is left in each namespace is mostly
+the client and the connection model (`VsphereService`, `VsphereConnection`, `VimExtensions`), plus the ISO
+upload path on the Proxmox side. The application's own request-handling surface, the `Features`
+tree, is at 97.0%. `Domain.Services` - which is where the four out-of-process clients live - went from
+48.3% to 83.9% when they were covered, and is at 80.5% today: the xAPI queue and background sender
+(`XApiQueueService`, `XApiBackgroundService`) are most of what is untested there. Whatever this suite
+is short of, it is not breadth over the code that answers a request.
 
 That is also why the script ranks by *count* rather than by percentage. The question a reader has is
 "how much untested code is in here", and the two orderings disagree: by percentage the dead eighteen-line
-`Player.Vm.Api.Hubs.VmHub` sorts above `VsphereService`, and by count it is 1,169 lines behind it.
+`Player.Vm.Api.Hubs.VmHub` sorts above `VsphereService`, and by count it is 921 lines behind it.
 
 ## What the first run found
 
@@ -996,6 +1025,15 @@ What that leaves with the most untested lines in the Proxmox namespace is `Proxm
 entry as everything on item 9's list. It needs no cluster either: it shares the `IHttpClientFactory` seam
 the driver tests already use.
 
+The paragraphs above record the map after each item. On the current tree, with `Domain.Vsphere` set
+aside, the ranking reads: `XApiBackgroundService` (82 lines, 0%), `ProxmoxIsoStorageService` (81 of 25.0%),
+`XApiQueueService` (78 of 13.3%), `XApiService` (55 of 86.2%), `ProxmoxIsoProvider` (39 of 71.9%),
+`ActiveVirtualMachineService` (38 of 68.1%), `IsoService` (29 of 93.3%), `DatabaseExtensions` (25 of
+55.4%), `Startup` (20 of 93.4%) and `Player.Vm.Api.Hubs.VmHub` (18, 0%). `PlayerService` is down to 6
+untested lines (97.9%), and of the Swagger operation filters only `JsonIgnoreFormDataOperationFilter` has
+lines left (4). In the Vsphere namespace, `VsphereService` (939 untested of 41.1%), `VsphereConnection`
+(144 of 65.0%), `VimExtensions` (93 of 9.7%) and `ConnectionService` (83 of 77.5%) lead.
+
 One entry on the list is not a test target at all. `Player.Vm.Api.Hubs.VmHub` (18 lines, 0%) is
 unreachable: `Startup` imports `Player.Vm.Api.Features.Vms.Hubs` and nothing anywhere else names the
 `Player.Vm.Api.Hubs` namespace, so the `MapHub<VmHub>` in `Startup` is the feature hub and this copy has
@@ -1020,21 +1058,27 @@ currently tell you.
   than deciding yes or no, and `ProgressHub` decides nothing at all - characterized above rather than left
   as a gap. The standard's gates check (`check-repo.js gates`, run by `verify.sh`) inventories the
   authorization call sites it recognizes and finds each one with an allowed case that is not `Root` and a
-  near miss (51 call sites in 47 members, none missing). It does not see every gate in this repository:
-  calls to a `Can*` helper of the class's own, with no service receiver (`NetworkService.CanViewNetworks`
-  and `CanManageNetworks`, `VmService.CanManageMapsForTeamsAsync`, `CanViewMapAsync` and `CanAccessVm` in
-  `GetAsync`, `IsoService.CanUseTeamIsoAsync`, `BulkPowerOperation.CanPerformOperation`), and a hub's
-  connection gate set by `MapHub<T>(...).RequireAuthorization()` in `Startup` rather than by an
-  `[Authorize]` on the hub (it inventories the unmapped `Player.Vm.Api.Hubs.VmHub`'s attribute instead).
-  Those gates were inventoried by hand and have the same pair of tests: the network routes and the Map
-  reads and writes in `NetworksEndpointTests` and `VmsEndpointTests`, the ISO picker and mount in
-  `ProxmoxEndpointTests`, the bulk revert and control checks in `BulkPowerOperationEndpointTests`, and
-  both hubs' connections in `HubConnectionTests`. Nor does it see the default policy's scope requirement
-  (`Startup.ConfigureServices`: an authenticated user carrying each scope of `Authorization:AuthorizationScope`),
-  which guards every `[Authorize]` controller, both hubs and `/metrics`: `DefaultAuthorizationPolicyTests`
-  sends one route per controller and both hubs' negotiate with each scope missing in turn (403), the same
-  with both (the control), and covers `/metrics` with both scopes (200 and the Prometheus text), with no
-  identity (401) and with one scope (403). Two kinds of gate here refuse nobody over HTTP - the usage
+  near miss (66 call sites in 62 members, none missing). The inventory includes the calls to a `Can*`
+  helper of the class's own (`NetworkService.CanViewNetworks` and `CanManageNetworks`,
+  `VmService.CanManageMapsForTeamsAsync`, `CanViewMapAsync` and `CanAccessVm` in `GetAsync`,
+  `IsoService.CanUseTeamIsoAsync`, `BulkPowerOperation.CanPerformOperation`), counted at the members that
+  call them; both hubs' connection gates, set by `MapHub<T>(...).RequireAuthorization()` in `Startup`
+  and covered in `HubConnectionTests` (the unmapped `Player.Vm.Api.Hubs.VmHub`'s `[Authorize]` is not
+  counted); and the default policy's scope requirement (`Startup.ConfigureServices`: an authenticated user
+  carrying each scope of `Authorization:AuthorizationScope`), which guards every `[Authorize]` controller,
+  both hubs and `/metrics`: `DefaultAuthorizationPolicyTests` sends one route per `[Authorize]` controller
+  and both hubs' negotiate with each scope missing in turn (403), the same with both (the control), and
+  covers `/metrics` with both scopes (200 and the Prometheus text), with no identity (401) and with one
+  scope (403). Three refusals read data rather than a permission, so the check lists them for reading by
+  hand; each has a test of its own: `IsoService.GetPrimaryTeamIdOrThrowAsync`, which refuses a team-scoped
+  ISO write by a caller with no primary team in the View
+  (`IsoWriteAuthTests.TeamScopedUpload_WithNoPrimaryTeam_IsRefused` and
+  `TeamScopedDelete_WithNoPrimaryTeam_IsRefused`); `VmService.CreateMapAsync`, which answers a failed View
+  or team lookup with a 403 (`VmServiceAuthorizationTests.CreateMap_ForAViewThatDoesNotExist_IsForbidden`
+  and `CreateMap_ForATeamInAnotherView_IsForbidden`, `VmsEndpointTests.CreateMap_ForAViewPlayerApiDoesNotKnow_Is403`);
+  and vSphere `ChangeNetwork`, which refuses a network outside the caller's effective network permissions
+  (`VsphereEndpointTests.ChangeNetwork_is_forbidden_for_a_caller_holding_ViewTeamVms_on_the_Vms_team_naming_a_network_outside_its_list`
+  and its siblings). Two kinds of gate here refuse nobody over HTTP - the usage
   report narrows to the caller's own activity, and a bulk power command reports an inaccessible Vm as one
   `"Unauthorized"` entry - so their near misses are handler tests (`GetVmUsageReportHandlerTests`,
   `BulkPowerOperationHandlerTests`) named for the refusal, beside the endpoint tests that show the same
@@ -1042,9 +1086,9 @@ currently tell you.
 - **The client's half of the hub contract.** Both hubs are now covered - the group names, the presence
   bookkeeping, the calls into the usage log and the writer behind them, and one round trip over a real
   connection - along with the five entity-event handlers that broadcast into `VmHub`'s groups, so both ends
-  of every name the server uses are asserted. All eight controllers have endpoint tests, covering all 82
+  of every name the server uses are asserted. All eight controllers have endpoint tests, covering all 84
   actions: `VmController`
-  (23), `VsphereController` (21), `ProxmoxController` (17), `VmUsageLoggingSessionController` (9,
+  (25), `VsphereController` (21), `ProxmoxController` (17), `VmUsageLoggingSessionController` (9,
   including CSV and report generation), `NetworksController` (5), `FileController` (4),
   `HealthCheckController` (2) and `CallbackController` (1). What no test in this repository sees is the
   Angular side: the method names it listens on and the group names it joins are asserted here as the
@@ -1064,16 +1108,16 @@ currently tell you.
   also unasserted: how the `ActionBlock` orders events beyond the two-event case, and any retry past the
   first, since the delays are real seconds and the ceiling is twenty-four attempts away.
 - **The hypervisor edge - vSphere permanently, Proxmox no longer.** No harness makes a vCenter or a
-  Proxmox cluster available in CI, and this is still most of the untested code in the repository - 1,951
-  lines between `Domain.Vsphere` at 29.2% and `Domain.Proxmox` at 90.2%, though 1,856 of those are now on
+  Proxmox cluster available in CI, and this is still most of the untested code in the repository - 1,383
+  lines between `Domain.Vsphere` at 57.6% and `Domain.Proxmox` at 90.2%, though 1,288 of those are on
   the vSphere side alone. But the two halves are not the
   same kind of gap, and this section used to say they were. vSphere's client is reached only through
-  `IVimClient`, so a substitute there is as far down as a test can go and `VsphereService` at 25.2% is
-  close to the ceiling. Proxmox's is not: `ProxmoxService` constructs its `PveClient` from
-  `IHttpClientFactory.CreateClient("proxmox")`, so the transport can be replaced instead of the client,
-  and the driver is now at 99.4% with no cluster involved. What remains genuinely out of reach is
+  `IVimClient`, so a substitute there is as far down as a test can go, and `VsphereService` at 41.1% is
+  covered only as far as that substitute reaches. Proxmox's is not: `ProxmoxService` constructs its
+  `PveClient` from `IHttpClientFactory.CreateClient("proxmox")`, so the transport can be replaced
+  instead of the client, and the driver is now at 99.4% with no cluster involved. What remains genuinely out of reach is
   narrower than "the hypervisor edge": whether the routes and payloads these tests assert are the ones a
-  real PVE accepts, whether a real cluster ever omits the response keys the driver mishandles, and every
+  real PVE accepts, whether a real cluster ever omits the response keys the driver reads, and every
   vSphere call below `IVimClient`. The first two of those are what `crucible-tests` against a deployed
   environment is for; the third is not meant to move.
 
@@ -1122,9 +1166,11 @@ currently tell you.
    producing a set of maps nobody can see instead of a retry.
 9. The residue, which is what the map has left to say. It is a different kind of list from item 8's -
    every entry is part of a class the suite already drives, so each is an arrangement that was never
-   produced rather than a subject nobody has looked at: `PlayerService`'s untested remainder (70 lines),
-   `EntityEventInterceptor` (63), `ProxmoxIsoProvider` (39), `ActiveVirtualMachineService` (38),
-   `IsoService` (29), `DatabaseExtensions` (25) and the two Swagger operation filters (17 each). Worth
+   produced rather than a subject nobody has looked at: `ProxmoxIsoProvider` (39 lines),
+   `ActiveVirtualMachineService` (38), `IsoService` (29), `DatabaseExtensions` (25), `PlayerService`'s
+   untested remainder (6) and `JsonIgnoreFormDataOperationFilter` (4). (When the item was written,
+   `PlayerService` had 70 untested lines, the two `JsonIgnore*` Swagger filters 17 each, and
+   `EntityEventInterceptor`, which the report no longer counts, 63.) Worth
    doing in that order, worth stopping when the remaining lines are all named in a `<remarks>`, and worth
    doing after deleting `Player.Vm.Api/Hubs/VmHub.cs`, which is 18 unreachable lines that no test can
    cover and no caller can reach.
