@@ -328,12 +328,10 @@ public class ProxmoxServiceGuestAgentTests
     // guest. Nothing retries either - unlike the bulk power path, a guest command is not re-resolved and
     // re-sent when the node turns out to be wrong.
     //
-    // The context is what makes these usable, and it is worth the contrast with GetConsole, which throws
-    // result.GetError() bare: GetError() is populated only from an errors object in the body, so a plain
-    // 401 or a proxy's 502 produces an exception with an empty message there. Here the same empty string
-    // still arrives inside "QGA exec failed for vmid=100: ", which names the operation and the machine
-    // whatever Proxmox did or did not say. Asserted with StartsWith for that reason rather than on the
-    // whole message.
+    // The context is what makes these usable: whatever Proxmox did or did not say, the message starts
+    // "QGA exec failed for vmid=100: ", which names the operation and the machine. Asserted with
+    // StartsWith for that reason rather than on the whole message; what follows is Proxmox's own error,
+    // its message or the HTTP status, whichever the refusal carried.
     [Fact]
     public async Task RunGuestProcess_WhenProxmoxRefusesTheExec_ThrowsNamingTheVmid()
     {
@@ -509,7 +507,7 @@ public class ProxmoxServiceGuestAgentTests
     }
 
     // A command that wrote nothing at all: both keys absent, and the answer is two empty strings rather
-    // than the binder exception the sibling keys produce. This is the case a successful "touch" or
+    // than nulls or an exception. This is the case a successful "touch" or
     // "systemctl restart" produces on a real guest, so it is also the common one.
     [Fact]
     public async Task RunGuestProcess_WhenTheStatusOmitsBothOutputKeys_ReportsEmptyStringsRatherThanThrowing()

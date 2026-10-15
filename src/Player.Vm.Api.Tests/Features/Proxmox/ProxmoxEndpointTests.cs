@@ -93,14 +93,9 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         // Root holds every system permission but the two network ones, so NetworkService takes the branch
         // a caller without view-network access takes: the networks shared with Root's own teams, which is
-        // what the network tests are about. The routes that ask only for a View permission (snapshots,
-        // guest files) get it through Root's membership of the Vm's team in this test's View.
+        // what the network tests are about.
         Factory.Player.PlaceTeam(_teamId, _viewId);
-        await Actor().WithId(Root.Id).MemberOf(_teamId)
-            .Holding(AppViewPermission.RevertVms, _viewId)
-            .Holding(AppViewPermission.DownloadVmFiles, _viewId)
-            .Holding(AppViewPermission.UploadVmFiles, _viewId)
-            .SeedAsync();
+        await Actor().WithId(Root.Id).MemberOf(_teamId).SeedAsync();
         Factory.Player.Caller(Root.Id).System.ExceptWith(NetworkPermissions);
         Factory.Proxmox.GetVmConfigSummary(Arg.Any<ProxmoxVmInfo>(), Arg.Any<CancellationToken>())
             .Returns(new ProxmoxVmConfigSummary(new() { ["net0"] = "vmbr0" }, true));

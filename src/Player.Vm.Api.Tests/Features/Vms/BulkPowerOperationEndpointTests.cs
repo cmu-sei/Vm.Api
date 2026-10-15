@@ -40,29 +40,9 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
         Factory.VsphereTasks.ClearSubstitute();
     }
 
-    /// <summary>
-    /// Posts as Root. Root holds every system permission, and revert asks only for the View permission
-    /// <c>RevertVms</c>, so for a revert Root is also given it on a View holding the posted Vms' teams.
-    /// </summary>
-    private async Task<BulkPowerOperation.Response> Post(string action, params Guid[] ids)
-    {
-        if (action == "revert")
-        {
-            Guid[] teams;
-            await using (var context = NewContext())
-                teams = [.. context.VmTeams.Where(x => ids.Contains(x.VmId)).Select(x => x.TeamId)];
-
-            var viewId = Guid.NewGuid();
-            var root = Actor().WithId(Root.Id).Holding(AppViewPermission.RevertVms, viewId);
-
-            foreach (var team in teams)
-                root.InView(team, viewId);
-
-            await root.SeedAsync();
-        }
-
-        return await Post(RootClient, action, ids);
-    }
+    /// <summary>Posts as Root, whose system permissions pass every operation's gate, revert included.</summary>
+    private Task<BulkPowerOperation.Response> Post(string action, params Guid[] ids) =>
+        Post(RootClient, action, ids);
 
     private async Task<BulkPowerOperation.Response> Post(HttpClient client, string action, params Guid[] ids)
     {

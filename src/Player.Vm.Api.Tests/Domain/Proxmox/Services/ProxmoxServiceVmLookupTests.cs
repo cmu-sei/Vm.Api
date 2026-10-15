@@ -38,9 +38,9 @@ namespace Player.Vm.Api.Tests.Domain.Proxmox.Services;
 /// drivers disagree in ways only visible with both pinned: they share the "Virtual machine not found"
 /// string for an id they cannot resolve, but an operation the driver does not handle is
 /// "Unsupported Operation" in vSphere and "&lt;operation&gt; is not supported on Proxmox virtual
-/// machines." here; and vSphere swallows a rejected submit as success while Proxmox reports it - except
+/// machines." here; and vSphere swallows a rejected submit as success while Proxmox reports it - even
 /// where the refusal carries no <c>errors</c> object, or the node cannot be reached at all, both of which
-/// this driver reports as an empty string too; both are pinned below.
+/// are pinned below.
 /// </para>
 /// <para>
 /// <c>BulkPowerOperation</c> fans out with <c>Task.WhenAll</c>, so requests for different Vms arrive in a
