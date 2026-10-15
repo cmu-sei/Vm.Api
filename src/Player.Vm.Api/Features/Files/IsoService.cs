@@ -96,11 +96,13 @@ namespace Player.Vm.Api.Features.Files
         //  - "team" scope: targets are the given teamIds (each validated to belong to the View) or the
         //    primary team when none are supplied. Each target requires UploadViewIsos (any team) or
         //    UploadTeamIsos on that team. scopeIds are the team ids.
+        // The system-level UploadIsos permission authorizes either scope in any View, including ones
+        // the caller is not a member of.
         public async Task<IReadOnlyList<string>> ResolveUploadScopeIdsAsync(Guid viewId, string scope, IReadOnlyList<Guid> teamIds, CancellationToken ct)
         {
             if (scope == "view")
             {
-                if (!await _playerService.Can([], [viewId], [], [AppViewPermission.UploadViewIsos], [], ct))
+                if (!await _playerService.Can([], [viewId], [AppSystemPermission.UploadIsos], [AppViewPermission.UploadViewIsos], [], ct))
                     throw new ForbiddenException("You do not have permission to upload public files for this View");
 
                 return new[] { viewId.ToString() };
@@ -122,11 +124,11 @@ namespace Player.Vm.Api.Features.Files
                 targetTeamIds = new List<Guid> { await GetPrimaryTeamIdOrThrowAsync(viewId, ct) };
             }
 
-            // UploadViewIsos lets a view-admin upload to any team; otherwise UploadTeamIsos on the
+            // UploadIsos or UploadViewIsos lets a caller upload to any team; otherwise UploadTeamIsos on the
             // target team is required. Checked per team so a partially-permitted selection is rejected.
             foreach (var targetTeamId in targetTeamIds)
             {
-                if (!await _playerService.Can([targetTeamId], [viewId], [], [AppViewPermission.UploadViewIsos], [AppTeamPermission.UploadTeamIsos], ct))
+                if (!await _playerService.Can([targetTeamId], [viewId], [AppSystemPermission.UploadIsos], [AppViewPermission.UploadViewIsos], [AppTeamPermission.UploadTeamIsos], ct))
                     throw new ForbiddenException("You do not have permission to upload files for this Team");
             }
 

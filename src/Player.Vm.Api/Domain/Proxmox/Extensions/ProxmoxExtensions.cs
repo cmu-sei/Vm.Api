@@ -2,6 +2,7 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Threading;
 using System.Threading.Tasks;
@@ -34,6 +35,44 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
         }
 
         /// <summary>
+        /// What Proxmox said about a failed call, never empty.
+        /// </summary>
+        /// <remarks>
+        /// <c>Result.GetError()</c> reads only an <c>errors</c> object, which PVE sends for parameter
+        /// validation. Most refusals - no guest agent, a missing snapshot, a rejected token, a gateway in
+        /// front of PVE - carry a <c>message</c> instead, or no body at all, and <c>GetError()</c> is
+        /// empty for every one of them. So this falls back from <c>errors</c> to <c>message</c> to the
+        /// HTTP status line.
+        /// </remarks>
+        public static string GetErrorMessage(this Result result)
+        {
+            var error = result.GetError();
+
+            if (!string.IsNullOrWhiteSpace(error))
+                return error;
+
+            var message = GetField(result.Response, "message")?.ToString();
+
+            if (!string.IsNullOrWhiteSpace(message))
+                return message.Trim();
+
+            var status = $"HTTP {(int)result.StatusCode}";
+
+            return string.IsNullOrWhiteSpace(result.ReasonPhrase) ? status : $"{status} {result.ReasonPhrase.Trim()}";
+        }
+
+        /// <summary>
+        /// One field of an object in a Proxmox response, or null when the response leaves it out.
+        /// </summary>
+        /// <remarks>
+        /// The client hands response objects out as <c>ExpandoObject</c>s, and a dynamic read of a key
+        /// an <c>ExpandoObject</c> does not contain throws rather than answering null - so a field PVE
+        /// omits has to be looked up through the <c>IDictionary</c> an <c>ExpandoObject</c> also is.
+        /// </remarks>
+        public static object GetField(object data, string field) =>
+            data is IDictionary<string, object> dict && dict.TryGetValue(field, out var value) ? value : null;
+
+        /// <summary>
         /// Waits for the task a submitted operation started, turning anything short of a clean finish
         /// into an exception.
         /// </summary>
@@ -49,7 +88,7 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             CancellationToken cancellationToken = default)
         {
             if (!result.IsSuccessStatusCode)
-                throw new Exception($"{operation} failed: {result.GetError()}");
+                throw new Exception($"{operation} failed: {result.GetErrorMessage()}");
 
             var finished = await WaitForTaskToFinish(client, result, cancellationToken: cancellationToken);
 

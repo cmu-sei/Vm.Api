@@ -214,6 +214,55 @@ public class IsoWriteAuthTests
             Arg.Any<AppTeamPermission[]>(), Arg.Any<CancellationToken>());
     }
 
+    // The system UploadIsos permission is the upload half of the "all views" management mode, and
+    // mirrors UploadViewIsos in every View: either scope, any team, no claim on the View needed.
+    [Fact]
+    public async Task ViewScopedUpload_WithSystemUploadIsosAlone_IsAllowed()
+    {
+        AllowSystem(AppSystemPermission.UploadIsos);
+
+        Assert.Equal([ViewId.ToString()], await ResolveUpload("view"));
+    }
+
+    [Fact]
+    public async Task TeamScopedUpload_WithSystemUploadIsosAlone_TargetsEverySelectedTeam()
+    {
+        AllowSystem(AppSystemPermission.UploadIsos);
+
+        Assert.Equal([TeamA.ToString(), TeamB.ToString()], await ResolveUpload("team", TeamA, TeamB));
+    }
+
+    // Deleting every ISO is a separate grant from uploading them, in both directions.
+    [Fact]
+    public async Task Upload_WithOnlySystemDeleteIsos_IsRefused()
+    {
+        AllowSystem(AppSystemPermission.DeleteIsos);
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => ResolveUpload("view"));
+        await Assert.ThrowsAsync<ForbiddenException>(() => ResolveUpload("team", TeamA));
+    }
+
+    [Fact]
+    public async Task Delete_WithOnlySystemUploadIsos_IsRefused()
+    {
+        AllowSystem(AppSystemPermission.UploadIsos);
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => ResolveDelete("view"));
+        await Assert.ThrowsAsync<ForbiddenException>(() => ResolveDelete("team", TeamA));
+    }
+
+    // UploadIsos widens whose folders may be written, not which ids are coherent.
+    [Fact]
+    public async Task TeamScopedUpload_WithSystemUploadIsos_StillRejectsATeamOutsideTheView()
+    {
+        AllowSystem(AppSystemPermission.UploadIsos);
+        _playerService.IsTeamInViewAsync(TeamA, ViewId, Arg.Any<CancellationToken>()).Returns(false);
+
+        var ex = await Assert.ThrowsAsync<BadRequestException>(() => ResolveUpload("team", TeamA));
+
+        Assert.Equal("The specified team is not part of this View", ex.Message);
+    }
+
     // ---- Delete ----
 
     [Fact]

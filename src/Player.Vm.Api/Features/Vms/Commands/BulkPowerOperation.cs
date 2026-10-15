@@ -220,7 +220,7 @@ namespace Player.Vm.Api.Features.Vms
             {
                 if (operation == PowerOperation.Revert)
                 {
-                    return await _playerService.Can(vm.VmTeams.Select(x => x.TeamId), [], [AppSystemPermission.ControlVms], [AppViewPermission.RevertVms], [], cancellationToken);
+                    return await _playerService.Can(vm.VmTeams.Select(x => x.TeamId), [], [AppSystemPermission.RevertVms], [AppViewPermission.RevertVms], [], cancellationToken);
                 }
                 else
                 {

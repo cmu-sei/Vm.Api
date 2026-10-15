@@ -263,20 +263,16 @@ public class ProxmoxServiceConsoleTests
 
     /// <summary>
     /// A refusal that carries no <c>errors</c> object - which is what a misconfigured token's 401 and most
-    /// gateway failures look like - still fails the console, and that is all it does.
+    /// gateway failures look like - fails the console with a message naming the operation, the vmid and
+    /// the HTTP status.
     /// </summary>
     /// <remarks>
-    /// Characterizing a real diagnosability weakness, not asserting a desirable behaviour.
-    /// <c>Result.GetError()</c> is built only from an <c>errors</c> object in the response body, so a bare
-    /// 401 or 502 produces <c>throw new Exception("")</c>: the status code, the reason phrase and the
-    /// route are all discarded, and what the operator sees is an empty error with no indication that the
-    /// token was rejected. Every other refusal path in this service wraps <c>GetError()</c> in a message
-    /// naming the operation and the vmid, which is why this one is worth recording. Fixing it - passing
-    /// the status through, as <c>WaitForTaskToFinish</c> does - would redden this test, and that is the
-    /// point of it.
+    /// <c>Result.GetError()</c> is built only from an <c>errors</c> object, so on its own it reports these
+    /// as an empty string, and an operator saw an empty error with no hint that the token was rejected.
+    /// The status line is the one thing every refusal has.
     /// </remarks>
     [Fact]
-    public async Task GetConsole_WhenProxmoxRefusesTheTicketWithNoErrorDetail_ThrowsWithNoMessageAtAll()
+    public async Task GetConsole_WhenProxmoxRefusesTheTicketWithNoErrorDetail_ThrowsNamingTheVmidAndTheStatus()
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid);
@@ -287,7 +283,26 @@ public class ProxmoxServiceConsoleTests
 
         var exception = await Assert.ThrowsAsync<Exception>(() => cluster.Service().GetConsole(info));
 
-        Assert.Equal(string.Empty, exception.Message);
+        Assert.StartsWith($"VncProxy failed for vmid={Vmid}: HTTP 401", exception.Message);
+    }
+
+    /// <summary>
+    /// Most PVE refusals carry their reason as a top-level <c>message</c> rather than an <c>errors</c>
+    /// object, and that reason is what the console failure reports.
+    /// </summary>
+    [Fact]
+    public async Task GetConsole_WhenProxmoxRefusesTheTicketWithAMessage_ThrowsCarryingTheMessage()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Http.AnswersJson(
+            $"POST {FakeProxmoxCluster.VmPath(info, "/vncproxy")}",
+            """{"data":null,"message":"VM 100 not running\n"}""",
+            HttpStatusCode.InternalServerError);
+
+        var exception = await Assert.ThrowsAsync<Exception>(() => cluster.Service().GetConsole(info));
+
+        Assert.Equal($"VncProxy failed for vmid={Vmid}: VM 100 not running", exception.Message);
     }
 
     #endregion

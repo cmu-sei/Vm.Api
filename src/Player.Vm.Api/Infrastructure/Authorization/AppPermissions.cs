@@ -14,6 +14,9 @@ public enum AppSystemPermission
     ViewNetworks,
     ManageNetworks,
 
+    /// <summary>Upload ISOs view-wide (public) and to any team, in any View.</summary>
+    UploadIsos,
+
     /// <summary>
     /// System-wide authority to delete any ISO in any View/team, including ones the caller is not a
     /// member of. Used by the "all views" ISO management mode.
@@ -23,11 +26,17 @@ public enum AppSystemPermission
     /// <summary>View every Vm console in the system without being able to interact with them.</summary>
     ViewVms,
 
-    /// <summary>
-    /// Interact with and control every Vm in the system - including what the View permissions
-    /// DownloadVmFiles, UploadVmFiles and RevertVms gate, which have no system counterpart of their own.
-    /// </summary>
+    /// <summary>Interact with and control every Vm in the system.</summary>
     ControlVms,
+
+    /// <summary>Download files from every Vm in the system.</summary>
+    DownloadVmFiles,
+
+    /// <summary>Upload files to every Vm in the system.</summary>
+    UploadVmFiles,
+
+    /// <summary>View, create, delete, and revert to the snapshots of every Vm in the system.</summary>
+    RevertVms,
 
     /// <summary>View every Map in the system without being able to change them.</summary>
     ViewMaps,

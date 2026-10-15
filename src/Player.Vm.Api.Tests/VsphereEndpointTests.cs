@@ -342,9 +342,33 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     }
 
     /// <summary>
-    /// The snapshot and guest-file permissions exist only at View level, so a system administrator who is
-    /// on none of the Vm's teams reaches these routes through the system Vm-control permission instead.
-    /// Without it, a role with every system permission is refused unless it is also added to a team.
+    /// The snapshot and guest-file routes each have a system permission of the same name as their View
+    /// permission, so a system administrator on none of the Vm's teams reaches them without being added
+    /// to a team.
+    /// </summary>
+    [Theory]
+    [InlineData("GET", "/snapshots", AppSystemPermission.RevertVms)]
+    [InlineData("POST", "/actions/snapshots", AppSystemPermission.RevertVms)]
+    [InlineData("DELETE", "/actions/snapshots/snap-1", AppSystemPermission.RevertVms)]
+    [InlineData("POST", "/actions/revert", AppSystemPermission.RevertVms)]
+    [InlineData("POST", "/actions/revert-to-snapshot", AppSystemPermission.RevertVms)]
+    [InlineData("POST", "/actions/read-guest-file", AppSystemPermission.DownloadVmFiles)]
+    [InlineData("POST", "/actions/file-url", AppSystemPermission.DownloadVmFiles)]
+    [InlineData("POST", "/actions/upload-file", AppSystemPermission.UploadVmFiles)]
+    public async Task SnapshotAndGuestFileRoutes_WithOnlyTheirSystemPermission_AreAllowed(
+        string method, string suffix, AppSystemPermission permission)
+    {
+        var vm = await SeedVsphereVm();
+        AllowOnly(permission);
+
+        var response = await Send(method, suffix, vm.Id);
+
+        Assert.True(response.IsSuccessStatusCode, $"{method} {suffix} was {response.StatusCode}");
+    }
+
+    /// <summary>
+    /// Controlling every Vm does not imply moving files in or out of them or discarding their state -
+    /// each of those is its own system permission, as it is at View level.
     /// </summary>
     [Theory]
     [InlineData("GET", "/snapshots")]
@@ -355,7 +379,7 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
     [InlineData("POST", "/actions/read-guest-file")]
     [InlineData("POST", "/actions/file-url")]
     [InlineData("POST", "/actions/upload-file")]
-    public async Task SnapshotAndGuestFileRoutes_WithOnlyTheSystemVmControlPermission_AreAllowed(
+    public async Task SnapshotAndGuestFileRoutes_WithOnlyTheSystemVmControlPermission_Are403(
         string method, string suffix)
     {
         var vm = await SeedVsphereVm();
@@ -363,7 +387,7 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmApiFactory factory)
 
         var response = await Send(method, suffix, vm.Id);
 
-        Assert.True(response.IsSuccessStatusCode, $"{method} {suffix} was {response.StatusCode}");
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
     }
 
     /// <summary>

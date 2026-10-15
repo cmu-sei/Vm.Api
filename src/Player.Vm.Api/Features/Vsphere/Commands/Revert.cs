@@ -44,7 +44,7 @@ namespace Player.Vm.Api.Features.Vsphere
 
             public async Task Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await base.GetVm(request.Id, [AppSystemPermission.ControlVms], [AppViewPermission.RevertVms], [], cancellationToken, "You do not have permission to revert this vm.");
+                var vm = await base.GetVm(request.Id, [AppSystemPermission.RevertVms], [AppViewPermission.RevertVms], [], cancellationToken, "You do not have permission to revert this vm.");
                 await _vsphereService.RevertToCurrentSnapshot(vm.Id);
             }
         }

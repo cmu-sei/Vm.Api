@@ -56,7 +56,7 @@ namespace Player.Vm.Api.Features.Vsphere
 
             public async Task<Response> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await base.GetVm(request.Id, [AppSystemPermission.ControlVms], [AppViewPermission.DownloadVmFiles], [], cancellationToken, "You do not have permission to download files from this vm.");
+                var vm = await base.GetVm(request.Id, [AppSystemPermission.DownloadVmFiles], [AppViewPermission.DownloadVmFiles], [], cancellationToken, "You do not have permission to download files from this vm.");
 
                 var url = await _vsphereService.GetVmFileUrl(
                     request.Id,

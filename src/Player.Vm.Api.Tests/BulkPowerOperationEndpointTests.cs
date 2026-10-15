@@ -564,11 +564,15 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmApiFacto
     }
 
     /// <summary>
-    /// <c>RevertVms</c> has no system counterpart, so a system administrator on none of the Vm's teams
-    /// reverts through the system Vm-control permission, the same one the other operations accept.
+    /// A system administrator on none of the Vm's teams reverts through the system <c>RevertVms</c>
+    /// permission. The system Vm-control permission the other operations accept is not enough, because
+    /// reverting discards work as it does at View level.
     /// </summary>
-    [Fact]
-    public async Task Revert_IsAllowedWithOnlyTheSystemVmControlPermission()
+    [Theory]
+    [InlineData(AppSystemPermission.RevertVms, true)]
+    [InlineData(AppSystemPermission.ControlVms, false)]
+    public async Task Revert_WithOnlyASystemPermission_IsAllowedOnlyForTheRevertPermission(
+        AppSystemPermission permission, bool allowed)
     {
         var vm = VmApiFactory.VsphereVm(hasSnapshot: true);
         await Seed(vm);
@@ -580,7 +584,7 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmApiFacto
             .Can(
                 Arg.Any<IEnumerable<Guid>>(),
                 Arg.Any<IEnumerable<Guid>>(),
-                Arg.Is<AppSystemPermission[]>(x => x != null && x.Contains(AppSystemPermission.ControlVms)),
+                Arg.Is<AppSystemPermission[]>(x => x != null && x.Contains(permission)),
                 Arg.Any<AppViewPermission[]>(),
                 Arg.Any<AppTeamPermission[]>(),
                 Arg.Any<CancellationToken>())
@@ -590,8 +594,16 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmApiFacto
 
         var result = await Post("revert", vm.Id);
 
-        Assert.Empty(result.Errors);
-        Assert.Equal([vm.Id], result.Accepted);
+        if (allowed)
+        {
+            Assert.Empty(result.Errors);
+            Assert.Equal([vm.Id], result.Accepted);
+        }
+        else
+        {
+            Assert.Equal("Insufficient Permissions", result.Errors.For(vm.Id));
+            Assert.Empty(result.Accepted);
+        }
     }
 
     #endregion
