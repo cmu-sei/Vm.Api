@@ -5,7 +5,8 @@ The Vm.Api is the backend restful API for the VM application that integrates wit
 ## Testing
 
 `dotnet test` runs the suite. It needs Docker, because PostgreSQL is the only database the tests use
-and it is started in a container; it needs no network, vCenter or Proxmox cluster. See
+and it is started in a container (`postgres:16-alpine`, pulled on first use); it needs no vCenter,
+Proxmox cluster or player.api. See
 [docs/Testing.md](./docs/Testing.md) for how the harness works, the conventions to follow when adding
 a test, and what the suite does not cover yet.
 

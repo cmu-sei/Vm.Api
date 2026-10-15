@@ -9,8 +9,7 @@ root = true
 
 [*.cs]
 
-# A skipped test is a test that reports nothing. The convention in docs/Testing.md is the opposite: a
-# bug found while testing is characterized by a test that asserts the current behaviour and turns red
-# when it is fixed - VsphereServiceCommandTests is the worked example. Conditional skips are
-# unaffected, because SkipWhen and SkipUnless do not match this rule.
+# A skipped test reports nothing. A defect found while testing is characterized by a passing test of the
+# current behaviour, never parked with Skip (agent-docs/api-testing). Runtime conditional skips
+# (Assert.SkipWhen, SkipUnless) are unaffected.
 dotnet_diagnostic.xUnit1004.severity = warning
