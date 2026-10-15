@@ -1,0 +1,739 @@
+﻿// Copyright 2026 Carnegie Mellon University. All Rights Reserved.
+// Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
+
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net;
+using System.Net.Http;
+using System.Net.Http.Json;
+using System.Threading;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using NSubstitute.ClearExtensions;
+using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Features.Vms;
+using Player.Vm.Api.Infrastructure.Authorization;
+using Player.Vm.Api.Tests.Support;
+
+namespace Player.Vm.Api.Tests.Features.Vms;
+
+/// <summary>
+/// The bulk power endpoints in-process, through the real Startup and against real PostgreSQL.
+///
+/// What these cover that the VsphereService unit tests cannot: that a per-Vm reason produced deep in a
+/// hypervisor service arrives in the response body under the right key, that each gate in the handler
+/// reports one Vm rather than failing the request, and that a rejected Vm still leaves the rest of a
+/// multi-select submitted. That contract exists because the UI powers on whatever the user has
+/// selected, and a selection routinely includes a machine that is already on.
+/// </summary>
+public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
+    : ApiTestBase(fixture, factory), IClassFixture<VmAppFactory>
+{
+    public override async ValueTask InitializeAsync()
+    {
+        await base.InitializeAsync();
+
+        // The factory, and so its substitutes, are shared across the class. The database is not.
+        Factory.Vsphere.ClearSubstitute();
+        Factory.Proxmox.ClearSubstitute();
+        Factory.VsphereTasks.ClearSubstitute();
+    }
+
+    /// <summary>
+    /// Posts as Root. Root holds every system permission, and revert asks only for the View permission
+    /// <c>RevertVms</c>, so for a revert Root is also given it on a View holding the posted Vms' teams.
+    /// </summary>
+    private async Task<BulkPowerOperation.Response> Post(string action, params Guid[] ids)
+    {
+        if (action == "revert")
+        {
+            Guid[] teams;
+            await using (var context = NewContext())
+                teams = [.. context.VmTeams.Where(x => ids.Contains(x.VmId)).Select(x => x.TeamId)];
+
+            var viewId = Guid.NewGuid();
+            var root = Actor().WithId(Root.Id).Holding(AppViewPermission.RevertVms, viewId);
+
+            foreach (var team in teams)
+                root.InView(team, viewId);
+
+            await root.SeedAsync();
+        }
+
+        return await Post(RootClient, action, ids);
+    }
+
+    private async Task<BulkPowerOperation.Response> Post(HttpClient client, string action, params Guid[] ids)
+    {
+        var response = await client.PostAsJsonAsync($"/api/vms/actions/{action}", new { Ids = ids }, Ct);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+
+        return await response.Content.ReadFromJsonAsync<BulkPowerOperation.Response>(JsonOptions, Ct);
+    }
+
+    private void VsphereReturns(PowerOperation operation, Dictionary<Guid, string> results) =>
+        Factory.Vsphere.BulkPowerOperation(Arg.Any<Guid[]>(), operation).Returns(results);
+
+    private void ProxmoxReturns(PowerOperation operation, Dictionary<Guid, string> results) =>
+        Factory.Proxmox.BulkPowerOperation(Arg.Any<Guid[]>(), operation).Returns(results);
+
+    /// <summary>
+    /// A Vm of a type neither hypervisor service drives, which the factory has no helper for because no
+    /// other test has anything to do with one.
+    /// </summary>
+    private static Player.Vm.Api.Domain.Models.Vm VmOfType(VmType type)
+    {
+        var id = Guid.NewGuid();
+
+        return new Player.Vm.Api.Domain.Models.Vm
+        {
+            Id = id,
+            Name = $"vm-{id}",
+            Type = type,
+            VmTeams = [new VmTeam(Guid.NewGuid(), id)],
+        };
+    }
+
+    /// <summary>Re-reads a Vm through a cold change tracker, to assert on what was actually stored.</summary>
+    private async Task<Player.Vm.Api.Domain.Models.Vm> Stored(Guid id)
+    {
+        await using var context = NewContext();
+
+        return await context.Vms.AsNoTracking().SingleOrDefaultAsync(x => x.Id == id, Ct);
+    }
+
+    [Fact]
+    public async Task PowerOn_is_allowed_for_a_caller_holding_exactly_ControlTeamVms_on_the_Vms_team()
+    {
+        var vm = TestData.VsphereVm();
+        await Seed(vm);
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, vm.VmTeams.Single().TeamId).SeedAsync();
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var response = await Client(actor).PostAsJsonAsync("/api/vms/actions/power-on", new { Ids = new[] { vm.Id } }, Ct);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        Assert.Equal([vm.Id], (await response.Content.ReadFromJsonAsync<BulkPowerOperation.Response>(JsonOptions, Ct)).Accepted);
+    }
+
+    /// <summary>
+    /// <c>ControlViewVms</c> is carried on the caller's own team in the Vm's View, not on the Vm's team, so
+    /// both the visibility check and the control check reach it through the View.
+    /// </summary>
+    [Fact]
+    public async Task PowerOn_is_allowed_for_a_caller_holding_exactly_ControlViewVms_on_the_Vms_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = TestData.VsphereVm(teamId);
+        await Seed(vm);
+        var actor = await Actor()
+            .InView(teamId, viewId)
+            .Holding(AppViewPermission.ControlViewVms, viewId)
+            .SeedAsync();
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "power-on", vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
+    }
+
+    /// <summary>
+    /// <c>ViewTeamVms</c> on the Vm's team passes the visibility check, so the entry is the control check's,
+    /// and <c>ControlViewVms</c> is held in another View, where it does not reach this Vm.
+    /// </summary>
+    [Fact]
+    public async Task PowerOn_refuses_a_caller_holding_ControlViewVms_only_on_another_view_with_an_Insufficient_Permissions_entry()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = TestData.VsphereVm(teamId);
+        await Seed(vm);
+        var actor = await Actor()
+            .InView(teamId, viewId)
+            .Holding(AppTeamPermission.ViewTeamVms, teamId)
+            .Holding(AppViewPermission.ControlViewVms, Guid.NewGuid())
+            .SeedAsync();
+        // What vCenter would answer had the power-on been submitted.
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "power-on", vm.Id);
+
+        Assert.Equal("Insufficient Permissions", result.Errors.For(vm.Id));
+        Assert.Empty(result.Accepted);
+        await Factory.Vsphere.DidNotReceive().BulkPowerOperation(Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+    }
+
+    [Fact]
+    public async Task PowerOn_is_allowed_for_a_caller_holding_exactly_the_system_ControlVms()
+    {
+        var vm = TestData.VsphereVm();
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ControlVms).SeedAsync();
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "power-on", vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
+    }
+
+    /// <summary>The system <c>ViewVms</c> sees every Vm and controls none of them.</summary>
+    [Fact]
+    public async Task PowerOn_refuses_a_caller_holding_only_the_system_ViewVms_with_an_Insufficient_Permissions_entry()
+    {
+        var vm = TestData.VsphereVm();
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ViewVms).SeedAsync();
+        // What vCenter would answer had the power-on been submitted.
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "power-on", vm.Id);
+
+        Assert.Equal("Insufficient Permissions", result.Errors.For(vm.Id));
+        Assert.Empty(result.Accepted);
+        await Factory.Vsphere.DidNotReceive().BulkPowerOperation(Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+    }
+
+    /// <summary>
+    /// The reason this layer exists. One Vm vCenter refuses has to come back as one entry in Errors
+    /// while its neighbours are still submitted - the vSphere result dictionary used to be discarded
+    /// here, so the caller was told everything went fine.
+    /// </summary>
+    [Fact]
+    public async Task PowerOn_ReportsTheVmVcenterRejectedAndSubmitsTheRest()
+    {
+        const string reason = "The attempted operation cannot be performed in the current state (Powered on).";
+
+        var accepted = TestData.VsphereVm();
+        var rejected = TestData.VsphereVm();
+        await Seed(accepted, rejected);
+
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string>
+        {
+            [accepted.Id] = string.Empty,
+            [rejected.Id] = reason
+        });
+
+        var result = await Post("power-on", accepted.Id, rejected.Id);
+
+        Assert.Equal(reason, result.Errors.For(rejected.Id));
+        Assert.Null(result.Errors.For(accepted.Id));
+
+        // Accepted means "passed the gates and was handed to the hypervisor", which both were.
+        Assert.Equal([accepted.Id, rejected.Id], result.Accepted);
+    }
+
+    // An empty string is the services' word for "submitted"; it must not reach the client as an error.
+    [Fact]
+    public async Task PowerOn_ReportsNoErrorsWhenEveryVmWasSubmitted()
+    {
+        var first = TestData.VsphereVm();
+        var second = TestData.VsphereVm();
+        await Seed(first, second);
+
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string>
+        {
+            [first.Id] = string.Empty,
+            [second.Id] = string.Empty
+        });
+
+        var result = await Post("power-on", first.Id, second.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([first.Id, second.Id], result.Accepted);
+    }
+
+    // The handler's own gates report per Vm too, and short-circuit before the hypervisor is called.
+    [Fact]
+    public async Task PowerOn_ReportsAnUnknownIdWithoutCallingVsphere()
+    {
+        var known = TestData.VsphereVm();
+        var unknown = Guid.NewGuid();
+        await Seed(known);
+
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [known.Id] = string.Empty });
+
+        var result = await Post("power-on", known.Id, unknown);
+
+        Assert.Equal("Virtual Machine Not Found", result.Errors.For(unknown));
+        Assert.Equal([known.Id], result.Accepted);
+
+        await Factory.Vsphere.Received(1).BulkPowerOperation(
+            Arg.Is<Guid[]>(x => x.SequenceEqual(new[] { known.Id })), PowerOperation.PowerOn);
+    }
+
+    // A Vm the caller cannot see costs one entry in Errors, not the batch. VmService.CanAccessVm throws
+    // rather than returning false, so the handler has to catch it - see TryCanAccessVm.
+    [Fact]
+    public async Task PowerOn_ReportsAnInaccessibleVmWithoutFailingTheRequest()
+    {
+        var deniedTeam = Guid.NewGuid();
+        var denied = TestData.VsphereVm(teamId: deniedTeam);
+        var allowed = TestData.VsphereVm();
+        await Seed(denied, allowed);
+
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, allowed.VmTeams.Single().TeamId).SeedAsync();
+
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [allowed.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "power-on", denied.Id, allowed.Id);
+
+        Assert.Equal("Unauthorized", result.Errors.For(denied.Id));
+        Assert.Equal([allowed.Id], result.Accepted);
+    }
+
+    // Revert is gated on a snapshot the database knows about, and again only for the Vm that lacks one.
+    [Fact]
+    public async Task Revert_ReportsOnlyTheVmWithoutASnapshot()
+    {
+        var withSnapshot = TestData.VsphereVm(hasSnapshot: true);
+        var withoutSnapshot = TestData.VsphereVm(hasSnapshot: false);
+        await Seed(withSnapshot, withoutSnapshot);
+
+        VsphereReturns(PowerOperation.Revert, new Dictionary<Guid, string> { [withSnapshot.Id] = string.Empty });
+
+        var result = await Post("revert", withSnapshot.Id, withoutSnapshot.Id);
+
+        Assert.Equal("Virtual Machine does not have a snapshot", result.Errors.For(withoutSnapshot.Id));
+        Assert.Equal([withSnapshot.Id], result.Accepted);
+    }
+
+    // Unknown is the state the vSphere path refuses outright: with no known power state there is
+    // nothing to base a transition on.
+    [Fact]
+    public async Task PowerOn_ReportsAVsphereVmInAnUnknownPowerState()
+    {
+        var unknownState = TestData.VsphereVm(powerState: PowerState.Unknown);
+        await Seed(unknownState);
+
+        var result = await Post("power-on", unknownState.Id);
+
+        Assert.Equal("Unsupported Operation", result.Errors.For(unknownState.Id));
+        Assert.Empty(result.Accepted);
+
+        await Factory.Vsphere.DidNotReceive().BulkPowerOperation(Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+    }
+
+    // Shutdown and reboot are guest-side operations with their own vSphere entry points. Routing them
+    // through BulkPowerOperation would cut the power instead of asking the guest.
+    [Theory]
+    [InlineData("shutdown")]
+    [InlineData("reboot")]
+    public async Task GuestOperations_DoNotGoThroughTheHardPowerPath(string action)
+    {
+        var vm = TestData.VsphereVm(powerState: PowerState.On);
+        await Seed(vm);
+
+        var results = new Dictionary<Guid, string> { [vm.Id] = "No guest tools" };
+        Factory.Vsphere.BulkShutdown(Arg.Any<Guid[]>()).Returns(results);
+        Factory.Vsphere.BulkReboot(Arg.Any<Guid[]>()).Returns(results);
+
+        var result = await Post(action, vm.Id);
+
+        // Same per-Vm contract on these two paths, which is why it is worth asserting over the wire.
+        Assert.Equal("No guest tools", result.Errors.For(vm.Id));
+        await Factory.Vsphere.DidNotReceive().BulkPowerOperation(Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+    }
+
+    /// <summary>
+    /// HasPendingTasks is what the UI reads to show a Vm as busy, and TaskService is what clears it. It
+    /// is set for accepted Vms before the hypervisor is called, so it is set even for a Vm the
+    /// hypervisor then rejects; TaskService clears those on its next pass.
+    /// </summary>
+    [Fact]
+    public async Task PowerOn_MarksEveryAcceptedVmAsPending()
+    {
+        var accepted = TestData.VsphereVm();
+        var rejected = TestData.VsphereVm();
+        var gated = TestData.VsphereVm(powerState: PowerState.Unknown);
+        await Seed(accepted, rejected, gated);
+
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string>
+        {
+            [accepted.Id] = string.Empty,
+            [rejected.Id] = "Rejected"
+        });
+
+        await Post("power-on", accepted.Id, rejected.Id, gated.Id);
+
+        Assert.True((await Stored(accepted.Id)).HasPendingTasks);
+        Assert.True((await Stored(rejected.Id)).HasPendingTasks);
+        Assert.False((await Stored(gated.Id)).HasPendingTasks);
+    }
+
+    // CheckVsphereTasksBehavior wakes the poller as soon as a command is submitted rather than leaving
+    // the UI to wait out a full poll interval. It is a pipeline behavior, so nothing in the handler
+    // would notice if the registration were dropped.
+    [Fact]
+    public async Task PowerOn_WakesTheVsphereTaskPoller()
+    {
+        var vm = TestData.VsphereVm();
+        await Seed(vm);
+
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        await Post("power-on", vm.Id);
+
+        Factory.VsphereTasks.Received().CheckTasks();
+    }
+
+    /// <summary>
+    /// What the five action bodies do, and all they do: name the operation. Nothing else distinguishes
+    /// <c>power-off</c> from <c>power-on</c>, so a route wired to the wrong constant would power machines
+    /// the other way and answer 202 either way.
+    /// </summary>
+    /// <remarks>
+    /// The other two of the five are covered by
+    /// <see cref="GuestOperations_DoNotGoThroughTheHardPowerPath"/>, which is the point about them: they
+    /// do not reach <c>BulkPowerOperation</c> at all.
+    /// </remarks>
+    [Theory]
+    [InlineData("power-on", PowerOperation.PowerOn)]
+    [InlineData("power-off", PowerOperation.PowerOff)]
+    [InlineData("revert", PowerOperation.Revert)]
+    public async Task EachHardPowerRoute_SendsItsOwnOperation(string action, PowerOperation operation)
+    {
+        // A snapshot so revert passes the gate the other two do not have.
+        var vm = TestData.VsphereVm(hasSnapshot: true);
+        await Seed(vm);
+
+        VsphereReturns(operation, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(action, vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
+
+        await Factory.Vsphere.Received(1).BulkPowerOperation(
+            Arg.Is<Guid[]>(x => x.SequenceEqual(new[] { vm.Id })), operation);
+    }
+
+    #region Proxmox
+
+    /// <summary>
+    /// The other hypervisor, which until this test had never been through this handler: a Proxmox Vm is
+    /// accepted, dispatched to <c>IProxmoxService</c> and marked pending, and vSphere is not asked
+    /// about it.
+    /// </summary>
+    [Fact]
+    public async Task PowerOn_SendsAProxmoxVmToProxmoxAndNotToVsphere()
+    {
+        var vm = TestData.ProxmoxVm();
+        await Seed(vm);
+
+        ProxmoxReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post("power-on", vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
+        Assert.True((await Stored(vm.Id)).HasPendingTasks);
+
+        await Factory.Proxmox.Received(1).BulkPowerOperation(
+            Arg.Is<Guid[]>(x => x.SequenceEqual(new[] { vm.Id })), PowerOperation.PowerOn);
+        await Factory.Vsphere.DidNotReceive().BulkPowerOperation(
+            Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+    }
+
+    /// <summary>
+    /// A multi-select spanning both hypervisors is split by type, and each service is handed only its own
+    /// machines. Handing vCenter a Proxmox id would come back as a batch of "Virtual machine not found".
+    /// </summary>
+    /// <remarks>
+    /// The response's <c>Accepted</c> is in vSphere-then-Proxmox order rather than the order the ids were
+    /// submitted in - the handler concatenates two lists - which is why this posts the Proxmox Vm first.
+    /// The UI reads <c>Errors</c> by id and uses <c>Accepted</c> as a set, so the order is not part of
+    /// the contract.
+    /// </remarks>
+    [Fact]
+    public async Task PowerOn_SplitsAMixedBatchBetweenTheTwoHypervisors()
+    {
+        var vsphere = TestData.VsphereVm();
+        var proxmox = TestData.ProxmoxVm();
+        await Seed(vsphere, proxmox);
+
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vsphere.Id] = string.Empty });
+        ProxmoxReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [proxmox.Id] = string.Empty });
+
+        var result = await Post("power-on", proxmox.Id, vsphere.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vsphere.Id, proxmox.Id], result.Accepted);
+
+        await Factory.Vsphere.Received(1).BulkPowerOperation(
+            Arg.Is<Guid[]>(x => x.SequenceEqual(new[] { vsphere.Id })), PowerOperation.PowerOn);
+        await Factory.Proxmox.Received(1).BulkPowerOperation(
+            Arg.Is<Guid[]>(x => x.SequenceEqual(new[] { proxmox.Id })), PowerOperation.PowerOn);
+    }
+
+    /// <summary>
+    /// Both result dictionaries reach the caller. They are merged one after the other into the same
+    /// dictionary as the handler's own gates wrote into, and a merge that dropped either side would report
+    /// a rejected machine as submitted - which is the failure this whole class exists for.
+    /// </summary>
+    [Fact]
+    public async Task PowerOn_ReportsAReasonFromEitherHypervisor()
+    {
+        var vsphere = TestData.VsphereVm();
+        var proxmox = TestData.ProxmoxVm();
+        var unknown = Guid.NewGuid();
+        await Seed(vsphere, proxmox);
+
+        VsphereReturns(PowerOperation.PowerOn,
+            new Dictionary<Guid, string> { [vsphere.Id] = "vCenter said no" });
+        ProxmoxReturns(PowerOperation.PowerOn,
+            new Dictionary<Guid, string> { [proxmox.Id] = "pvedaemon said no" });
+
+        var result = await Post("power-on", vsphere.Id, proxmox.Id, unknown);
+
+        Assert.Equal("vCenter said no", result.Errors.For(vsphere.Id));
+        Assert.Equal("pvedaemon said no", result.Errors.For(proxmox.Id));
+        // And the gate's own entry survives being merged with both of them.
+        Assert.Equal("Virtual Machine Not Found", result.Errors.For(unknown));
+    }
+
+    /// <summary>
+    /// The asymmetry the handler is explicit about: <c>PowerState.Unknown</c> refuses a vSphere Vm but not
+    /// a Proxmox one, because a Proxmox Vm reads as Unknown whenever the state poller has not run yet -
+    /// including while Proxmox is disabled, and during the first refresh interval after a restart. Gating
+    /// on it would refuse a whole batch on the operation meant to fix it.
+    /// </summary>
+    /// <remarks>
+    /// The pair to <see cref="PowerOn_ReportsAVsphereVmInAnUnknownPowerState"/>, and the reason this is
+    /// worth a test of its own: the two Vms differ only in <c>Type</c>, so anyone tidying the gate into one
+    /// state check for both providers fails this.
+    /// </remarks>
+    [Fact]
+    public async Task PowerOn_SubmitsAProxmoxVmInAnUnknownPowerState()
+    {
+        var vm = TestData.ProxmoxVm(powerState: PowerState.Unknown);
+        await Seed(vm);
+
+        ProxmoxReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post("power-on", vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
+    }
+
+    /// <summary>
+    /// Revert is refused for a Proxmox Vm outright, and before the snapshot gate rather than by it:
+    /// nothing populates <c>HasSnapshot</c> for Proxmox, so every Proxmox Vm would otherwise be reported
+    /// as having no snapshot - a true statement about the column and a misleading one about the Vm, which
+    /// may well have several.
+    /// </summary>
+    [Fact]
+    public async Task Revert_ForAProxmoxVm_IsUnsupported()
+    {
+        var vm = TestData.ProxmoxVm();
+        await Seed(vm);
+
+        var result = await Post("revert", vm.Id);
+
+        Assert.Equal("Unsupported Operation", result.Errors.For(vm.Id));
+        Assert.Empty(result.Accepted);
+
+        await Factory.Proxmox.DidNotReceive().BulkPowerOperation(
+            Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+    }
+
+    /// <summary>
+    /// A Vm of any other type is refused before anything is asked about it. <c>Azure</c> is a type the
+    /// enum has and no service in this repository drives; <c>Unknown</c> is what a row written by an
+    /// integration that did not set the column reads as.
+    /// </summary>
+    [Theory]
+    [InlineData(VmType.Unknown)]
+    [InlineData(VmType.Azure)]
+    public async Task PowerOn_ForAVmOfNeitherSupportedType_IsUnsupported(VmType type)
+    {
+        var vm = VmOfType(type);
+        await Seed(vm);
+
+        var result = await Post("power-on", vm.Id);
+
+        Assert.Equal("Unsupported Operation", result.Errors.For(vm.Id));
+        Assert.Empty(result.Accepted);
+        Assert.False((await Stored(vm.Id)).HasPendingTasks);
+    }
+
+    // Both behaviors fire for this command - it implements both marker interfaces - because a batch may
+    // have been split across the two hypervisors, and neither poller can tell from a poke whether it has
+    // anything to look for.
+    [Fact]
+    public async Task PowerOn_WakesTheProxmoxTaskPoller()
+    {
+        var vm = TestData.ProxmoxVm();
+        await Seed(vm);
+
+        ProxmoxReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        await Post("power-on", vm.Id);
+
+        Factory.ProxmoxTasks.Received().CheckTasks();
+    }
+
+    #endregion
+
+    #region Permissions
+
+    /// <summary>
+    /// The second permission gate, and the one no bulk test had reached: seeing a Vm is not being allowed
+    /// to power it. A caller who may view a Vm but not control it gets
+    /// <c>"Insufficient Permissions"</c> rather than the <c>"Unauthorized"</c>
+    /// <see cref="PowerOn_ReportsAnInaccessibleVmWithoutFailingTheRequest"/> covers, and the two are
+    /// different answers to different questions asked of player.api.
+    /// </summary>
+    [Fact]
+    public async Task PowerOn_ReportsInsufficientPermissionsWhenTheCallerCannotControlTheVm()
+    {
+        var denied = TestData.VsphereVm();
+        var allowed = TestData.VsphereVm();
+        await Seed(denied, allowed);
+
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ViewTeamVms, denied.VmTeams.Single().TeamId)
+            .Holding(AppTeamPermission.ControlTeamVms, allowed.VmTeams.Single().TeamId)
+            .SeedAsync();
+
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [allowed.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "power-on", denied.Id, allowed.Id);
+
+        Assert.Equal("Insufficient Permissions", result.Errors.For(denied.Id));
+        Assert.Equal([allowed.Id], result.Accepted);
+    }
+
+    /// <summary>
+    /// Revert asks a different question of player.api than the other four operations do - the
+    /// <c>RevertVms</c> view permission rather than team edit - because reverting discards work that
+    /// somebody else on the team may be in the middle of.
+    /// </summary>
+    /// <remarks>
+    /// The Vm has a snapshot, so the refusal can only have come from the permission gate; the snapshot
+    /// gate sits after it.
+    /// </remarks>
+    [Fact]
+    public async Task Revert_ReportsInsufficientPermissionsWithoutTheRevertPermission()
+    {
+        var vm = TestData.VsphereVm(hasSnapshot: true);
+        await Seed(vm);
+
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, vm.VmTeams.Single().TeamId).SeedAsync();
+        // What vCenter would answer had the revert been submitted.
+        VsphereReturns(PowerOperation.Revert, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "revert", vm.Id);
+
+        Assert.Equal("Insufficient Permissions", result.Errors.For(vm.Id));
+        Assert.Empty(result.Accepted);
+
+        await Factory.Vsphere.DidNotReceive().BulkPowerOperation(
+            Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
+    }
+
+    /// <summary>
+    /// <c>RevertVms</c> on the Vm's View is what the revert asks; <c>ViewTeamVms</c> on its team is the
+    /// visibility check every bulk operation makes first, and grants no control.
+    /// </summary>
+    [Fact]
+    public async Task Revert_is_allowed_for_a_caller_holding_RevertVms_on_the_Vms_view_and_ViewTeamVms_on_its_team()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = TestData.VsphereVm(teamId, hasSnapshot: true);
+        await Seed(vm);
+        var actor = await Actor()
+            .InView(teamId, viewId)
+            .Holding(AppTeamPermission.ViewTeamVms, teamId)
+            .Holding(AppViewPermission.RevertVms, viewId)
+            .SeedAsync();
+        VsphereReturns(PowerOperation.Revert, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "revert", vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
+    }
+
+    /// <summary>
+    /// The same denial with the other operation still goes through, which is what makes the test above a
+    /// test of the revert branch rather than of any refusal at all: power-on never asks for
+    /// <c>RevertVms</c>.
+    /// </summary>
+    [Fact]
+    public async Task PowerOn_IsNotGatedOnTheRevertPermission()
+    {
+        var vm = TestData.VsphereVm();
+        await Seed(vm);
+
+        var actor = await Actor().Holding(AppTeamPermission.ControlTeamVms, vm.VmTeams.Single().TeamId).SeedAsync();
+
+        VsphereReturns(PowerOperation.PowerOn, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "power-on", vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
+    }
+
+    /// <summary>
+    /// A system administrator on none of the Vm's teams reverts through the system <c>RevertVms</c>
+    /// permission. The system Vm-control permission the other operations accept is not enough, because
+    /// reverting discards work as it does at View level. The system <c>ViewVms</c> alongside it passes the
+    /// visibility check every bulk operation makes first.
+    /// </summary>
+    [Theory]
+    [InlineData(AppSystemPermission.RevertVms, true)]
+    [InlineData(AppSystemPermission.ControlVms, false)]
+    public async Task Revert_with_ViewVms_and_one_other_system_permission_is_allowed_only_for_RevertVms(
+        AppSystemPermission permission, bool allowed)
+    {
+        var vm = TestData.VsphereVm(hasSnapshot: true);
+        await Seed(vm);
+
+        var actor = await Actor().Holding(AppSystemPermission.ViewVms, permission).SeedAsync();
+
+        VsphereReturns(PowerOperation.Revert, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "revert", vm.Id);
+
+        if (allowed)
+        {
+            Assert.Empty(result.Errors);
+            Assert.Equal([vm.Id], result.Accepted);
+        }
+        else
+        {
+            Assert.Equal("Insufficient Permissions", result.Errors.For(vm.Id));
+            Assert.Empty(result.Accepted);
+        }
+    }
+
+    #endregion
+
+    // The endpoints are behind the default authorization policy, which player.api has no say in.
+    [Fact]
+    public async Task PowerOn_RejectsAnUnauthenticatedRequest()
+    {
+        var response = await Client().PostAsJsonAsync(
+            "/api/vms/actions/power-on",
+            new { Ids = new[] { Guid.NewGuid() } },
+            Ct);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+}
+
+internal static class BulkPowerOperationResponseExtensions
+{
+    /// <summary>
+    /// Response.Errors is keyed by the string form of the Vm id - System.Text.Json could not serialize
+    /// Guid keys when that type was written - and spelling the conversion at every assertion buries
+    /// what is being asserted. Returns null when the Vm reported no error.
+    /// </summary>
+    public static string For(this Dictionary<string, string> errors, Guid id) =>
+        errors.TryGetValue(id.ToString(), out var reason) ? reason : null;
+}

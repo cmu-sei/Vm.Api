@@ -1,0 +1,37 @@
+<!--
+  Shared by every Crucible API test project (agent-docs/api-testing). Copied byte for byte into the test
+  project's own directory, next to its .csproj; do not edit in a repo.
+
+  MSBuild imports only the nearest Directory.Build.props, so this one imports the repository's own first
+  (when there is one) and then adds what the test standard depends on. It applies to the test project
+  alone, so a repository whose application projects do not build warning-free yet can still adopt the
+  standard.
+-->
+<Project>
+
+  <PropertyGroup>
+    <CrucibleParentBuildProps>$([MSBuild]::GetPathOfFileAbove('Directory.Build.props', '$(MSBuildThisFileDirectory)../'))</CrucibleParentBuildProps>
+  </PropertyGroup>
+
+  <Import Project="$(CrucibleParentBuildProps)" Condition="'$(CrucibleParentBuildProps)' != ''" />
+
+  <PropertyGroup>
+    <!--
+      What makes the xUnit analyzers load-bearing rather than advisory: xUnit1051 (an awaited call that
+      does not take the test's cancellation token), xUnit1004 (a skipped test, raised to warning in
+      .editorconfig), xUnit1026, xUnit2000, xUnit2012, and the compiler's own warnings.
+    -->
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+
+    <!--
+      Restore-time warnings stay warnings. They report facts about dependencies rather than defects in
+      the test code, and none can be fixed from a test project:
+      - NU1901-NU1904 are the NuGet audit. AutoMapper 13 and MediatR 12 are pinned deliberately (later
+        versions need a commercial license), and the rest is transitive.
+      - NU1510 names a PackageReference the framework already provides.
+      - NU1701 is TinCan 1.3.0, which ships .NET Framework assets only.
+    -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1901;NU1902;NU1903;NU1904;NU1510;NU1701</WarningsNotAsErrors>
+  </PropertyGroup>
+
+</Project>
