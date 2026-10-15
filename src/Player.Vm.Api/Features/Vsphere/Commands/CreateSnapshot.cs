@@ -46,7 +46,7 @@ namespace Player.Vm.Api.Features.Vsphere
 
             public async Task<string> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await base.GetVm(request.Id, [], [AppViewPermission.RevertVms], [], cancellationToken,
+                var vm = await base.GetVm(request.Id, [AppSystemPermission.RevertVms], [AppViewPermission.RevertVms], [], cancellationToken,
                     "You do not have permission to manage snapshots for this vm.");
                 return await _vsphereService.CreateSnapshot(
                     vm.Id, request.SnapshotName, request.Description, request.IncludeMemory);

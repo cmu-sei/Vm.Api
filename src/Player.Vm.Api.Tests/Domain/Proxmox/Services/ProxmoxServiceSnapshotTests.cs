@@ -28,9 +28,9 @@ namespace Player.Vm.Api.Tests.Domain.Proxmox.Services;
 /// wrong in a way no compiler and no endpoint test would notice.
 /// </para>
 /// <para>
-/// The other reason is how <c>GetSnapshots</c> reads its optional fields off the <c>ExpandoObject</c> each
-/// entry arrives as, which the region "GetSnapshots and the fields Proxmox omits" pins entry shape by entry
-/// shape.
+/// The other reason is the region on omitted fields: PVE leaves out every field a snapshot does not
+/// have, and on the <c>ExpandoObject</c> the response arrives as, an absent key is not a null - see
+/// those tests' remarks.
 /// </para>
 /// </remarks>
 public class ProxmoxServiceSnapshotTests
@@ -38,7 +38,7 @@ public class ProxmoxServiceSnapshotTests
     private const int Vmid = 100;
     private const string Snap = "snap1";
 
-    /// <summary>Every optional field present, which is the only shape <c>GetSnapshots</c> survives.</summary>
+    /// <summary>One snapshot with every optional field present.</summary>
     private const string OneSnapshot =
         """[{"name":"snap1","description":"before patching","parent":"snap0","vmstate":1,"snaptime":1700000000}]""";
 
@@ -123,8 +123,8 @@ public class ProxmoxServiceSnapshotTests
 
     // The synthetic "current" entry Proxmox appends to every snapshot list is deliberately surfaced rather
     // than filtered, so a caller can tell which snapshot the machine is running from - the Proxmox UI
-    // lists it the same way. Note the arrangement has to spell the optional fields as explicit nulls; the
-    // entry Proxmox really sends omits them, and that throws - see GetSnapshots_OnTheCurrentEntry... below.
+    // lists it the same way. The entry Proxmox really sends omits these fields rather than nulling them -
+    // see GetSnapshots_OnTheCurrentEntry... below.
     [Fact]
     public async Task GetSnapshots_SurfacesTheSyntheticCurrentEntryRatherThanFilteringIt()
     {
@@ -156,10 +156,7 @@ public class ProxmoxServiceSnapshotTests
 
     // A refused read throws carrying both the vmid and whatever Proxmox said about it. The message is the
     // only diagnostic a caller gets - the endpoint turns it into a 500 body - so it is worth pinning that
-    // the Proxmox error survives into it rather than being replaced by a generic sentence. Note the
-    // contrast with GetConsole, which throws GetError() on its own: GetError() reads only an "errors"
-    // object, so on a bare 401 or 502 that produces an exception with an empty message, while this one
-    // still says which vmid failed doing what. Wrapping it is the difference.
+    // the Proxmox error survives into it rather than being replaced by a generic sentence.
     [Fact]
     public async Task GetSnapshots_WhenProxmoxRefusesTheRead_ThrowsCarryingWhatProxmoxReported()
     {
@@ -177,9 +174,16 @@ public class ProxmoxServiceSnapshotTests
 
     #region GetSnapshots and the fields Proxmox omits
 
-    /// <summary>A list holding the "current" entry, which carries only a name and a digest, throws a <c>RuntimeBinderException</c>.</summary>
+    /// <remarks>
+    /// PVE leaves a field out of a snapshot entry rather than sending it as null, and the entries arrive
+    /// as <c>ExpandoObject</c>s, on which a dynamic read of an absent key throws
+    /// <see cref="RuntimeBinderException"/>. That is the failure these tests guard against: the
+    /// synthetic entry Proxmox appends to every list is <c>{"name":"current","digest":"..."}</c> - no
+    /// <c>description</c>, no <c>parent</c>, no <c>vmstate</c>, no <c>snaptime</c> - so reading it
+    /// dynamically made the snapshot panel fail on every machine.
+    /// </remarks>
     [Fact]
-    public async Task GetSnapshots_OnTheCurrentEntryProxmoxActuallySends_ThrowsInsteadOfListing()
+    public async Task GetSnapshots_OnTheCurrentEntryProxmoxActuallySends_ListsItWithItsAbsentFieldsAsNull()
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid);
@@ -190,37 +194,56 @@ public class ProxmoxServiceSnapshotTests
              {"name":"current","digest":"5f2b0e5c8e9d4a1b8c7d6e5f4a3b2c1d0e9f8a7b"}]
             """);
 
-        await Assert.ThrowsAnyAsync<RuntimeBinderException>(
-            () => cluster.Service().GetSnapshots(info));
+        var snapshots = await cluster.Service().GetSnapshots(info);
+
+        Assert.Equal(["snap1", "current"], snapshots.Select(x => x.Name));
+
+        var current = snapshots[1];
+        Assert.Null(current.Description);
+        Assert.Null(current.Parent);
+        Assert.False(current.VmState);
+        Assert.Null(current.SnapTime);
     }
 
-    // Same case as GetSnapshots_OnTheCurrentEntryProxmoxActuallySends_ThrowsInsteadOfListing.
+    /// <remarks>
+    /// Any one omitted field reads as absent and leaves the rest intact - a named snapshot taken with no
+    /// description, which is what <c>qm snapshot 100 snap1</c> with no <c>--description</c> produces, is
+    /// as listable as one with every field. Each row here is one absent key.
+    /// </remarks>
     [Theory]
     [InlineData("description")]
     [InlineData("parent")]
     [InlineData("vmstate")]
     [InlineData("snaptime")]
-    public async Task GetSnapshots_WhenProxmoxOmitsAnOptionalField_ThrowsRatherThanReadingItAsAbsent(
-        string omitted)
+    public async Task GetSnapshots_WhenProxmoxOmitsAnOptionalField_ReadsItAsAbsent(string omitted)
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid);
         cluster.Answers($"GET {SnapshotPath(info)}", $"[{{{Fields(omitted)}}}]");
 
-        await Assert.ThrowsAnyAsync<RuntimeBinderException>(
-            () => cluster.Service().GetSnapshots(info));
+        var snapshot = Assert.Single(await cluster.Service().GetSnapshots(info));
+
+        Assert.Equal("snap1", snapshot.Name);
+        Assert.Equal(omitted == "description" ? null : "before patching", snapshot.Description);
+        Assert.Equal(omitted == "parent" ? null : "snap0", snapshot.Parent);
+        Assert.Equal(omitted != "vmstate", snapshot.VmState);
+        Assert.Equal(omitted == "snaptime" ? null : 1700000000L, snapshot.SnapTime);
     }
 
-    // Same case as GetSnapshots_OnTheCurrentEntryProxmoxActuallySends_ThrowsInsteadOfListing.
+    /// <remarks>
+    /// An entry carrying no <c>name</c> key at all is dropped by the same skip as one whose name is null
+    /// or empty: the name is the only handle the revert and delete routes have.
+    /// </remarks>
     [Fact]
-    public async Task GetSnapshots_WhenAnEntryCarriesNoNameKeyAtAll_ThrowsRatherThanBeingSkipped()
+    public async Task GetSnapshots_WhenAnEntryCarriesNoNameKeyAtAll_SkipsIt()
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid);
-        cluster.Answers($"GET {SnapshotPath(info)}", """[{"digest":"5f2b0e5c"}]""");
+        cluster.Answers($"GET {SnapshotPath(info)}", """[{"digest":"5f2b0e5c"},{"name":"snap1"}]""");
 
-        await Assert.ThrowsAnyAsync<RuntimeBinderException>(
-            () => cluster.Service().GetSnapshots(info));
+        var snapshots = await cluster.Service().GetSnapshots(info);
+
+        Assert.Equal(["snap1"], snapshots.Select(x => x.Name));
     }
 
     #endregion

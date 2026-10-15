@@ -31,11 +31,11 @@ namespace Player.Vm.Api.Tests.Domain.Proxmox.Services;
 /// array runs a different command.
 /// </para>
 /// <para>
-/// The other subject is how the responses are read. The service takes <c>data.exited</c>,
-/// <c>data.exitcode</c>, <c>data.pid</c> and <c>data.content</c> off a <c>dynamic</c> over an
-/// <see cref="System.Dynamic.ExpandoObject"/>, and <c>DecodeAgentOutput</c> reads the hyphenated
-/// <c>out-data</c> / <c>err-data</c> keys through the dictionary view; the tests below pin what each read
-/// does when Proxmox omits its key.
+/// The other subject here is how the responses are read. QGA leaves out keys it has no value for rather
+/// than sending them as null, and the value behind each response is an
+/// <see cref="System.Dynamic.ExpandoObject"/>, on which dynamic member access to an absent key throws
+/// <see cref="RuntimeBinderException"/> rather than answering null. So every key is read through the
+/// dictionary view, and the tests on omitted keys pin that an absent one takes its fallback.
 /// </para>
 /// <para>
 /// <c>ProxmoxEndpointTests</c> covers the routes above these methods with <c>IProxmoxService</c>
@@ -328,12 +328,10 @@ public class ProxmoxServiceGuestAgentTests
     // guest. Nothing retries either - unlike the bulk power path, a guest command is not re-resolved and
     // re-sent when the node turns out to be wrong.
     //
-    // The context is what makes these usable, and it is worth the contrast with GetConsole, which throws
-    // result.GetError() bare: GetError() is populated only from an errors object in the body, so a plain
-    // 401 or a proxy's 502 produces an exception with an empty message there. Here the same empty string
-    // still arrives inside "QGA exec failed for vmid=100: ", which names the operation and the machine
-    // whatever Proxmox did or did not say. Asserted with StartsWith for that reason rather than on the
-    // whole message.
+    // The context is what makes these usable: whatever Proxmox did or did not say, the message starts
+    // "QGA exec failed for vmid=100: ", which names the operation and the machine. Asserted with
+    // StartsWith for that reason rather than on the whole message; what follows is Proxmox's own error,
+    // its message or the HTTP status, whichever the refusal carried.
     [Fact]
     public async Task RunGuestProcess_WhenProxmoxRefusesTheExec_ThrowsNamingTheVmid()
     {
@@ -412,49 +410,86 @@ public class ProxmoxServiceGuestAgentTests
 
     #region Reading the exec-status response
 
-    /// <summary>An exec-status answer without <c>exited</c> or <c>exitcode</c> throws a <c>RuntimeBinderException</c> naming the key.</summary>
-    [Theory]
-    [InlineData("""{"exitcode":0,"out-data":"","err-data":""}""", "exited")]
-    [InlineData("""{"exited":1,"out-data":"","err-data":""}""", "exitcode")]
-    public async Task RunGuestProcess_WhenTheStatusOmitsAKeyItGuardsForNull_ThrowsFromTheDynamicBinder(
-        string status, string missing)
+    /// <summary>
+    /// QGA leaves keys out of the exec-status answer rather than sending them as null: a process that is
+    /// still running is reported without an <c>exitcode</c>, some agent versions without <c>exited</c>
+    /// either, and a process ended by a signal has no <c>exitcode</c> at all. An absent <c>exited</c> is
+    /// read as "not finished" and polled again.
+    /// </summary>
+    /// <remarks>
+    /// The status arrives as an <see cref="System.Dynamic.ExpandoObject"/>, on which a dynamic read of an
+    /// absent key throws <see cref="RuntimeBinderException"/> instead of answering null - so a
+    /// <c>data.exited != null</c> guard never reached its fallback, and an agent that omitted the key made
+    /// <c>RunGuestProcess</c> throw a binder error naming an ExpandoObject.
+    /// </remarks>
+    [Fact]
+    public async Task RunGuestProcess_WhenTheStatusOmitsExited_PollsAgainUntilTheProcessExits()
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid);
         cluster.Answers($"POST {FakeProxmoxCluster.VmPath(info, Exec)}", """{"pid":4242}""");
-        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, ExecStatus)}", status);
+        cluster.Http.AnswersJson(
+            $"GET {FakeProxmoxCluster.VmPath(info, ExecStatus)}",
+            FakeProxmoxCluster.Data("""{"out-data":"","err-data":""}"""),
+            HttpStatusCode.OK,
+            once: true);
+        cluster.Answers(
+            $"GET {FakeProxmoxCluster.VmPath(info, ExecStatus)}",
+            """{"exited":1,"exitcode":0,"out-data":"done","err-data":""}""");
 
-        var ex = await Assert.ThrowsAsync<RuntimeBinderException>(
-            () => cluster.Service().RunGuestProcess(info, Bash, "-c hello", TimeSpan.FromSeconds(5)));
+        var result = await cluster.Service().RunGuestProcess(info, Bash, "-c hello", TimeSpan.FromSeconds(30));
 
-        Assert.Equal(
-            $"'System.Dynamic.ExpandoObject' does not contain a definition for '{missing}'",
-            ex.Message);
+        Assert.Equal(2, cluster.Requests(HttpMethod.Get, FakeProxmoxCluster.VmPath(info, ExecStatus)).Count);
+        Assert.Equal("done", result.Output);
     }
 
-    /// <summary>An exec answer without a <c>pid</c> throws a <c>RuntimeBinderException</c> from both methods.</summary>
+    /// <summary>
+    /// A finished process with no <c>exitcode</c> - what QGA reports for one ended by a signal - is a
+    /// failure with exit code -1, not a binder error and not a success.
+    /// </summary>
     [Fact]
-    public async Task RunGuestProcess_WhenTheExecAnswersNoPid_ThrowsFromTheDynamicBinder()
+    public async Task RunGuestProcess_WhenAnExitedStatusOmitsTheExitCode_ReportsMinusOneAndNotSuccess()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"POST {FakeProxmoxCluster.VmPath(info, Exec)}", """{"pid":4242}""");
+        cluster.Answers(
+            $"GET {FakeProxmoxCluster.VmPath(info, ExecStatus)}",
+            """{"exited":1,"signal":9,"out-data":"","err-data":""}""");
+
+        var result = await cluster.Service().RunGuestProcess(info, Bash, "-c hello", TimeSpan.FromSeconds(5));
+
+        Assert.Equal(-1, result.ExitCode);
+        Assert.False(result.Success);
+    }
+
+    /// <summary>
+    /// An <c>agent/exec</c> answer with no <c>pid</c> is reported as a failed exec naming the vmid, in both
+    /// methods that call it, rather than as a binder error.
+    /// </summary>
+    /// <remarks>
+    /// Narrower than the exec-status case - PVE's exec always answers a pid when it answers at all - but a
+    /// 200 with an unexpected body would otherwise surface as an ExpandoObject binder error.
+    /// </remarks>
+    [Fact]
+    public async Task RunGuestProcess_WhenTheExecAnswersNoPid_ThrowsNamingTheVmid()
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid);
         cluster.Answers($"POST {FakeProxmoxCluster.VmPath(info, Exec)}", """{}""");
 
-        var run = await Assert.ThrowsAsync<RuntimeBinderException>(
+        var run = await Assert.ThrowsAsync<Exception>(
             () => cluster.Service().RunGuestProcess(info, Bash, "-c hello", TimeSpan.FromSeconds(5)));
-        var fast = await Assert.ThrowsAsync<RuntimeBinderException>(
+        var fast = await Assert.ThrowsAsync<Exception>(
             () => cluster.Service().RunGuestProcessFast(info, Bash, "-c hello"));
 
-        Assert.Equal("'System.Dynamic.ExpandoObject' does not contain a definition for 'pid'", run.Message);
-        Assert.Equal("'System.Dynamic.ExpandoObject' does not contain a definition for 'pid'", fast.Message);
+        Assert.Equal($"QGA exec failed for vmid={Vmid}: Proxmox answered no pid", run.Message);
+        Assert.Equal($"QGA exec failed for vmid={Vmid}: Proxmox answered no pid", fast.Message);
     }
 
-    // The one response path that is null-safe, and only by accident of the key names. QGA spells the two
-    // output streams "out-data" and "err-data", which dynamic member access cannot reach at all - a hyphen
-    // is not an identifier - so DecodeAgentOutput goes through the ExpandoObject's IDictionary view, which
-    // answers "absent" instead of throwing. Both keys are read, and an absent one is the empty string
-    // rather than a null or a binder exception. Contrast the two tests above, whose reads go through
-    // dynamic member access.
+    // QGA spells the two output streams "out-data" and "err-data", which dynamic member access could not
+    // reach at all - a hyphen is not an identifier. Both keys are read, and an absent one is the empty
+    // string rather than a null or a binder exception.
     [Fact]
     public async Task RunGuestProcess_ReadsBothHyphenatedOutputKeysThroughTheDictionaryView()
     {
@@ -472,7 +507,7 @@ public class ProxmoxServiceGuestAgentTests
     }
 
     // A command that wrote nothing at all: both keys absent, and the answer is two empty strings rather
-    // than the binder exception the sibling keys produce. This is the case a successful "touch" or
+    // than nulls or an exception. This is the case a successful "touch" or
     // "systemctl restart" produces on a real guest, so it is also the common one.
     [Fact]
     public async Task RunGuestProcess_WhenTheStatusOmitsBothOutputKeys_ReportsEmptyStringsRatherThanThrowing()
@@ -578,18 +613,18 @@ public class ProxmoxServiceGuestAgentTests
         Assert.Equal(string.Empty, await cluster.Service().ReadGuestFile(info, "/tmp/f.txt"));
     }
 
-    /// <summary>A file-read answer without <c>content</c> throws a <c>RuntimeBinderException</c>.</summary>
+    /// <summary>
+    /// A 200 whose <c>data</c> carries no <c>content</c> - what PVE answers for a file-read the agent
+    /// completed with nothing to report - reads as the empty string, exactly as the empty-file test above.
+    /// </summary>
     [Fact]
-    public async Task ReadGuestFile_WhenTheResponseOmitsContent_ThrowsFromTheDynamicBinderRatherThanFallingBack()
+    public async Task ReadGuestFile_WhenTheResponseOmitsContent_AnswersAnEmptyString()
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid);
         cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, FileRead)}", """{"truncated":0}""");
 
-        var ex = await Assert.ThrowsAsync<RuntimeBinderException>(
-            () => cluster.Service().ReadGuestFile(info, "/tmp/f.txt"));
-
-        Assert.Equal("'System.Dynamic.ExpandoObject' does not contain a definition for 'content'", ex.Message);
+        Assert.Equal(string.Empty, await cluster.Service().ReadGuestFile(info, "/tmp/f.txt"));
     }
 
     // The failure message names the path as well as the vmid, which is what distinguishes "no agent" from
@@ -718,6 +753,28 @@ public class ProxmoxServiceGuestAgentTests
 
         Assert.StartsWith($"QGA file-write failed for vmid={Vmid} path=/tmp/f.txt: ", ex.Message);
         Assert.Contains("Permission denied", ex.Message);
+    }
+
+    // What PVE really answers for a Vm with no agent configured: a 500 whose reason is a top-level
+    // message, not an errors object. Result.GetError() reads only the latter, so on its own the reason
+    // was lost and the caller was told "QGA file-write failed ...: " and nothing more.
+    [Fact]
+    public async Task UploadFileToGuest_WhenProxmoxRefusesWithAMessage_ThrowsCarryingTheMessage()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Http.AnswersJson(
+            $"POST {FakeProxmoxCluster.VmPath(info, FileWrite)}",
+            """{"data":null,"message":"No QEMU guest agent configured\n"}""",
+            HttpStatusCode.InternalServerError);
+
+        var ex = await Assert.ThrowsAsync<Exception>(
+            () => cluster.Service().UploadFileToGuest(
+                info, "/tmp/f.txt", new MemoryStream(Encoding.UTF8.GetBytes("x"))));
+
+        Assert.Equal(
+            $"QGA file-write failed for vmid={Vmid} path=/tmp/f.txt: No QEMU guest agent configured",
+            ex.Message);
     }
 
     #endregion

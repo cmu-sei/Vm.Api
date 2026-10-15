@@ -259,9 +259,18 @@ public class ProxmoxServiceConsoleTests
             "Permission check failed (/vms/100, VM.Console)", exception.Message, StringComparison.Ordinal);
     }
 
-    /// <summary>A ticket refusal whose body has no <c>errors</c> object throws an exception with an empty message.</summary>
+    /// <summary>
+    /// A refusal that carries no <c>errors</c> object - which is what a misconfigured token's 401 and most
+    /// gateway failures look like - fails the console with a message naming the operation, the vmid and
+    /// the HTTP status.
+    /// </summary>
+    /// <remarks>
+    /// <c>Result.GetError()</c> is built only from an <c>errors</c> object, so on its own it reports these
+    /// as an empty string, and an operator saw an empty error with no hint that the token was rejected.
+    /// The status line is the one thing every refusal has.
+    /// </remarks>
     [Fact]
-    public async Task GetConsole_WhenProxmoxRefusesTheTicketWithNoErrorDetail_ThrowsWithNoMessageAtAll()
+    public async Task GetConsole_WhenProxmoxRefusesTheTicketWithNoErrorDetail_ThrowsNamingTheVmidAndTheStatus()
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid);
@@ -272,7 +281,26 @@ public class ProxmoxServiceConsoleTests
 
         var exception = await Assert.ThrowsAsync<Exception>(() => cluster.Service().GetConsole(info));
 
-        Assert.Equal(string.Empty, exception.Message);
+        Assert.StartsWith($"VncProxy failed for vmid={Vmid}: HTTP 401", exception.Message);
+    }
+
+    /// <summary>
+    /// Most PVE refusals carry their reason as a top-level <c>message</c> rather than an <c>errors</c>
+    /// object, and that reason is what the console failure reports.
+    /// </summary>
+    [Fact]
+    public async Task GetConsole_WhenProxmoxRefusesTheTicketWithAMessage_ThrowsCarryingTheMessage()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Http.AnswersJson(
+            $"POST {FakeProxmoxCluster.VmPath(info, "/vncproxy")}",
+            """{"data":null,"message":"VM 100 not running\n"}""",
+            HttpStatusCode.InternalServerError);
+
+        var exception = await Assert.ThrowsAsync<Exception>(() => cluster.Service().GetConsole(info));
+
+        Assert.Equal($"VncProxy failed for vmid={Vmid}: VM 100 not running", exception.Message);
     }
 
     #endregion

@@ -175,7 +175,7 @@ public sealed class FakeProxmoxCluster
 
     /// <summary>
     /// A refusal carrying a Proxmox error. The <c>errors</c> object is the load-bearing part: a bare
-    /// 500 leaves <c>Result.GetError()</c> empty, so a test asserting on a message has to supply one.
+    /// 500 is reported by its status line alone, so a test asserting on a message has to supply one.
     /// </summary>
     public FakeProxmoxCluster Rejects(
         string pattern,

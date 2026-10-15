@@ -172,7 +172,7 @@ public partial class ProxmoxService : IProxmoxService
 
         if (!result.IsSuccessStatusCode)
         {
-            throw new Exception(result.GetError());
+            throw new Exception($"VncProxy failed for vmid={info.Id}: {result.GetErrorMessage()}");
         }
 
         string url = null;
@@ -328,7 +328,7 @@ public partial class ProxmoxService : IProxmoxService
     {
         var result = await _pveClient.Nodes[node].Network.Index("any_bridge");
         if (!result.IsSuccessStatusCode)
-            throw new Exception($"Could not list Proxmox networks on node {node}: {result.GetError()}");
+            throw new Exception($"Could not list Proxmox networks on node {node}: {result.GetErrorMessage()}");
 
         var networks = result.ToModel<NodeNetwork[]>();
         var exists = networks?.Any(item =>
@@ -476,7 +476,7 @@ public partial class ProxmoxService : IProxmoxService
                     }
                 }
 
-                errors.TryAdd(info.VmId, result.IsSuccessStatusCode ? string.Empty : result.GetError());
+                errors.TryAdd(info.VmId, result.IsSuccessStatusCode ? string.Empty : result.GetErrorMessage());
             }
             catch (Exception ex)
             {
@@ -523,9 +523,9 @@ public partial class ProxmoxService : IProxmoxService
         var commandList = BuildAgentCommand(command, arguments);
         var execResult = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList);
         if (!execResult.IsSuccessStatusCode)
-            throw new Exception($"QGA exec failed for vmid={info.Id}: {execResult.GetError()}");
+            throw new Exception($"QGA exec failed for vmid={info.Id}: {execResult.GetErrorMessage()}");
 
-        long pid = (long)execResult.Response.data.pid;
+        long pid = ReadPid(info, execResult);
         var deadline = DateTime.UtcNow + timeout;
         var pollMs = _options.GuestProcessPollMs;
 
@@ -533,14 +533,16 @@ public partial class ProxmoxService : IProxmoxService
         {
             var statusResult = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.ExecStatus.ExecStatus((int)pid);
             if (!statusResult.IsSuccessStatusCode)
-                throw new Exception($"QGA exec-status failed for vmid={info.Id} pid={pid}: {statusResult.GetError()}");
+                throw new Exception($"QGA exec-status failed for vmid={info.Id} pid={pid}: {statusResult.GetErrorMessage()}");
 
             dynamic data = statusResult.Response.data;
-            int exited = data.exited != null ? (int)data.exited : 0;
+            // An absent exited is a process that has not finished, as is a 0.
+            int exited = ProxmoxExtensions.GetField((object)data, "exited") is { } done ? Convert.ToInt32(done) : 0;
 
             if (exited == 1)
             {
-                int exitCode = data.exitcode != null ? (int)data.exitcode : -1;
+                // QGA omits exitcode for a process ended by a signal.
+                int exitCode = ProxmoxExtensions.GetField((object)data, "exitcode") is { } code ? Convert.ToInt32(code) : -1;
                 string outData = DecodeAgentOutput(data, "out-data");
                 string errData = DecodeAgentOutput(data, "err-data");
 
@@ -575,9 +577,9 @@ public partial class ProxmoxService : IProxmoxService
         var commandList = BuildAgentCommand(command, arguments);
         var execResult = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList);
         if (!execResult.IsSuccessStatusCode)
-            throw new Exception($"QGA exec failed for vmid={info.Id}: {execResult.GetError()}");
+            throw new Exception($"QGA exec failed for vmid={info.Id}: {execResult.GetErrorMessage()}");
 
-        return (long)execResult.Response.data.pid;
+        return ReadPid(info, execResult);
     }
 
     public async Task<string> ReadGuestFile(ProxmoxVmInfo info, string guestFilePath)
@@ -586,11 +588,10 @@ public partial class ProxmoxService : IProxmoxService
 
         var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath);
         if (!result.IsSuccessStatusCode)
-            throw new Exception($"QGA file-read failed for vmid={info.Id} path={guestFilePath}: {result.GetError()}");
+            throw new Exception($"QGA file-read failed for vmid={info.Id} path={guestFilePath}: {result.GetErrorMessage()}");
 
-        dynamic data = result.Response.data;
-        string content = data.content != null ? (string)data.content : string.Empty;
-        return content;
+        return ProxmoxExtensions.GetField(ProxmoxExtensions.GetField(result.Response, "data"), "content")?.ToString()
+            ?? string.Empty;
     }
 
     public async Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content)
@@ -608,7 +609,7 @@ public partial class ProxmoxService : IProxmoxService
         var text = System.Text.Encoding.UTF8.GetString(buffer);
         var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileWrite.FileWrite(text, guestFilePath);
         if (!result.IsSuccessStatusCode)
-            throw new Exception($"QGA file-write failed for vmid={info.Id} path={guestFilePath}: {result.GetError()}");
+            throw new Exception($"QGA file-write failed for vmid={info.Id} path={guestFilePath}: {result.GetErrorMessage()}");
 
         return $"wrote {buffer.Length} bytes to {guestFilePath} on vmid={info.Id}";
     }
@@ -620,23 +621,24 @@ public partial class ProxmoxService : IProxmoxService
             : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot.SnapshotList();
 
         if (!result.IsSuccessStatusCode)
-            throw new Exception($"SnapshotList failed for vmid={info.Id}: {result.GetError()}");
+            throw new Exception($"SnapshotList failed for vmid={info.Id}: {result.GetErrorMessage()}");
 
         var list = new List<ProxmoxSnapshot>();
-        foreach (var entry in result.ToData())
+        foreach (object entry in result.ToData())
         {
-            dynamic d = entry;
-            string name = d.name != null ? (string)d.name : null;
+            // Read through GetField: PVE leaves out every field a snapshot does not have, and the
+            // synthetic "current" entry carries no description, parent, vmstate or snaptime at all.
+            var name = ProxmoxExtensions.GetField(entry, "name")?.ToString();
             if (string.IsNullOrEmpty(name)) continue;
             // The API includes a synthetic "current" entry; surface it so the caller can detect it,
             // matching how Proxmox UI lists snapshots.
             list.Add(new ProxmoxSnapshot
             {
                 Name = name,
-                Description = d.description != null ? (string)d.description : null,
-                Parent = d.parent != null ? (string)d.parent : null,
-                VmState = d.vmstate != null && (int)d.vmstate == 1,
-                SnapTime = d.snaptime != null ? (long?)d.snaptime : null
+                Description = ProxmoxExtensions.GetField(entry, "description")?.ToString(),
+                Parent = ProxmoxExtensions.GetField(entry, "parent")?.ToString(),
+                VmState = ProxmoxExtensions.GetField(entry, "vmstate") is { } vmState && Convert.ToInt64(vmState) == 1,
+                SnapTime = ProxmoxExtensions.GetField(entry, "snaptime") is { } snapTime ? Convert.ToInt64(snapTime) : null
             });
         }
         return list;
@@ -894,14 +896,17 @@ public partial class ProxmoxService : IProxmoxService
         return tokens;
     }
 
+    private static long ReadPid(ProxmoxVmInfo info, Result execResult) =>
+        ProxmoxExtensions.GetField(ProxmoxExtensions.GetField(execResult.Response, "data"), "pid") is { } pid
+            ? Convert.ToInt64(pid)
+            : throw new Exception($"QGA exec failed for vmid={info.Id}: Proxmox answered no pid");
+
     private static string DecodeAgentOutput(dynamic data, string field)
     {
         // QGA returns "out-data" / "err-data" as plain strings (not base64) — only the truncated
         // flag indicates capture limits. Fall back to empty when absent. The PveClient surfaces
         // the JSON object as an ExpandoObject, so we look up the hyphenated key via its
         // IDictionary<string, object> view rather than dynamic [] / member access.
-        if (data is IDictionary<string, object> dict && dict.TryGetValue(field, out var raw) && raw != null)
-            return raw.ToString();
-        return string.Empty;
+        return ProxmoxExtensions.GetField((object)data, field)?.ToString() ?? string.Empty;
     }
 }

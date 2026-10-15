@@ -97,14 +97,9 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         // Root holds every system permission but the two network ones, so NetworkService takes the branch
         // a caller without view-network access takes: the networks shared with Root's own teams, which is
-        // what the network tests are about. The routes that ask only for a View permission (snapshots,
-        // guest files) get it through Root's membership of the Vm's team in this test's View.
+        // what the network tests are about.
         Factory.Player.PlaceTeam(_teamId, _viewId);
-        await Actor().WithId(Root.Id).MemberOf(_teamId)
-            .Holding(AppViewPermission.RevertVms, _viewId)
-            .Holding(AppViewPermission.DownloadVmFiles, _viewId)
-            .Holding(AppViewPermission.UploadVmFiles, _viewId)
-            .SeedAsync();
+        await Actor().WithId(Root.Id).MemberOf(_teamId).SeedAsync();
         Factory.Player.Caller(Root.Id).System.ExceptWith(NetworkPermissions);
     }
 
@@ -535,6 +530,60 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.DoesNotContain(message, await response.Content.ReadAsStringAsync(Ct));
+    }
+
+    /// <summary>
+    /// The snapshot and guest-file routes each have a system permission of the same name as their View
+    /// permission, so a system administrator on none of the Vm's teams reaches them without being added
+    /// to a team. The system <c>ViewVms</c> alongside it passes the read every route makes first.
+    /// </summary>
+    [Theory]
+    [InlineData("GET", "/snapshots", AppSystemPermission.RevertVms)]
+    [InlineData("POST", "/actions/snapshots", AppSystemPermission.RevertVms)]
+    [InlineData("DELETE", "/actions/snapshots/snap-1", AppSystemPermission.RevertVms)]
+    [InlineData("POST", "/actions/revert", AppSystemPermission.RevertVms)]
+    [InlineData("POST", "/actions/revert-to-snapshot", AppSystemPermission.RevertVms)]
+    [InlineData("POST", "/actions/read-guest-file", AppSystemPermission.DownloadVmFiles)]
+    [InlineData("POST", "/actions/file-url", AppSystemPermission.DownloadVmFiles)]
+    [InlineData("POST", "/actions/upload-file", AppSystemPermission.UploadVmFiles)]
+    public async Task SnapshotAndGuestFileRoutes_are_allowed_for_a_caller_holding_exactly_their_system_permission_and_ViewVms(
+        string method, string suffix, AppSystemPermission permission)
+    {
+        var vm = await SeedVsphereVm();
+        var actor = await Actor()
+            .Holding(AppSystemPermission.ViewVms, permission)
+            .SeedAsync();
+
+        var response = await Send(method, suffix, vm.Id, Client(actor));
+
+        Assert.True(response.IsSuccessStatusCode, $"{method} {suffix} was {response.StatusCode}");
+    }
+
+    /// <summary>
+    /// Controlling every Vm does not imply moving files in or out of them or discarding their state -
+    /// each of those is its own system permission, as it is at View level.
+    /// </summary>
+    [Theory]
+    [InlineData("GET", "/snapshots", "You do not have permission to view snapshots for this vm.")]
+    [InlineData("POST", "/actions/snapshots", "You do not have permission to manage snapshots for this vm.")]
+    [InlineData("DELETE", "/actions/snapshots/snap-1", "You do not have permission to manage snapshots for this vm.")]
+    [InlineData("POST", "/actions/revert", "You do not have permission to revert this vm.")]
+    [InlineData("POST", "/actions/revert-to-snapshot", "You do not have permission to revert this vm.")]
+    [InlineData("POST", "/actions/read-guest-file", "You do not have permission to download files from this vm.")]
+    [InlineData("POST", "/actions/file-url", "You do not have permission to download files from this vm.")]
+    [InlineData("POST", "/actions/upload-file", "You do not have permission to upload files to this vm.")]
+    public async Task SnapshotAndGuestFileRoutes_are_forbidden_for_a_caller_holding_only_the_system_ControlVms(
+        string method, string suffix, string message)
+    {
+        var vm = await SeedVsphereVm();
+        var actor = await Actor()
+            .Holding(AppSystemPermission.ControlVms)
+            .SeedAsync();
+
+        var response = await Send(method, suffix, vm.Id, Client(actor));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal(message, await Title(response));
     }
 
     /// <summary>
@@ -1643,13 +1692,21 @@ public class VsphereEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     /// <summary>
     /// A caller holding every permission Root does except <paramref name="permission"/> and the system and
     /// team permissions that answer the same gate (<c>ControlVms</c> and <c>ControlTeamVms</c> for
-    /// <c>ControlViewVms</c>): every other system permission, every other View permission on this test's
-    /// View and every team permission on the Vm's team. A 403 can only have come from the gate that asks
-    /// for <paramref name="permission"/>.
+    /// <c>ControlViewVms</c>, the system permission of the same name for the snapshot and guest-file
+    /// permissions): every other system permission, every other View permission on this test's View and
+    /// every team permission on the Vm's team. A 403 can only have come from the gate that asks for
+    /// <paramref name="permission"/>.
     /// </summary>
     private async Task<HttpClient> AllBut(AppViewPermission permission)
     {
-        AppSystemPermission? system = permission == AppViewPermission.ControlViewVms ? AppSystemPermission.ControlVms : null;
+        AppSystemPermission? system = permission switch
+        {
+            AppViewPermission.ControlViewVms => AppSystemPermission.ControlVms,
+            AppViewPermission.RevertVms => AppSystemPermission.RevertVms,
+            AppViewPermission.DownloadVmFiles => AppSystemPermission.DownloadVmFiles,
+            AppViewPermission.UploadVmFiles => AppSystemPermission.UploadVmFiles,
+            _ => null,
+        };
         AppTeamPermission? team = permission == AppViewPermission.ControlViewVms ? AppTeamPermission.ControlTeamVms : null;
 
         var builder = Actor().MemberOf(_teamId)

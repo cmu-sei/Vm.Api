@@ -593,9 +593,8 @@ An actor (`Support/TestActor.cs`) is the identity a request carries (the `sub` a
   comes from, for the tests that are about what a caller sees rather than what it holds.
 
 `Root` (`ApiTestBase`) is a fresh actor every test, holding every system permission and nothing else. A gate
-that asks only for a View or team permission (the vSphere and Proxmox snapshot and guest-file routes, the
-bulk revert, the ISO View upload and listing) needs Root on that View too, which those classes arrange
-(`Actor().WithId(Root.Id)...` adds to Root). The vSphere and Proxmox classes also take the two network system
+that asks only for a View or team permission (the ISO View listing) needs Root on that View too, which
+`FilesEndpointTests` arranges (`RootSees` adds to Root). The vSphere and Proxmox classes also take the two network system
 permissions from Root, so `NetworkService` takes the branch a caller without view-network access takes,
 which is what their network tests are about. `Client()` carries no identity, for the 401 cases.
 
@@ -1190,7 +1189,8 @@ currently tell you.
     99.4% of its lines, `Domain.Proxmox` from 9.0% to 63.8%, and the assembly from 59.3% to 65.3%.
     Ten characterizations came out of it, listed above; the sharpest is that eight `!= null` guards
     against a missing Proxmox response key are dead code, because reading an absent member of an
-    `ExpandoObject` throws rather than answering null. What is left of the driver is the three classes
+    `ExpandoObject` throws rather than answering null (since fixed: those reads go through
+    `ProxmoxExtensions.GetField`, and the tests now pin the fallbacks). What is left of the driver is the three classes
     beside the service - `ProxmoxIsoStorageService` past its statics, `ProxmoxPrimaryHandler`, and the
     unguarded named-client registrations in `ServiceCollectionExtensions` - none of which need a cluster
     either.

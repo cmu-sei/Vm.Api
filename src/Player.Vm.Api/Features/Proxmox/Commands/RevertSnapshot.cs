@@ -38,7 +38,7 @@ namespace Player.Vm.Api.Features.Proxmox.Commands
 
             public async Task<string> Handle(Command request, CancellationToken cancellationToken)
             {
-                var vm = await GetVm(request.Id, [], [AppViewPermission.RevertVms], [], cancellationToken,
+                var vm = await GetVm(request.Id, [AppSystemPermission.RevertVms], [AppViewPermission.RevertVms], [], cancellationToken,
                     "You do not have permission to revert this vm.");
                 return await _proxmoxService.RevertSnapshot(vm.ProxmoxVmInfo, request.SnapshotName);
             }

@@ -38,9 +38,9 @@ namespace Player.Vm.Api.Tests.Domain.Proxmox.Services;
 /// drivers disagree in ways only visible with both pinned: they share the "Virtual machine not found"
 /// string for an id they cannot resolve, but an operation the driver does not handle is
 /// "Unsupported Operation" in vSphere and "&lt;operation&gt; is not supported on Proxmox virtual
-/// machines." here; and vSphere swallows a rejected submit as success while Proxmox reports it - except
+/// machines." here; and vSphere swallows a rejected submit as success while Proxmox reports it - even
 /// where the refusal carries no <c>errors</c> object, or the node cannot be reached at all, both of which
-/// this driver reports as an empty string too; both are pinned below.
+/// are pinned below.
 /// </para>
 /// <para>
 /// <c>BulkPowerOperation</c> fans out with <c>Task.WhenAll</c>, so requests for different Vms arrive in a
@@ -347,9 +347,18 @@ public class ProxmoxServiceVmLookupTests(DatabaseFixture fixture) : DatabaseTest
         Assert.Single(cluster.Requests(HttpMethod.Get, FakeProxmoxCluster.ClusterResources));
     }
 
-    /// <summary>A refused submit whose body has no <c>errors</c> object is reported as an empty string.</summary>
+    /// <summary>
+    /// A submit Proxmox refuses without an <c>errors</c> object is reported by its HTTP status, not as the
+    /// empty string success is reported as.
+    /// </summary>
+    /// <remarks>
+    /// <c>Result.GetError()</c> is built only from an <c>errors</c> object in the body, and a 401 from a
+    /// misconfigured token or a 502 from a gateway in front of Proxmox carries none - so on its own it told
+    /// the caller a failed power operation was accepted. The two POSTs are the assertion that it really did
+    /// fail twice.
+    /// </remarks>
     [Fact]
-    public async Task BulkPowerOperation_WhenARefusalCarriesNoErrorDetail_ReportsAnEmptyStringJustLikeSuccess()
+    public async Task BulkPowerOperation_WhenARefusalCarriesNoErrorDetail_ReportsTheStatusNotSuccess()
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid, vmId: VmA);
@@ -362,13 +371,24 @@ public class ProxmoxServiceVmLookupTests(DatabaseFixture fixture) : DatabaseTest
 
         var results = await cluster.Service(Db).BulkPowerOperation([VmA], PowerOperation.PowerOn);
 
-        Assert.Equal(string.Empty, results[VmA]);
+        Assert.Equal("HTTP 500 Internal Server Error", results[VmA]);
         Assert.Equal(2, cluster.Requests(HttpMethod.Post, path).Count);
     }
 
-    // Same case as BulkPowerOperation_WhenARefusalCarriesNoErrorDetail_ReportsAnEmptyStringJustLikeSuccess.
+    /// <summary>
+    /// A node that cannot be reached at all - a refused connection rather than a refusal - is reported as a
+    /// failure carrying the transport error, while the rest of the selection is submitted normally.
+    /// </summary>
+    /// <remarks>
+    /// <c>PveClient</c> catches the transport exception itself and answers an unsuccessful <c>Result</c>
+    /// rather than letting it reach the per-Vm catch in <c>BulkPowerOperation</c> - the two POSTs below are
+    /// the proof, since an exception reaching that catch would have skipped the stale-node retry. That
+    /// Result carries no <c>errors</c> object, so <c>GetError()</c> alone reported a node that was down as
+    /// a power operation that was accepted; the client puts the transport error in its reason phrase, and
+    /// that is what the caller is told now.
+    /// </remarks>
     [Fact]
-    public async Task BulkPowerOperation_WhenAVmsNodeIsUnreachable_ReportsItAsSuccessButStillSubmitsTheRest()
+    public async Task BulkPowerOperation_WhenAVmsNodeIsUnreachable_ReportsTheFailureAndStillSubmitsTheRest()
     {
         var cluster = new FakeProxmoxCluster();
         var failing = cluster.Has(Vmid, vmId: VmA);
@@ -382,12 +402,12 @@ public class ProxmoxServiceVmLookupTests(DatabaseFixture fixture) : DatabaseTest
 
         var results = await cluster.Service(Db).BulkPowerOperation([VmA, VmB], PowerOperation.PowerOff);
 
-        // Indistinguishable from the Vm that really was accepted.
-        Assert.Equal(string.Empty, results[VmA]);
+        Assert.StartsWith("HTTP 500 ", results[VmA]);
+        Assert.Contains(failingPath, results[VmA]);
         Assert.Equal(string.Empty, results[VmB]);
 
-        // The unreachable Vm went through the whole failure path - submit, re-resolve, resubmit - and
-        // still produced the success string, while the healthy Vm was submitted once.
+        // The unreachable Vm went through the whole failure path - submit, re-resolve, resubmit - while
+        // the healthy Vm was submitted once.
         Assert.Equal(2, cluster.Requests(HttpMethod.Post, failingPath).Count);
         Assert.Single(cluster.Requests(HttpMethod.Get, FakeProxmoxCluster.ClusterResources));
         Assert.Single(cluster.Requests(HttpMethod.Post, healthyPath));

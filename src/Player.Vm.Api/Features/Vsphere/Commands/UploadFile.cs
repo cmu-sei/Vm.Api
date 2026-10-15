@@ -52,7 +52,7 @@ namespace Player.Vm.Api.Features.Vsphere
 
             public async Task<string> Handle(Command request, CancellationToken cancellationToken)
             {
-                await base.GetVm(request.Id, [], [AppViewPermission.UploadVmFiles], [], cancellationToken, "You do not have permission to upload files to this vm.");
+                await base.GetVm(request.Id, [AppSystemPermission.UploadVmFiles], [AppViewPermission.UploadVmFiles], [], cancellationToken, "You do not have permission to upload files to this vm.");
 
                 foreach (var formFile in request.Files)
                 {

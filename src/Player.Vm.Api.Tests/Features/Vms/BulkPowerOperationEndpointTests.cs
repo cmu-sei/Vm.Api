@@ -40,29 +40,9 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
         Factory.VsphereTasks.ClearSubstitute();
     }
 
-    /// <summary>
-    /// Posts as Root. Root holds every system permission, and revert asks only for the View permission
-    /// <c>RevertVms</c>, so for a revert Root is also given it on a View holding the posted Vms' teams.
-    /// </summary>
-    private async Task<BulkPowerOperation.Response> Post(string action, params Guid[] ids)
-    {
-        if (action == "revert")
-        {
-            Guid[] teams;
-            await using (var context = NewContext())
-                teams = [.. context.VmTeams.Where(x => ids.Contains(x.VmId)).Select(x => x.TeamId)];
-
-            var viewId = Guid.NewGuid();
-            var root = Actor().WithId(Root.Id).Holding(AppViewPermission.RevertVms, viewId);
-
-            foreach (var team in teams)
-                root.InView(team, viewId);
-
-            await root.SeedAsync();
-        }
-
-        return await Post(RootClient, action, ids);
-    }
+    /// <summary>Posts as Root, whose system permissions pass every operation's gate, revert included.</summary>
+    private Task<BulkPowerOperation.Response> Post(string action, params Guid[] ids) =>
+        Post(RootClient, action, ids);
 
     private async Task<BulkPowerOperation.Response> Post(HttpClient client, string action, params Guid[] ids)
     {
@@ -677,6 +657,39 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
 
         Assert.Empty(result.Errors);
         Assert.Equal([vm.Id], result.Accepted);
+    }
+
+    /// <summary>
+    /// A system administrator on none of the Vm's teams reverts through the system <c>RevertVms</c>
+    /// permission. The system Vm-control permission the other operations accept is not enough, because
+    /// reverting discards work as it does at View level. The system <c>ViewVms</c> alongside it passes the
+    /// visibility check every bulk operation makes first.
+    /// </summary>
+    [Theory]
+    [InlineData(AppSystemPermission.RevertVms, true)]
+    [InlineData(AppSystemPermission.ControlVms, false)]
+    public async Task Revert_with_ViewVms_and_one_other_system_permission_is_allowed_only_for_RevertVms(
+        AppSystemPermission permission, bool allowed)
+    {
+        var vm = TestData.VsphereVm(hasSnapshot: true);
+        await Seed(vm);
+
+        var actor = await Actor().Holding(AppSystemPermission.ViewVms, permission).SeedAsync();
+
+        VsphereReturns(PowerOperation.Revert, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post(Client(actor), "revert", vm.Id);
+
+        if (allowed)
+        {
+            Assert.Empty(result.Errors);
+            Assert.Equal([vm.Id], result.Accepted);
+        }
+        else
+        {
+            Assert.Equal("Insufficient Permissions", result.Errors.For(vm.Id));
+            Assert.Empty(result.Accepted);
+        }
     }
 
     #endregion
