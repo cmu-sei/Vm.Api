@@ -227,7 +227,7 @@ public class ProxmoxServiceVmLookupTests(DatabaseFixture fixture) : DatabaseTest
         var results = await cluster.Service(Db).BulkPowerOperation([VmA], operation);
 
         // An accepted submit is reported as an empty string, not as a message: the dictionary is read as
-        // "errors by Vm", so anything non-empty turns that Vm red in the UI.
+        // "errors by Vm", so anything non-empty reads as a failure in the UI.
         Assert.Equal(string.Empty, results[VmA]);
 
         // One request, and it is the submit. The happy path never resolves the node, so a bulk power on

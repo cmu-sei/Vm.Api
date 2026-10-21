@@ -458,6 +458,24 @@ public class CallbackBackgroundServiceTests(DatabaseFixture fixture) : DatabaseT
         await Handled();
     }
 
+    // Same case as CallbacksEndpointTests.Handle_stores_and_queues_an_event_type_outside_the_enum.
+    [Fact]
+    public async Task An_event_type_outside_the_enum_is_removed_without_processing_its_payload()
+    {
+        var viewId = Guid.NewGuid();
+        var map = await SeedMap(viewId, "Original", [Guid.NewGuid()]);
+        var evt = Deleted(viewId);
+        evt.Type = (EventType)999;
+
+        await Process(evt);
+
+        await Handled();
+        await using var reader = NewContext();
+        Assert.Equal(map.Id, Assert.Single(await reader.Maps.ToListAsync(Ct)).Id);
+        Assert.Empty(await reader.WebhookEvents.ToListAsync(Ct));
+        Assert.Empty(_http.Sent);
+    }
+
     #endregion
 
     #region Arrangement

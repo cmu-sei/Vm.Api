@@ -4,7 +4,7 @@ because the suite is deliberately being grown in stages - what it does not cover
 
 # Testing
 
-The suite contains 2,057 tests in 61 classes. All of them run today; nothing is skipped.
+The suite contains 2,117 tests in 61 classes. All of them run today; nothing is skipped.
 
 It is built on xUnit v3, NSubstitute and Testcontainers, and needs nothing from the environment except
 Docker: no vCenter, no Proxmox cluster and no player.api. Docker pulls the `postgres:16-alpine` image the
@@ -38,16 +38,21 @@ and only the edges are replaced.
   the application. The bulk power operations are split out because their subject is one contract rather
   than a set of actions: a multi-select power command reports per-VM outcomes, and what those tests pin
   is that the per-VM error survives the handler, the serializer and the wire rather than collapsing into
-  one failure for the whole selection.
-- `NetworksEndpointTests` covers `NetworksController`, and is the one place the wire format itself is
-  asserted against raw JSON rather than through the application's own serializer options.
+  one failure for the whole selection. VM writes also exercise nested provider values, repeated team
+  input, nullable identifiers and client-selected map/coordinate identities through the HTTP and
+  persistence boundaries.
+- `NetworksEndpointTests` covers `NetworksController`, including provider values on both write routes,
+  each system and view permission accepted by its read and write gates, and raw JSON wire-format
+  assertions rather than relying only on the application's own serializer options.
 - `FilesEndpointTests` covers the ISO endpoints. The ISO service is already covered thoroughly by unit
   tests, so this class deliberately does not restate the permission matrix or the listing merge: what
   only a real request reaches is `FileController.Upload`, which reads a multipart form by hand instead
   of binding a model, so its three rejections, the size ceiling and the team-id parsing have no other
   caller.
 - `CallbacksEndpointTests` covers the webhook endpoint, the one route whose caller is another service
-  rather than a user, and the only one behind the privileged authorization policy.
+  rather than a user, and the only one behind the privileged authorization policy. It includes empty,
+  JSON-null and malformed request bodies, supplied event identifiers and numeric event types, with
+  persistence and queue effects as well as valid events.
 - `HealthEndpointTests` covers the liveliness and readiness routes. What matters there is not a model or
   a permission but which checks each route runs, since the split between them lives entirely in the
   "live" and "ready" tags on the registrations in `Startup` and nothing else asserts it.

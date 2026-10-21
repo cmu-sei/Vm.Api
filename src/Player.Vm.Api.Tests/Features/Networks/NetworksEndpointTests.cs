@@ -31,6 +31,9 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
 {
     private const string Instance = "vcenter-1";
 
+    /// <summary>A numeric provider value not declared by VmType.</summary>
+    private const VmType UndefinedProviderType = (VmType)999;
+
     public override async ValueTask InitializeAsync()
     {
         await base.InitializeAsync();
@@ -99,6 +102,48 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
     #endregion
 
     #region Writes
+
+    [Fact]
+    public async Task Create_stores_and_returns_a_provider_type_outside_the_enum()
+    {
+        var viewId = Guid.NewGuid();
+        var form = Form("vlan-10", "network");
+        form.ProviderType = UndefinedProviderType;
+
+        var response = await RootClient.PostAsJsonAsync($"/api/views/{viewId}/networks", form, Ct);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<ViewNetworkModel>(JsonOptions, Ct);
+        Assert.Equal(UndefinedProviderType, body.ProviderType);
+        await using var context = NewContext();
+        var stored = Assert.Single(context.ViewNetworks.Where(x => x.ViewId == viewId));
+        Assert.Equal(body.Id, stored.Id);
+        Assert.Equal(UndefinedProviderType, stored.ProviderType);
+    }
+
+    [Fact]
+    public async Task Update_stores_and_returns_a_provider_type_outside_the_enum()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var form = new UpdateViewNetworkForm
+        {
+            ProviderType = UndefinedProviderType,
+            ProviderInstanceId = Instance,
+            NetworkId = network.NetworkId,
+            Name = network.Name
+        };
+
+        var response = await RootClient.PutAsJsonAsync(
+            $"/api/views/{network.ViewId}/networks/{network.Id}", form, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<ViewNetworkModel>(JsonOptions, Ct);
+        Assert.Equal(network.Id, body.Id);
+        Assert.Equal(UndefinedProviderType, body.ProviderType);
+        await using var context = NewContext();
+        Assert.Equal(UndefinedProviderType, context.ViewNetworks.Single(x => x.Id == network.Id).ProviderType);
+    }
 
     /// <summary>
     /// 201 with a Location a caller can follow. The route is built by action name, so renaming GetById
@@ -287,6 +332,19 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
     }
 
     [Fact]
+    public async Task GetByViewId_is_allowed_for_a_caller_holding_exactly_the_system_ViewNetworks()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var actor = await Actor().Holding(AppSystemPermission.ViewNetworks).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal<Guid>([network.Id], (await response.Content.ReadFromJsonAsync<ViewNetworkModel[]>(JsonOptions, Ct)).Select(x => x.Id));
+    }
+
+    [Fact]
     public async Task GetByViewId_is_allowed_for_a_caller_holding_exactly_the_system_ManageNetworks()
     {
         var network = Network(Guid.NewGuid(), "vlan-10");
@@ -309,6 +367,21 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
         var response = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks", Ct);
 
         Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+    }
+
+    [Theory]
+    [InlineData(AppSystemPermission.ViewNetworks)]
+    [InlineData(AppSystemPermission.ManageNetworks)]
+    public async Task GetById_is_allowed_for_a_caller_holding_exactly_a_system_network_read_permission(AppSystemPermission permission)
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var actor = await Actor().Holding(permission).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/views/{network.ViewId}/networks/{network.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal(network.Id, (await response.Content.ReadFromJsonAsync<ViewNetworkModel>(JsonOptions, Ct)).Id);
     }
 
     [Fact]
@@ -410,6 +483,21 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
     }
 
     [Fact]
+    public async Task Update_is_allowed_for_a_caller_holding_exactly_the_system_ManageNetworks()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10", name: "before");
+        await Seed(network);
+        var actor = await Actor().Holding(AppSystemPermission.ManageNetworks).SeedAsync();
+
+        var response = await Client(actor).PutAsJsonAsync(
+            $"/api/views/{network.ViewId}/networks/{network.Id}", Form("vlan-10", "after"), Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await using var context = NewContext();
+        Assert.Equal("after", context.ViewNetworks.Single(x => x.Id == network.Id).Name);
+    }
+
+    [Fact]
     public async Task Update_is_allowed_for_a_caller_holding_exactly_ManageNetworks_on_the_view()
     {
         var network = Network(Guid.NewGuid(), "vlan-10", name: "before");
@@ -455,6 +543,20 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
 
         await using var context = NewContext();
         Assert.Equal("before", context.ViewNetworks.Single(x => x.Id == network.Id).Name);
+    }
+
+    [Fact]
+    public async Task Delete_is_allowed_for_a_caller_holding_exactly_the_system_ManageNetworks()
+    {
+        var network = Network(Guid.NewGuid(), "vlan-10");
+        await Seed(network);
+        var actor = await Actor().Holding(AppSystemPermission.ManageNetworks).SeedAsync();
+
+        var response = await Client(actor).DeleteAsync($"/api/views/{network.ViewId}/networks/{network.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
+        await using var context = NewContext();
+        Assert.Empty(context.ViewNetworks.Where(x => x.Id == network.Id));
     }
 
     [Fact]
