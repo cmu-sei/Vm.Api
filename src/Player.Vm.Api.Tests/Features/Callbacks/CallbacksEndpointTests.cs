@@ -91,6 +91,68 @@ public class CallbacksEndpointTests(DatabaseFixture fixture, VmAppFactory factor
         await Factory.Callbacks.Received(2).AddEvent(Arg.Any<WebhookEvent>());
     }
 
+    [Fact]
+    public async Task Handle_with_an_existing_id_answers_a_server_error_and_keeps_the_event()
+    {
+        var id = System.Guid.NewGuid();
+        var original = new WebhookEvent
+        {
+            Id = id,
+            Type = EventType.ViewCreated,
+            Timestamp = new System.DateTimeOffset(2026, 1, 1, 12, 0, 0, System.TimeSpan.Zero),
+            Payload = "original"
+        };
+        await Seed(original);
+        using var content = new StringContent(
+            $"{{\"id\":\"{id}\",\"type\":\"ViewDeleted\",\"timestamp\":\"2026-01-01T12:00:00Z\",\"payload\":\"replacement\"}}",
+            System.Text.Encoding.UTF8, "application/json");
+
+        var response = await Post(content);
+
+        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
+        Assert.Equal("An error occurred while saving the entity changes. See the inner exception for details.", problem.Detail);
+        await using var context = NewContext();
+        var stored = Assert.Single(context.WebhookEvents);
+        Assert.Equal(id, stored.Id);
+        Assert.Equal(EventType.ViewCreated, stored.Type);
+        Assert.Equal("original", stored.Payload);
+        Assert.Equal(original.Timestamp, stored.Timestamp);
+        await Factory.Callbacks.DidNotReceive().AddEvent(Arg.Any<WebhookEvent>());
+    }
+
+    [Fact]
+    public async Task Handle_stores_and_queues_an_event_type_outside_the_enum()
+    {
+        using var content = new StringContent("{\"type\":999,\"timestamp\":\"2026-01-01T12:00:00Z\",\"payload\":\"{}\"}",
+            System.Text.Encoding.UTF8, "application/json");
+
+        var response = await Post(content);
+
+        Assert.Equal(HttpStatusCode.Accepted, response.StatusCode);
+        await using var context = NewContext();
+        var stored = Assert.Single(context.WebhookEvents);
+        Assert.Equal((EventType)999, stored.Type);
+        Assert.Equal(stored.Id, Queued().Id);
+        Assert.Equal((EventType)999, Queued().Type);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("null")]
+    [InlineData("{")]
+    public async Task Handle_with_no_bound_event_answers_a_server_error_and_stores_nothing(string body)
+    {
+        using var content = new StringContent(body, System.Text.Encoding.UTF8, "application/json");
+
+        var response = await Post(content);
+
+        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
+        Assert.Equal("A server error occurred.", problem.Title);
+        Assert.Equal("Value cannot be null. (Parameter 'entity')", problem.Detail);
+        await using var context = NewContext();
+        Assert.Empty(context.WebhookEvents);
+        await Factory.Callbacks.DidNotReceive().AddEvent(Arg.Any<WebhookEvent>());
+    }
 
     [Fact]
     public async Task Handle_Unauthenticated_Is401()

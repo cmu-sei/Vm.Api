@@ -46,6 +46,9 @@ namespace Player.Vm.Api.Tests.Features.Vms;
 public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     : ApiTestBase(fixture, factory), IClassFixture<VmAppFactory>
 {
+    /// <summary>A numeric VM type not declared by ProxmoxVmType.</summary>
+    private const ProxmoxVmType UndefinedProxmoxType = (ProxmoxVmType)999;
+
     public override async ValueTask InitializeAsync()
     {
         await base.InitializeAsync();
@@ -255,6 +258,131 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
     #region Writing Vms
 
+    [Fact]
+    public async Task Create_with_a_null_id_answers_a_server_error_and_stores_nothing()
+    {
+        var form = CreateForm(Guid.NewGuid(), "null-id-vm");
+        form.Id = null;
+
+        var response = await RootClient.PostAsJsonAsync("/api/vms", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
+        Assert.Contains("Error mapping types.", problem.Detail);
+        Assert.Contains("Destination Member:", problem.Detail);
+        Assert.Contains("VmTeams", problem.Detail);
+        await using var context = NewContext();
+        Assert.Empty(context.Vms);
+        Assert.Empty(context.VmTeams);
+    }
+
+    [Theory]
+    [InlineData("POST", "/api/vms", HttpStatusCode.Created, 101)]
+    [InlineData("PUT", "/api/vms/{id}", HttpStatusCode.OK, 100)]
+    public async Task Write_stores_and_returns_a_Proxmox_type_outside_the_enum(
+        string method, string route, HttpStatusCode status, int vmid)
+    {
+        var teamId = Guid.NewGuid();
+        TeamVisibility(teamId);
+        var vm = TestData.ProxmoxVm(teamId);
+        await Seed(vm);
+        var form = CreateForm(teamId, "proxmox-vm");
+        form.ProxmoxVmInfo = new Player.Vm.Api.Features.Vms.ProxmoxVmInfo
+        {
+            Id = vmid,
+            Node = "node-1",
+            Type = UndefinedProxmoxType
+        };
+        using var request = new HttpRequestMessage(new HttpMethod(method), route.Replace("{id}", vm.Id.ToString()))
+        {
+            Content = JsonContent.Create(form)
+        };
+
+        var response = await RootClient.SendAsync(request, Ct);
+
+        await AssertStatus(status, response);
+        var body = await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct);
+        Assert.Equal(VmType.Proxmox, body.Type);
+        Assert.Equal(UndefinedProxmoxType, body.ProxmoxVmInfo.Type);
+        await using var context = NewContext();
+        var stored = context.Vms.Include(x => x.ProxmoxVmInfo).Single(x => x.Id == body.Id);
+        Assert.Equal(VmType.Proxmox, stored.Type);
+        Assert.Equal(UndefinedProxmoxType, stored.ProxmoxVmInfo.Type);
+        Assert.Equal(vmid, stored.ProxmoxVmInfo.Id);
+        Assert.Equal("node-1", stored.ProxmoxVmInfo.Node);
+    }
+
+    [Fact]
+    public async Task Create_with_an_existing_Proxmox_id_answers_a_server_error_and_keeps_the_vm()
+    {
+        var teamId = Guid.NewGuid();
+        TeamVisibility(teamId);
+        var vm = TestData.ProxmoxVm(teamId);
+        await Seed(vm);
+        var form = CreateForm(teamId, "another-vm");
+        form.ProxmoxVmInfo = new Player.Vm.Api.Features.Vms.ProxmoxVmInfo
+        {
+            Id = vm.ProxmoxVmInfo.Id,
+            Node = "another-node",
+            Type = ProxmoxVmType.QEMU
+        };
+
+        var response = await RootClient.PostAsJsonAsync("/api/vms", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
+        Assert.Equal("An error occurred while saving the entity changes. See the inner exception for details.", problem.Detail);
+        await using var context = NewContext();
+        Assert.Equal(vm.Id, Assert.Single(context.Vms).Id);
+        var info = Assert.Single(context.ProxmoxVmInfo);
+        Assert.Equal(vm.ProxmoxVmInfo.Id, info.Id);
+        Assert.Equal(vm.Id, info.VmId);
+        Assert.Equal("pve-1", info.Node);
+    }
+
+    [Fact]
+    public async Task Update_adding_Proxmox_info_to_a_vm_answers_a_server_error_and_keeps_the_vm()
+    {
+        var vm = Vm([Guid.NewGuid()], name: "before");
+        await Seed(vm);
+        var form = new VmUpdateForm
+        {
+            Name = "after",
+            ProxmoxVmInfo = new Player.Vm.Api.Features.Vms.ProxmoxVmInfo
+            {
+                Id = 100,
+                Node = "node-1",
+                Type = ProxmoxVmType.QEMU
+            }
+        };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
+        Assert.StartsWith("The database operation was expected to affect 1 row(s), but actually affected 0 row(s)", problem.Detail);
+        await using var context = NewContext();
+        var stored = context.Vms.Single(x => x.Id == vm.Id);
+        Assert.Equal("before", stored.Name);
+        Assert.Equal(VmType.Vsphere, stored.Type);
+        Assert.Empty(context.ProxmoxVmInfo);
+    }
+
+    [Fact]
+    public async Task Create_with_a_repeated_team_answers_a_server_error_and_stores_nothing()
+    {
+        var teamId = Guid.NewGuid();
+        TeamVisibility(teamId);
+        var form = CreateForm(teamId, "repeated-team-vm");
+        form.TeamIds = [teamId, teamId];
+
+        var response = await RootClient.PostAsJsonAsync("/api/vms", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
+        Assert.Equal("A server error occurred.", problem.Title);
+        Assert.Contains("The instance of entity type 'VmTeam' cannot be tracked", problem.Detail);
+        await using var context = NewContext();
+        Assert.Empty(context.Vms);
+        Assert.Empty(context.VmTeams);
+    }
+
     /// <summary>
     /// 201 with a Location a caller can follow. The route is built by action name, so renaming Get
     /// without updating the CreatedAtAction would leave the response without one.
@@ -422,6 +550,87 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     #endregion
 
     #region Maps
+
+    [Fact]
+    public async Task CreateMap_with_an_existing_coordinate_id_answers_a_server_error_and_keeps_the_map()
+    {
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId]);
+        map.Coordinates = [CoordinateEntityFor("original", 1.5, 2.5)];
+        await Seed(map);
+        View(map.ViewId, teamId);
+        var coordinateId = map.Coordinates.Single().Id;
+        var form = MapCreateForm(teamId);
+        var coordinate = Coordinate("replacement", 3, 4);
+        coordinate.Id = coordinateId;
+        form.Coordinates = [coordinate];
+
+        var response = await RootClient.PostAsJsonAsync($"/api/views/{map.ViewId}/map", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
+        Assert.Equal("An error occurred while saving the entity changes. See the inner exception for details.", problem.Detail);
+        await using var context = NewContext();
+        var stored = Assert.Single(context.Maps.Include(x => x.Coordinates));
+        Assert.Equal(map.Id, stored.Id);
+        Assert.Equal("map", stored.Name);
+        Assert.Equal(map.ViewId, stored.ViewId);
+        Assert.Equal(map.ImageUrl, stored.ImageUrl);
+        Assert.Equal<Guid>([teamId], stored.TeamIds);
+        Assert.Single(context.Set<CoordinateEntity>());
+        var original = Assert.Single(stored.Coordinates);
+        Assert.Equal(coordinateId, original.Id);
+        Assert.Equal("original", original.Label);
+        Assert.Equal(1.5, original.XPosition);
+        Assert.Equal(2.5, original.YPosition);
+        Assert.Equal(10, original.Radius);
+        Assert.Equal(["https://console/original"], original.Urls);
+    }
+
+    // Same case as CreateMap_with_an_existing_coordinate_id_answers_a_server_error_and_keeps_the_map.
+    [Fact]
+    public async Task CreateMap_with_a_repeated_coordinate_id_answers_a_server_error_and_stores_nothing()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        View(viewId, teamId);
+        var first = Coordinate("first", 1, 2);
+        var second = Coordinate("second", 3, 4);
+        first.Id = Guid.NewGuid();
+        second.Id = first.Id;
+        var form = MapCreateForm(teamId);
+        form.Coordinates = [first, second];
+
+        var response = await RootClient.PostAsJsonAsync($"/api/views/{viewId}/map", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
+        Assert.Contains("The instance of entity type 'Coordinate' cannot be tracked", problem.Detail);
+        await using var context = NewContext();
+        Assert.Empty(context.Maps);
+        Assert.Empty(context.Set<CoordinateEntity>());
+    }
+
+    [Fact]
+    public async Task CreateMap_with_an_existing_id_answers_a_server_error_and_keeps_the_map()
+    {
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId]);
+        await Seed(map);
+        View(map.ViewId, teamId);
+        var form = MapCreateForm(teamId);
+        form.Id = map.Id;
+
+        var response = await RootClient.PostAsJsonAsync($"/api/views/{map.ViewId}/map", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
+        Assert.Equal("A server error occurred.", problem.Title);
+        Assert.Contains("The instance of entity type 'VmMap' cannot be tracked", problem.Detail);
+        Assert.Contains("another instance with the same key value for {'Id'} is already being tracked", problem.Detail);
+        await using var context = NewContext();
+        var stored = Assert.Single(context.Maps);
+        Assert.Equal(map.Id, stored.Id);
+        Assert.Equal("map", stored.Name);
+        Assert.Equal(map.ViewId, stored.ViewId);
+        Assert.Equal<Guid>([teamId], stored.TeamIds);
+    }
 
     [Fact]
     public async Task CreateMap_Returns201AndALocationThatResolves()
@@ -1298,6 +1507,23 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         await using var context = NewContext();
         Assert.Equal("after", context.Vms.Single(x => x.Id == vm.Id).Name);
+    }
+
+    // Same case as Update_by_a_caller_holding_ManageTeam_on_the_Vms_team_is_403_and_leaves_the_name.
+    [Fact]
+    public async Task Update_by_a_caller_holding_ManageView_on_the_Vms_view_is_403_and_leaves_the_name()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        Factory.Player.PlaceTeam(teamId, viewId);
+        var vm = Vm([teamId], name: "before");
+        await Seed(vm);
+        var actor = await Actor().Holding(AppViewPermission.ManageView, viewId).SeedAsync();
+
+        var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await using var context = NewContext();
+        Assert.Equal("before", context.Vms.Single(x => x.Id == vm.Id).Name);
     }
 
     /// <summary>A caller holding ManageTeam on the Vm's only team is refused the update.</summary>
