@@ -22,8 +22,8 @@
   <ItemGroup>
     <PackageVersion Include="AutoMapper" Version="13.0.1" /> <!-- DO NOT UPDATE. Version 15+ requires a license. Plan to migrate to something else. The NuGet audit's AutoMapper hit stays until it is replaced. -->
     <PackageVersion Include="MediatR" Version="12.4.1" /> <!-- DO NOT UPDATE. Version 13+ requires a license. Plan to migrate to something else. -->
-    <PackageVersion Include="Crucible.Common.EntityEvents" Version="0.2.0" />
-    <PackageVersion Include="Crucible.Common.ServiceDefaults" Version="0.0.2" />
+    <PackageVersion Include="Crucible.Common.EntityEvents" Version="0.2.1" />
+    <PackageVersion Include="Crucible.Common.ServiceDefaults" Version="0.0.3" />
     <PackageVersion Include="DiscUtils.Iso9660" Version="0.16.13" />
     <!-- The token client behind AuthenticationService and AuthenticatingHandler. It used to arrive only
          through AspNetCore.HealthChecks.UI, by way of KubernetesClient 15 and IdentityModel.OidcClient,
@@ -103,10 +103,6 @@
     each can go once the dependency that brings it in carries a fixed version of its own.
   -->
   <ItemGroup>
-    <!-- Through Crucible.Common.ServiceDefaults 0.0.2, which carries 1.15.0. The exporter pulls
-         OpenTelemetry and OpenTelemetry.Api up to the same patch with it. -->
-    <PackageVersion Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
-    <PackageVersion Include="OpenTelemetry.Api" Version="1.15.3" />
     <!-- Through Microsoft.Data.SqlClient, which carries 9.0.11 even under EF Core 10.0.13. -->
     <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
     <!-- Through Swashbuckle.AspNetCore 10.1.0, which carries 2.3.0. -->

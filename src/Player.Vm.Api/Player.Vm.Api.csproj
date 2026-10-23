@@ -46,8 +46,6 @@
        dependency at a vulnerable version; Directory.Packages.props says which dependency each one
        comes through. -->
   <ItemGroup>
-    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" />
-    <PackageReference Include="OpenTelemetry.Api" />
     <PackageReference Include="System.Security.Cryptography.Pkcs" />
     <PackageReference Include="Microsoft.OpenApi" />
     <PackageReference Include="KubernetesClient" />
