@@ -384,14 +384,14 @@ file-scoped ones, and encoding one of them would turn every file into a diff wit
 more correct.
 
 Restore-time warnings stay warnings, through `WarningsNotAsErrors`. NU1901 to NU1904 are the NuGet
-audit, and it has findings here. `AutoMapper` 13 is the only direct one, and it is pinned on purpose
-because version 15+ requires a commercial license; `MediatR` 12 is pinned for the same reason.
-Everything else is transitive and cannot be fixed in a project file in this repository:
-`KubernetesClient` and the OpenTelemetry packages arrive through `Crucible.Common.ServiceDefaults`,
-`Microsoft.OpenApi` through Swashbuckle, `SQLitePCLRaw` through the EF SQLite provider,
-`Microsoft.NETCore.App` 2.1.0 through `VimClient`, and `System.Drawing.Common` and
-`System.Security.Cryptography.Xml` through the health-check UI packages. Check where it stands when
-bumping a dependency:
+audit, and it has two findings here. `AutoMapper` 13 is the only direct one, and it is pinned on
+purpose because the fix is in 15.1.1 and version 15+ requires a commercial license; `MediatR` 12 is
+pinned for the same reason. `Microsoft.NETCore.App` 2.1.0 arrives through `VimClient` and is the
+.NET Core 2.1 framework package, which cannot be raised to a fixed version on net10.0. The other
+transitive hits are raised by the security pins at the bottom of `Directory.Packages.props`, each
+commented with the dependency it comes through, and the test project names the
+`Microsoft.AspNetCore.App` framework so that restore prunes the packages it ships, as it does for the
+API. Check where it stands when bumping a dependency:
 
 ```bash
 dotnet list package --vulnerable --include-transitive

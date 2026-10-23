@@ -21,17 +21,16 @@
       Restore-time warnings stay warnings. NU1901-NU1904 are the NuGet audit, and it has findings
       here that a build failure would only make invisible by blocking every build:
 
-      - AutoMapper 13 is the one direct hit. It is pinned deliberately, because version 15+ requires
-        a commercial license. MediatR 12 is pinned for the same reason.
-      - Everything else is transitive and cannot be fixed in a project file here: KubernetesClient
-        and the OpenTelemetry packages arrive through Crucible.Common.ServiceDefaults,
-        Microsoft.OpenApi through Swashbuckle, SQLitePCLRaw through the EF SQLite provider,
-        Microsoft.NETCore.App 2.1.0 through VimClient, and System.Drawing.Common and
-        System.Security.Cryptography.Xml through the health-check UI packages.
+      - AutoMapper 13 is the one direct hit. It is pinned deliberately, because the fix is in
+        15.1.1 and version 15+ requires a commercial license. MediatR 12 is pinned for the same
+        reason.
+      - Microsoft.NETCore.App 2.1.0 arrives through VimClient's dotnet-svcutil.xmlserializer. It is
+        the .NET Core 2.1 framework package, so it cannot be raised to a fixed version on net10.0,
+        and the net10.0 shared framework is what the API runs on.
 
-      This is a real backlog rather than a set of findings that can never be acted on. Check it with
-      `dotnet list package` and its vulnerable and transitive switches when bumping a dependency;
-      docs/Testing.md spells out the command.
+      The other transitive hits are raised by the security pins in Directory.Packages.props. Check
+      where it stands with `dotnet list package` and its vulnerable and transitive switches when
+      bumping a dependency; docs/Testing.md spells out the command.
     -->
     <WarningsNotAsErrors>NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
   </PropertyGroup>
