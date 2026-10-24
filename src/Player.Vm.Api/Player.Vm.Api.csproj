@@ -16,6 +16,7 @@
     <PackageReference Include="Swashbuckle.AspNetCore" />
     <PackageReference Include="Swashbuckle.AspNetCore.Annotations" />
     <PackageReference Include="DiscUtils.Iso9660" />
+    <PackageReference Include="IdentityModel" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" />
@@ -40,6 +41,14 @@
          with it in its graph. Suppressed here rather than repo-wide: the warning is worth keeping for
          the next package that turns out not to target net10.0. -->
     <PackageReference Include="TinCan" NoWarn="NU1701" />
+  </ItemGroup>
+  <!-- Security pins. Referenced only to raise a package that otherwise arrives through another
+       dependency at a vulnerable version; Directory.Packages.props says which dependency each one
+       comes through. -->
+  <ItemGroup>
+    <PackageReference Include="System.Security.Cryptography.Pkcs" />
+    <PackageReference Include="Microsoft.OpenApi" />
+    <PackageReference Include="KubernetesClient" />
   </ItemGroup>
   <ItemGroup>
     <!-- Lets the test project reach the internal helpers that have no public entry point worth

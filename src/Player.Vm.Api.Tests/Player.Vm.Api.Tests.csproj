@@ -49,6 +49,14 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- The tests run on the ASP.NET Core shared framework already, because Mvc.Testing brings it, but
+         restore only prunes the packages a framework ships for frameworks the project names itself.
+         Naming it drops System.Security.Cryptography.Xml 5.0.0, and the System.Drawing.Common 5.0.0
+         under it, from VimClient's WCF packages, as it does in Player.Vm.Api; both are NuGet audit hits. -->
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\Player.Vm.Api\Player.Vm.Api.csproj" />
   </ItemGroup>
 
