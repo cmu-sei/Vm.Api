@@ -2,11 +2,8 @@ name: Header Check
 
 on:
   pull_request:
-    branches:
-      - main
 
-permissions:
-  contents: read
+permissions: {}
 
 jobs:
   header-check:

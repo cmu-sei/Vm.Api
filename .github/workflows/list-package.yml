@@ -1,4 +1,4 @@
-name: List Package
+name: List Client Package
 
 on:
   workflow_dispatch:
