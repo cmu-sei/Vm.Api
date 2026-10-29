@@ -1,6 +1,6 @@
-# Shared by every Crucible API repository (agent-docs/api-testing/build-and-test.yml). sync.sh fills in
-# the test project's directory and assembly name and compares the rest byte for byte; do not edit in a
-# repo.
+# Builds the API and runs Player.Vm.Api.Tests against PostgreSQL with the shared Crucible workflow, which
+# takes the test runner from global.json; see the .NET Build and Test section of
+# https://github.com/cmu-sei/Crucible-Github-Actions.
 name: Build and Test
 
 # Pull requests validate proposed changes. Pushes to main verify the result after merge.
@@ -9,73 +9,12 @@ on:
   push:
     branches: [main]
 
-# A newer run for the same pull request or main ref supersedes one still in flight.
-concurrency:
-  group: build-and-test-${{ github.ref }}
-  cancel-in-progress: true
+permissions: {}
 
 jobs:
   build-and-test:
-    name: Build and Test
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v6
-
-      - name: Setup dotnet
-        uses: actions/setup-dotnet@v5
-        with:
-          # The SDK version lives in global.json; never pin a second copy of it here.
-          global-json-file: global.json
-
-      # Keyed on the files that decide what gets restored: Directory.Packages.props holds every
-      # version, and a project file changing is what adds or drops a reference.
-      - name: Cache NuGet packages
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', '**/*.csproj') }}
-          restore-keys: nuget-${{ runner.os }}-
-
-      - name: Restore
-        run: dotnet restore
-
-      - name: Build
-        run: dotnet build --no-restore
-
-      # Testcontainers starts and disposes the PostgreSQL container itself, so this job
-      # intentionally has no `services: postgres:` block.
-      #
-      # xUnit.DiagnosticMessages surfaces the provider banner PostgresTestDatabase prints. Without it the VSTest
-      # bridge discards the test host's stdout and the log never records which database the run
-      # actually used. `tee` keeps it for the assertion in the next step.
-      #
-      # It has to be passed here rather than set as `diagnosticMessages` in xunit.runner.json: with
-      # the setting in that file, the run hangs after the last test instead of finishing — the host
-      # stays alive and never reports completion. Reproduced on SDK 10.0.103 with VSTest 18.0.1 and
-      # xunit.v3 3.2.2; the same run with the flag below finishes in about twenty seconds.
-      - name: Test
-        run: |
-          set -o pipefail
-          dotnet test src/Player.Vm.Api.Tests --no-build --logger "trx;LogFileName=test-results.trx" \
-            -- xUnit.DiagnosticMessages=true | tee "$RUNNER_TEMP/test.log"
-
-      # This independently checks the provider the suite reported, so a future harness change cannot
-      # silently stop exercising PostgreSQL.
-      - name: Confirm the suite ran against PostgreSQL
-        # Block scalar, not a plain one: the pattern contains a colon-space, which YAML would
-        # otherwise read as the start of a mapping entry.
-        run: |
-          grep -F '[Player.Vm.Api.Tests] database provider: PostgreSQL' "$RUNNER_TEMP/test.log"
-
-      # Unconditional, so that a failing run still publishes which tests failed rather than only the
-      # summary line in the log. Coverage is deliberately not collected here: nothing gates on the
-      # figure, so it is a local exercise — see docs/Testing.md.
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: test-results
-          path: src/Player.Vm.Api.Tests/TestResults/test-results.trx
-          if-no-files-found: error
+    uses: cmu-sei/Crucible-Github-Actions/.github/workflows/dotnet-test.yaml@dotnet-test-v1
+    permissions:
+      contents: read
+    with:
+      test-project: src/Player.Vm.Api.Tests

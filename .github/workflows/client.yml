@@ -7,74 +7,33 @@ on:
         description: "Version of the Client package"
         required: true
 
+permissions: {}
+
 jobs:
-  build:
-    runs-on: ubuntu-latest
+  # Builds and packs only (auth-mode: trusted). nuget.org rejects a trusted-
+  # publishing token issued to a reusable workflow in another repository, so
+  # the push happens in the publish job below, which this file defines.
+  pack:
+    uses: cmu-sei/Crucible-Github-Actions/.github/workflows/nuget-release.yaml@nuget-v1
     permissions:
-      contents: write
+      contents: read
+    with:
+      version: ${{ inputs.clientVersion }}
+      project: src/Player.Vm.Api.Client/Player.Vm.Api.Client.csproj
+      openapi-project: src/Player.Vm.Api
+      description: NSwag generated client for Crucible's Player.Vm.Api
+      auth-mode: trusted
 
+  publish:
+    needs: pack
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write          # tag + GitHub release with the .nupkg
+      id-token: write          # NuGet trusted publishing (OIDC -> short-lived push key)
     steps:
-      - name: Setup dotnet
-        uses: actions/setup-dotnet@v5
+      - uses: cmu-sei/Crucible-Github-Actions/actions/nuget-publish@nuget-v1
         with:
-          dotnet-version: "10.0.x"
-
-      - name: Setup Package Name
-        id: package_name
-        run: |
-          echo "name=Player.Vm.Api.Client" >> "$GITHUB_OUTPUT"
-          echo "dll_name=Player.Vm.Api" >> "$GITHUB_OUTPUT"
-          echo "directory=src/Player.Vm.Api" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@v6
-
-      - name: Build Package
-        run: |
-          cd ${{ steps.package_name.outputs.directory }}
-          dotnet tool restore
-          dotnet build -c Release /p:version=${{ github.event.inputs.clientVersion }}
-
-      - name: Run Swagger
-        run: |
-          cd ${{ steps.package_name.outputs.directory }}
-          dotnet swagger tofile --output ../${{ steps.package_name.outputs.name }}/swagger.json bin/Release/*/${{ steps.package_name.outputs.dll_name }}.dll v1
-
-      - name: Run NSwag
-        run: |
-          cd src/${{ steps.package_name.outputs.name }}
-          npm install
-          ./node_modules/.bin/nswag run /runtime:Net100
-
-      - name: Create NuGet Package
-        run: |
-          cd src/${{ steps.package_name.outputs.name }}
-          dotnet pack -c Release /p:version=${{ github.event.inputs.clientVersion }}  \
-          /p:authors="Carnegie Mellon University/Software Engineering Institute"      \
-          /p:description="NSwag generated client for Crucible's ${{ steps.package_name.outputs.dll_name }}"   \
-          --include-source
-
-          cd bin/Release
-          mv ${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg ${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg.bak
-          unzip ${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg.bak -d tmp
-          chmod -R 755 tmp
-          cd tmp
-          sed -i '/<\/version>/a \    <license type="expression">MIT<\/license>' ${{ steps.package_name.outputs.name }}.nuspec
-          sed -i '/<\/version>/a \    <licenseUrl>https:\/\/licenses.nuget.org\/MIT<\/licenseUrl>' ${{ steps.package_name.outputs.name }}.nuspec
-          sed -i '/<\/version>/a \    <projectUrl>https:\/\/github.com\/cmu-sei\/crucible<\/projectUrl>' ${{ steps.package_name.outputs.name }}.nuspec
-          zip -r ../${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg *
-
-      - name: Publish to Nuget.org as Unlisted
-        run: |
-          dotnet nuget push src/${{ steps.package_name.outputs.name }}/bin/Release/${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg -k ${{ secrets.NUGET_APIKEY }} -s https://api.nuget.org/v3/index.json
-          dotnet nuget delete ${{ steps.package_name.outputs.name }} ${{ github.event.inputs.clientVersion }} --non-interactive -k ${{ secrets.NUGET_APIKEY_UNLIST }} -s https://api.nuget.org/v3/index.json
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v3
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
-        with:
-          tag_name: ${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}
-          name: ${{ steps.package_name.outputs.name }} ${{ github.event.inputs.clientVersion }}
-          draft: false
-          prerelease: false
-          files: src/${{ steps.package_name.outputs.name }}/bin/Release/${{ steps.package_name.outputs.name }}.${{ github.event.inputs.clientVersion }}.nupkg
+          package-id: ${{ needs.pack.outputs.package-id }}
+          version: ${{ needs.pack.outputs.version }}
+          nuget-user: ${{ vars.NUGET_USER }}
