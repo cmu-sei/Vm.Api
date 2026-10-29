@@ -14,16 +14,21 @@ name: Coverage
 on:
   workflow_dispatch:
 
+permissions: {}
+
 jobs:
   coverage:
     name: Coverage
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Setup dotnet
-        uses: actions/setup-dotnet@v5
+        uses: actions/setup-dotnet@v6
         with:
           # The SDK version lives in global.json; never pin a second copy of it here.
           global-json-file: global.json
@@ -31,7 +36,7 @@ jobs:
       # Keyed the same way as build-and-test.yml's, so a coverage run warms the cache the test job reads and
       # the other way round. ReportGenerator is a local tool and restores into the same cache.
       - name: Cache NuGet packages
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('Directory.Packages.props', '**/*.csproj', '.config/dotnet-tools.json') }}
@@ -56,7 +61,7 @@ jobs:
 
       - name: Upload the report
         if: ${{ !cancelled() && steps.coverage.outcome != 'skipped' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: coverage-report
           path: coverage/report

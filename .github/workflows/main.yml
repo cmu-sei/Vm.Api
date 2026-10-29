@@ -2,10 +2,13 @@ name: Build and Publish Image
 
 on:
   pull_request:
-    branches:
-      - main
+  push:
+    branches: [main]
   release:
-    types: ["published"]
+    types: [published]
+
+permissions:
+  contents: read
 
 jobs:
   build-and-publish:
@@ -13,8 +16,9 @@ jobs:
     uses: cmu-sei/Crucible-Github-Actions/.github/workflows/docker-build.yaml@docker-v1
     with:
       imageName: cmusei/vm-api
-      versionMode: csproj
       additionalTarget: debug
+      versionMode: csproj
+      versionFiles: src/Player.Vm.Api/Player.Vm.Api.csproj
     secrets:
       DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
       DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
