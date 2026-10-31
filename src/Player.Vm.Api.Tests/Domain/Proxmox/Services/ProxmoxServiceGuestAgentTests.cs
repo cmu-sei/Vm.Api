@@ -12,6 +12,7 @@ using System.Threading.Tasks;
 using Microsoft.CSharp.RuntimeBinder;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Proxmox.Services;
+using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Tests.Support;
 
 namespace Player.Vm.Api.Tests.Domain.Proxmox.Services;
@@ -646,11 +647,10 @@ public class ProxmoxServiceGuestAgentTests
 
     #region UploadFileToGuest
 
-    // A POST carrying the content and the destination in the body, and the content goes out as text: the
-    // stream is read to bytes and then UTF-8 decoded, so this is a text-file upload however it is called.
-    // Anything that is not valid UTF-8 is replacement-charactered on the way through rather than refused.
+    // A POST carrying the content and the destination in the body. The content goes out base64-encoded
+    // with encode=0, so PVE passes our encoding to the agent as is rather than encoding a string of its own.
     [Fact]
-    public async Task UploadFileToGuest_PostsTheDecodedTextAndTheDestinationPath()
+    public async Task UploadFileToGuest_PostsTheContentAsBase64WithEncodeOff()
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid);
@@ -661,83 +661,88 @@ public class ProxmoxServiceGuestAgentTests
 
         Assert.Equal($"wrote 18 bytes to /tmp/f.txt on vmid={Vmid}", reported);
         Assert.Equal([FakeProxmoxCluster.VmPath(info, FileWrite)], cluster.Http.Paths);
-        Assert.Equal(
-            """{"content":"line one\nline two\n","file":"/tmp/f.txt"}""",
-            cluster.Request(HttpMethod.Post, FakeProxmoxCluster.VmPath(info, FileWrite)).Body);
+
+        using var body = JsonDocument.Parse(cluster.Request(HttpMethod.Post, FakeProxmoxCluster.VmPath(info, FileWrite)).Body);
+        Assert.Equal("bGluZSBvbmUKbGluZSB0d28K", body.RootElement.GetProperty("content").GetString());
+        Assert.Equal("/tmp/f.txt", body.RootElement.GetProperty("file").GetString());
+        Assert.Equal("0", body.RootElement.GetProperty("encode").ToString());
     }
 
-    // The size ceiling exists because QGA's file-write is capped around 64 KiB and a payload over it is
-    // rejected by the agent with nothing useful to say, so this refuses first and says what to do instead.
-    // Both sides of the boundary are driven: the check is a strict >, so exactly the limit is allowed.
+    // The point of the change: bytes that are not valid UTF-8 - every binary file - arrive intact. Decoding
+    // them as text first replaced each invalid sequence with U+FFFD.
+    [Fact]
+    public async Task UploadFileToGuest_SendsBinaryContentByteForByte()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Accepts($"POST {FakeProxmoxCluster.VmPath(info, FileWrite)}");
+        byte[] bytes = [0x00, 0xFF, 0xFE, 0x80, 0x7F, 0xC3, 0x28, 0x0A];
+
+        await cluster.Service().UploadFileToGuest(info, "/tmp/f.bin", new MemoryStream(bytes));
+
+        using var body = JsonDocument.Parse(cluster.Request(HttpMethod.Post, FakeProxmoxCluster.VmPath(info, FileWrite)).Body);
+        Assert.Equal(bytes, Convert.FromBase64String(body.RootElement.GetProperty("content").GetString()));
+    }
+
+    // Both sides of the boundary are driven: the check is a strict >, so exactly the limit is allowed. A file
+    // over it is a 400 naming the file and stating both sizes in KB, refused before anything is sent.
     [Theory]
-    [InlineData(8, true)]
-    [InlineData(9, false)]
+    [InlineData(2048, true)]
+    [InlineData(2049, false)]
     public async Task UploadFileToGuest_AllowsExactlyTheLimitAndRefusesOneByteMore(int size, bool allowed)
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid);
-        cluster.Options.FileUploadMaxBytes = 8;
+        cluster.Options.FileUploadMaxBytes = 2048;
         cluster.Accepts($"POST {FakeProxmoxCluster.VmPath(info, FileWrite)}");
-        var content = new MemoryStream(Encoding.UTF8.GetBytes(new string('x', size)));
+        var content = new MemoryStream(new byte[size]);
 
         if (allowed)
         {
             Assert.Equal(
-                $"wrote 8 bytes to /tmp/f.txt on vmid={Vmid}",
+                $"wrote 2048 bytes to /tmp/f.txt on vmid={Vmid}",
                 await cluster.Service().UploadFileToGuest(info, "/tmp/f.txt", content));
 
             return;
         }
 
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+        var ex = await Assert.ThrowsAsync<BadRequestException>(
             () => cluster.Service().UploadFileToGuest(info, "/tmp/f.txt", content));
 
-        // The count, the limit and the way out, because the caller is a user pasting a file into a task
-        // definition and "too big" on its own leaves them nothing to do about it.
         Assert.Equal(
-            "QGA file-write payload 9 bytes exceeds 8-byte limit. " +
-            "Use vSphere upload or chunk uploads via guest exec.",
+            "f.txt is 2.01 KB, which exceeds the 2 KB limit for uploading a file to a Proxmox virtual machine.",
             ex.Message);
-
-        // Refused before anything is sent, so an oversized payload never reaches the cluster.
         Assert.Empty(cluster.Http.Sent);
     }
 
-    // The limit counts bytes off the stream, not characters, so a file of accented text hits it sooner than
-    // its length suggests - five characters can be six bytes. The shipped limit is 60 KiB against QGA's
-    // ~64 KiB, which is the headroom this makes use of.
-    [Fact]
-    public async Task UploadFileToGuest_MeasuresTheLimitInBytesRatherThanCharacters()
-    {
-        var cluster = new FakeProxmoxCluster();
-        var info = cluster.Has(Vmid);
-        cluster.Options.FileUploadMaxBytes = 5;
-
-        var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            () => cluster.Service().UploadFileToGuest(
-                info, "/tmp/f.txt", new MemoryStream(Encoding.UTF8.GetBytes("héllo"))));
-
-        Assert.StartsWith("QGA file-write payload 6 bytes exceeds 5-byte limit.", ex.Message);
-    }
-
-    // What is reported back is the byte count while what went over the wire is the decoded text, so for
-    // anything outside ASCII the number the caller is shown is larger than the string Proxmox was sent.
-    // That is the honest number - it is what the limit was checked against - but it is not the length of
-    // the file the guest ends up with.
-    [Fact]
-    public async Task UploadFileToGuest_ReportsBytesWhileTheWireCarriesTheDecodedText()
+    // PVE caps file-write's content at 61,440 characters, and base64 is four characters per three bytes, so
+    // the shipped FileUploadMaxBytes of 61,440 is capped to 46,080 bytes (45 KB): a file between the two
+    // would pass this check only for PVE to refuse it.
+    [Theory]
+    [InlineData(46080, true)]
+    [InlineData(46081, false)]
+    public async Task UploadFileToGuest_IsCappedAtWhatFitsInPvesContentLimitOnceEncoded(int size, bool allowed)
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid);
         cluster.Accepts($"POST {FakeProxmoxCluster.VmPath(info, FileWrite)}");
+        var content = new MemoryStream(new byte[size]);
 
-        var reported = await cluster.Service().UploadFileToGuest(
-            info, "/tmp/f.txt", new MemoryStream(Encoding.UTF8.GetBytes("héllo")));
+        if (allowed)
+        {
+            await cluster.Service().UploadFileToGuest(info, "/tmp/f.bin", content);
 
-        Assert.Equal($"wrote 6 bytes to /tmp/f.txt on vmid={Vmid}", reported);
+            using var body = JsonDocument.Parse(cluster.Request(HttpMethod.Post, FakeProxmoxCluster.VmPath(info, FileWrite)).Body);
+            Assert.Equal(61440, body.RootElement.GetProperty("content").GetString().Length);
+            return;
+        }
+
+        var ex = await Assert.ThrowsAsync<BadRequestException>(
+            () => cluster.Service().UploadFileToGuest(info, "/tmp/f.bin", content));
+
         Assert.Equal(
-            """{"content":"héllo","file":"/tmp/f.txt"}""",
-            cluster.Request(HttpMethod.Post, FakeProxmoxCluster.VmPath(info, FileWrite)).Body);
+            "f.bin is 45.01 KB, which exceeds the 45 KB limit for uploading a file to a Proxmox virtual machine.",
+            ex.Message);
     }
 
     [Fact]

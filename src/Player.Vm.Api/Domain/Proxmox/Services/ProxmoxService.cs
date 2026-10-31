@@ -887,20 +887,46 @@ public partial class ProxmoxService : IProxmoxService
         return result?.IsSuccessStatusCode == true;
     }
 
+    /// <summary>
+    /// The longest <c>content</c> PVE's agent/file-write accepts (its schema's maxLength, 60 KiB).
+    /// </summary>
+    internal const int PveFileWriteMaxContentLength = 61440;
+
+    /// <summary>
+    /// The largest file UploadFileToGuest takes: FileUploadMaxBytes, capped at what fits in
+    /// <see cref="PveFileWriteMaxContentLength"/> once base64-encoded (3 bytes per 4 characters), 45 KB.
+    /// </summary>
+    internal int UploadLimitBytes =>
+        Math.Min(_options.FileUploadMaxBytes, PveFileWriteMaxContentLength / 4 * 3);
+
+    /// <summary>
+    /// A size in KB to two places, rounded so that a file one byte over a limit never reads as equal to it.
+    /// </summary>
+    private static string Kilobytes(long bytes, bool roundUp)
+    {
+        var hundredths = bytes * 100 / 1024.0;
+        var rounded = (roundUp ? Math.Ceiling(hundredths) : Math.Floor(hundredths)) / 100;
+
+        return rounded.ToString("0.##", CultureInfo.InvariantCulture);
+    }
+
     public async Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content)
     {
         EnsureQemu(info, nameof(UploadFileToGuest));
 
-        var maxBytes = _options.FileUploadMaxBytes;
+        var maxBytes = UploadLimitBytes;
         using var ms = new MemoryStream();
         await content.CopyToAsync(ms);
         var buffer = ms.ToArray();
         if (buffer.Length > maxBytes)
-            throw new InvalidOperationException(
-                $"QGA file-write payload {buffer.Length} bytes exceeds {maxBytes}-byte limit. Use vSphere upload or chunk uploads via guest exec.");
+            throw new BadRequestException(
+                $"{Path.GetFileName(guestFilePath)} is {Kilobytes(buffer.Length, roundUp: true)} KB, which exceeds the " +
+                $"{Kilobytes(maxBytes, roundUp: false)} KB limit for uploading a file to a Proxmox virtual machine.");
 
-        var text = System.Text.Encoding.UTF8.GetString(buffer);
-        var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileWrite.FileWrite(text, guestFilePath);
+        // Sent as base64 with encode=0, so PVE hands the agent our encoding rather than base64-encoding a
+        // string of its own: any bytes survive, where decoding them as text first corrupted binary files.
+        var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileWrite.FileWrite(
+            Convert.ToBase64String(buffer), guestFilePath, encode: false);
         if (!result.IsSuccessStatusCode)
             throw new Exception($"QGA file-write failed for vmid={info.Id} path={guestFilePath}: {result.GetErrorMessage()}");
 

@@ -1088,7 +1088,8 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var vm = await SeedProxmoxVm();
         Factory.Proxmox
             .UploadFileToGuest(Arg.Any<ProxmoxVmInfo>(), Arg.Any<string>(), Arg.Any<Stream>())
-            .ThrowsAsync(new InvalidOperationException("File exceeds the 61440 byte limit"));
+            .ThrowsAsync(new Player.Vm.Api.Infrastructure.Exceptions.BadRequestException(
+                "a.txt is 50 KB, which exceeds the 45 KB limit for uploading a file to a Proxmox virtual machine."));
 
         var form = new MultipartFormDataContent
         {
@@ -1099,7 +1100,9 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var response = await RootClient.PostAsync($"{Route(vm.Id)}/actions/upload-file", form, Ct);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal("File exceeds the 61440 byte limit", await Title(response));
+        Assert.Equal(
+            "a.txt is 50 KB, which exceeds the 45 KB limit for uploading a file to a Proxmox virtual machine.",
+            await Title(response));
     }
 
     #endregion

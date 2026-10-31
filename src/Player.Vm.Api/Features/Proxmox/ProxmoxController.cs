@@ -192,8 +192,11 @@ public class ProxmoxController : Controller
     }
 
     /// <summary>
-    /// Upload a file to a proxmox virtual machine via qemu-guest-agent (limited to ~60 KiB per file)
+    /// Upload a file to a proxmox virtual machine via qemu-guest-agent (limited to 45 KB per file)
     /// </summary>
+    /// <remarks>
+    /// Any file content, binary included. A file over the limit is a 400 whose message states the limit in KB.
+    /// </remarks>
     [HttpPost("vms/proxmox/{id}/actions/upload-file"), DisableRequestSizeLimit]
     [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
     [SwaggerOperation(OperationId = "uploadFileToProxmoxVirtualMachine")]

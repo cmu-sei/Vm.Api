@@ -27,8 +27,9 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
         public int CheckTaskProgressIntervalMilliseconds { get; set; } = 5000;
         public int ReCheckTaskProgressIntervalMilliseconds { get; set; } = 1000;
 
-        // Maximum payload accepted by UploadFileToGuest. The QEMU guest agent's file-write is limited
-        // (~64 KiB per call), so this defaults to 60 KiB to stay safely under that ceiling.
+        // Maximum file size accepted by UploadFileToGuest, in bytes. PVE's agent/file-write caps its
+        // content at 61,440 characters and the file is sent base64-encoded (so binary files survive), so
+        // whatever this is set to, the effective limit is at most 46,080 bytes (45 KB).
         public int FileUploadMaxBytes { get; set; } = 61440;
 
         // How long to wait on a guest-agent query made only to report status - agent/ping and the
