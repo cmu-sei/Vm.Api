@@ -837,6 +837,44 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal(1700000000, snapshot.SnapTime);
     }
 
+    [Theory]
+    [InlineData(null, "A snapshot name is required.")]
+    [InlineData("", "A snapshot name is required.")]
+    [InlineData("   ", "A snapshot name is required.")]
+    [InlineData("a", "A snapshot name must be 2 to 40 characters, start with a letter, and contain only letters, digits, hyphens and underscores.")]
+    [InlineData("1st", "A snapshot name must be 2 to 40 characters, start with a letter, and contain only letters, digits, hyphens and underscores.")]
+    [InlineData("before patch", "A snapshot name must be 2 to 40 characters, start with a letter, and contain only letters, digits, hyphens and underscores.")]
+    [InlineData("before.patch", "A snapshot name must be 2 to 40 characters, start with a letter, and contain only letters, digits, hyphens and underscores.")]
+    [InlineData("a123456789012345678901234567890123456789x", "A snapshot name must be 2 to 40 characters, start with a letter, and contain only letters, digits, hyphens and underscores.")]
+    [InlineData("current", "\"current\" is reserved by Proxmox and cannot be used as a snapshot name.")]
+    [InlineData("Current", "\"current\" is reserved by Proxmox and cannot be used as a snapshot name.")]
+    public async Task CreateSnapshot_WithAnInvalidName_Is400AndNeverReachesProxmox(string name, string title)
+    {
+        var vm = await SeedProxmoxVm();
+
+        var response = await Post($"{Route(vm.Id)}/actions/snapshots", new { SnapshotName = name });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(title, await Title(response));
+        await Factory.Proxmox.DidNotReceive()
+            .CreateSnapshot(Arg.Any<ProxmoxVmInfo>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<bool>());
+    }
+
+    [Theory]
+    [InlineData("ab")]
+    [InlineData("before-patch_2")]
+    [InlineData("a123456789012345678901234567890123456789")]
+    public async Task CreateSnapshot_WithAValidName_ReachesProxmox(string name)
+    {
+        var vm = await SeedProxmoxVm();
+
+        var response = await Post($"{Route(vm.Id)}/actions/snapshots", new { SnapshotName = name });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        await Factory.Proxmox.Received(1)
+            .CreateSnapshot(Arg.Any<ProxmoxVmInfo>(), name, Arg.Any<string>(), Arg.Any<bool>());
+    }
+
     [Fact]
     public async Task CreateSnapshot_PassesTheNameDescriptionAndRamFlag()
     {
@@ -1428,8 +1466,11 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
                 // Read out of Request.Form by hand, so this one needs a real multipart body.
                 ? new MultipartFormDataContent
                     { { new ByteArrayContent(Encoding.UTF8.GetBytes("x")), "files", "a.txt" } }
-                // Satisfies every [FromBody] parameter; the routes without one ignore it.
-                : new StringContent("{}", Encoding.UTF8, "application/json");
+                // Snapshot creation validates the name before it reaches PVE.
+                : suffix.EndsWith("/actions/snapshots")
+                    ? new StringContent("{\"snapshotName\":\"snap-1\"}", Encoding.UTF8, "application/json")
+                    // Satisfies every [FromBody] parameter; the routes without one ignore it.
+                    : new StringContent("{}", Encoding.UTF8, "application/json");
         }
 
         return (client ?? RootClient).SendAsync(request, Ct);
