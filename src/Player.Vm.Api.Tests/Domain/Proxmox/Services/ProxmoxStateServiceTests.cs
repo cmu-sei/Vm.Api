@@ -15,6 +15,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Domain.Proxmox.Models;
 using Player.Vm.Api.Domain.Proxmox.Options;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Tests.Support;
@@ -740,6 +741,174 @@ public class ProxmoxStateServiceTests(DatabaseFixture fixture) : DatabaseTestBas
 
     #endregion
 
+    #region Guest state
+
+    /// <summary>
+    /// A pass records whether each machine has a snapshot to revert to, read from the snapshot its config
+    /// says it is running from. In both directions, so a snapshot taken or deleted outside Player shows in
+    /// Player - which is what the vm.ui Snapshots filter and bulk Revert both read.
+    /// </summary>
+    [Theory]
+    [InlineData("before-patching", false, true)]
+    [InlineData(null, true, false)]
+    public async Task APass_RecordsWhetherTheMachineHasASnapshot(
+        string currentSnapshot, bool before, bool expected)
+    {
+        var h = Build();
+        await SeedVm(VmA, Vmid, hasSnapshot: before);
+        h.Returns(await Reporting(Vmid));
+        h.GuestState(Vmid, new ProxmoxGuestState { CurrentSnapshot = currentSnapshot });
+
+        await h.Loop.Run(h.Service, h.Service.CheckState);
+
+        Assert.Equal(expected, (await Reread(VmA)).HasSnapshot);
+    }
+
+    /// <summary>
+    /// A machine whose config could not be read keeps what it had: null is "no answer", not "no snapshot",
+    /// and clearing the flag on a transient failure would drop the machine out of bulk Revert.
+    /// </summary>
+    [Fact]
+    public async Task WhenTheGuestStateCannotBeRead_HasSnapshotIsLeftAsItWas()
+    {
+        var h = Build();
+        await SeedVm(VmA, Vmid, PowerState.Off, hasSnapshot: true);
+        h.Returns(await Reporting(Vmid));
+        h.GuestState(Vmid, null);
+
+        await h.Loop.Run(h.Service, h.Service.CheckState);
+
+        var row = await Reread(VmA);
+        Assert.True(row.HasSnapshot);
+        Assert.Equal(PowerState.On, row.PowerState);
+    }
+
+    /// <summary>
+    /// One machine's read throwing costs only that machine its guest state: the pass still saves, the
+    /// machine beside it is still updated, and the failure is a warning rather than an error, since it is
+    /// reported again on every pass until the machine answers.
+    /// </summary>
+    [Fact]
+    public async Task WhenOneMachinesGuestStateThrows_TheRestOfThePassStillLands()
+    {
+        var h = Build();
+        await SeedVm(VmA, Vmid, PowerState.Off, hasSnapshot: true);
+        await SeedVm(VmB, OtherVmid, PowerState.Off);
+        h.Returns(await Reporting((Vmid, "running", Node), (OtherVmid, "running", Node)));
+        h.Proxmox.GetGuestState(Arg.Is<ProxmoxVmInfo>(x => x.Id == Vmid), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns<Task<ProxmoxGuestState>>(_ => throw new HttpRequestException("pveproxy went away"));
+        h.GuestState(OtherVmid, new ProxmoxGuestState { CurrentSnapshot = "snap1" });
+
+        await h.Loop.Run(h.Service, h.Service.CheckState);
+
+        var a = await Reread(VmA);
+        Assert.True(a.HasSnapshot);
+        Assert.Equal(PowerState.On, a.PowerState);
+        Assert.True((await Reread(VmB)).HasSnapshot);
+        Assert.Empty(Failures(h));
+        Assert.Contains(h.Log.At(LogLevel.Warning), x => x.Message.Contains($"vmid={Vmid}"));
+    }
+
+    /// <summary>
+    /// The read is addressed to the node the cluster has just reported, not the stored one, so a machine
+    /// that migrated since the last pass is read where it now is - and with the power state from the same
+    /// listing, which is what lets the service skip guest-agent calls for a machine that is off.
+    /// </summary>
+    [Fact]
+    public async Task TheGuestStateIsReadOnTheNodeTheClusterReportsWithItsPowerState()
+    {
+        var h = Build();
+        await SeedVm(VmA, Vmid, node: Node);
+        h.Returns(await Reporting(Vmid, "stopped", OtherNode));
+
+        await h.Loop.Run(h.Service, h.Service.CheckState);
+
+        await h.Proxmox.Received(1).GetGuestState(
+            Arg.Is<ProxmoxVmInfo>(x => x.Id == Vmid && x.Node == OtherNode),
+            false,
+            Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// Only tracked machines the cluster reports are read: an untracked vmid is most of a real cluster, and
+    /// a tracked machine the cluster has lost has no node to address.
+    /// </summary>
+    [Fact]
+    public async Task TheGuestStateIsReadOnlyForTrackedMachinesTheClusterReports()
+    {
+        var h = Build();
+        await SeedVm(VmA, Vmid);
+        await SeedVm(VmB, OtherVmid);
+        h.Returns(await Reporting((Vmid, "running", Node), (UntrackedVmid, "running", Node)));
+
+        await h.Loop.Run(h.Service, h.Service.CheckState);
+
+        var asked = h.Proxmox.ReceivedCalls()
+            .Where(x => x.GetMethodInfo().Name == nameof(IProxmoxService.GetGuestState))
+            .Select(x => ((ProxmoxVmInfo)x.GetArguments()[0]).Id)
+            .ToArray();
+        Assert.Equal([Vmid], asked);
+    }
+
+    /// <summary>
+    /// Guest state is read on its own, slower interval: it costs a request or two per tracked machine where
+    /// the power-state read is one for the whole cluster, and the power interval ships at five seconds.
+    /// Driven unprompted so the passes after the first are the interval's own, and none of them is a
+    /// <c>CheckState</c> nudge - which would read it regardless.
+    /// </summary>
+    [Fact]
+    public async Task UnpromptedPasses_ReadGuestStateOnlyOnItsOwnInterval()
+    {
+        var h = Build(interval: AtOnce);
+        h.Options.GuestStateRefreshIntervalSeconds = 3600;
+        await SeedVm(VmA, Vmid);
+        h.Returns(await Reporting(Vmid));
+
+        await h.Loop.RunUnprompted(h.Service, h.Service.CheckState, passes: 3);
+
+        await h.Proxmox.Received(1).GetGuestState(
+            Arg.Any<ProxmoxVmInfo>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// A <c>CheckState</c> nudge reads it on the next pass whatever the interval says, so a revert's effect
+    /// on <c>HasSnapshot</c> shows at once rather than up to an interval later.
+    /// </summary>
+    [Fact]
+    public async Task ANudgedPass_ReadsGuestStateWhateverTheInterval()
+    {
+        var h = Build();
+        h.Options.GuestStateRefreshIntervalSeconds = 3600;
+        await SeedVm(VmA, Vmid);
+        h.Returns(await Reporting(Vmid));
+
+        await h.Loop.Run(h.Service, h.Service.CheckState, passes: 2);
+
+        await h.Proxmox.Received(2).GetGuestState(
+            Arg.Any<ProxmoxVmInfo>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    /// <summary>
+    /// The single-machine path does not read guest state: it runs behind commands that discovered a
+    /// migration, and a config read there would put another request behind every one of them.
+    /// </summary>
+    [Fact]
+    public async Task UpdateVm_DoesNotReadGuestStateOrTouchHasSnapshot()
+    {
+        var h = Build();
+        await SeedVm(VmA, Vmid, hasSnapshot: true);
+
+        await h.Service.UpdateVm(await Machine(Vmid, "stopped"));
+        await h.Service.StopAsync(Ct);
+
+        var row = await Reread(VmA);
+        Assert.Equal(PowerState.Off, row.PowerState);
+        Assert.True(row.HasSnapshot);
+        await h.Proxmox.DidNotReceive().GetGuestState(Arg.Any<ProxmoxVmInfo>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+    }
+
+    #endregion
+
     /// <summary>
     /// Everything one test needs: the service, the harness driving its loop, the cluster it asks, and the
     /// options object a test can edit while it runs.
@@ -754,6 +923,11 @@ public class ProxmoxStateServiceTests(DatabaseFixture fixture) : DatabaseTestBas
         /// <summary>What the cluster answers when a pass asks it what it is running.</summary>
         public void Returns(params IClusterResourceVm[] vms) =>
             Proxmox.GetVms().Returns(Task.FromResult<IEnumerable<IClusterResourceVm>>(vms));
+
+        /// <summary>What the per-machine read answers for one vmid.</summary>
+        public void GuestState(int vmid, ProxmoxGuestState state) =>
+            Proxmox.GetGuestState(Arg.Is<ProxmoxVmInfo>(x => x.Id == vmid), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+                .Returns(Task.FromResult(state));
     }
 
     /// <param name="hold">
@@ -824,7 +998,8 @@ public class ProxmoxStateServiceTests(DatabaseFixture fixture) : DatabaseTestBas
         PowerState power = PowerState.Unknown,
         VmType type = VmType.Proxmox,
         string node = Node,
-        bool pending = false) =>
+        bool pending = false,
+        bool hasSnapshot = false) =>
         Seed(new VmEntity
         {
             Id = vmId,
@@ -832,6 +1007,7 @@ public class ProxmoxStateServiceTests(DatabaseFixture fixture) : DatabaseTestBas
             Type = type,
             PowerState = power,
             HasPendingTasks = pending,
+            HasSnapshot = hasSnapshot,
             ProxmoxVmInfo = new ProxmoxVmInfo { VmId = vmId, Id = vmid, Node = node },
         });
 

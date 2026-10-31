@@ -4,6 +4,8 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System;
+using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.DependencyInjection;
@@ -17,6 +19,8 @@ using Player.Vm.Api.Domain.Proxmox.Extensions;
 using System.Threading.Tasks.Dataflow;
 using Player.Vm.Api.Domain.Proxmox.Options;
 using Microsoft.Extensions.Options;
+using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Domain.Proxmox.Models;
 
 namespace Player.Vm.Api.Domain.Proxmox.Services;
 
@@ -42,6 +46,18 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
     /// </summary>
     private int? _warnedIntervalSeconds;
 
+    /// <summary>
+    /// When guest state was last read, so it can be read on its own, slower interval: it costs a request
+    /// or two per tracked Vm, where the power-state read is one request for the whole cluster.
+    /// </summary>
+    private readonly System.Diagnostics.Stopwatch _sinceGuestStateRead = new();
+
+    /// <summary>
+    /// Set by <see cref="CheckState"/>: a caller that asks for a pass has just changed something - a
+    /// revert, a power operation - and should see its effect on the guest-derived columns too.
+    /// </summary>
+    private int _guestStateRequested = 1;
+
     public ProxmoxStateService(
             ILogger<ProxmoxStateService> logger,
             IOptionsMonitor<ProxmoxOptions> proxmoxOptionsMonitor,
@@ -63,6 +79,7 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
 
     public void CheckState()
     {
+        Interlocked.Exchange(ref _guestStateRequested, 1);
         _resetEvent.Set();
     }
 
@@ -159,10 +176,15 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
 
         _logger.LogDebug($"Found {pveVms.Count} {"machine".Pluralize(pveVms.Count)} in PVE and {dbVms.Count} {"machine".Pluralize(dbVms.Count)} in database.");
 
+        var guestStates = ShouldReadGuestState()
+            ? await GetGuestStates(dbVms, pveVms, proxmoxService, cancellationToken)
+            : new Dictionary<Guid, ProxmoxGuestState>();
+
         foreach (var dbVm in dbVms)
         {
             pveVms.TryGetValue(dbVm.ProxmoxVmInfo.Id, out var pveVm);
-            this.UpdateVm(dbVm, pveVm);
+            guestStates.TryGetValue(dbVm.Id, out var guestState);
+            this.UpdateVm(dbVm, pveVm, guestState);
         }
 
         var count = await dbContext.SaveChangesAsync(cancellationToken);
@@ -177,6 +199,81 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
         {
             _logger.LogDebug($"Updated {count} {"machine".Pluralize(count)}");
         }
+    }
+
+    /// <summary>
+    /// Whether this pass also reads guest state: when asked to through <see cref="CheckState"/>, or once
+    /// GuestStateRefreshIntervalSeconds has passed since the last read. Zero or less reads it every pass.
+    /// </summary>
+    private bool ShouldReadGuestState()
+    {
+        var requested = Interlocked.Exchange(ref _guestStateRequested, 0) == 1;
+        var interval = TimeSpan.FromSeconds(Math.Max(0, _proxmoxOptionsMonitor.CurrentValue.GuestStateRefreshIntervalSeconds));
+
+        if (!requested && _sinceGuestStateRead.IsRunning && _sinceGuestStateRead.Elapsed < interval)
+            return false;
+
+        _sinceGuestStateRead.Restart();
+        return true;
+    }
+
+    /// <summary>
+    /// Reads the per-Vm state of every tracked Vm the cluster reported, a bounded number at a time. Only
+    /// tracked Vms are read - most of a real cluster is not in Player - and a Vm whose read fails is left
+    /// out, so its stored values stand until a later pass succeeds.
+    /// </summary>
+    /// <remarks>
+    /// The reads run off the change tracker on detached copies of <see cref="ProxmoxVmInfo"/>, addressed to
+    /// the node /cluster/resources has just reported, so a migrated Vm is read where it now is and nothing
+    /// here touches a tracked entity from another thread.
+    /// </remarks>
+    private async Task<IDictionary<Guid, ProxmoxGuestState>> GetGuestStates(
+        IEnumerable<Domain.Models.Vm> dbVms,
+        IDictionary<long, IClusterResourceVm> pveVms,
+        IProxmoxService proxmoxService,
+        CancellationToken cancellationToken)
+    {
+        var states = new ConcurrentDictionary<Guid, ProxmoxGuestState>();
+
+        var targets = dbVms
+            .Select(vm => (Vm: vm, Pve: pveVms.TryGetValue(vm.ProxmoxVmInfo.Id, out var pve) ? pve : null))
+            .Where(x => x.Pve != null)
+            .Select(x => (x.Vm.Id, Info: new ProxmoxVmInfo
+            {
+                VmId = x.Vm.Id,
+                Id = x.Vm.ProxmoxVmInfo.Id,
+                Node = x.Pve.Node,
+                Type = x.Vm.ProxmoxVmInfo.Type,
+            }, Running: x.Pve.IsRunning))
+            .ToList();
+
+        var options = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = Math.Max(1, _proxmoxOptionsMonitor.CurrentValue.GuestStateParallelism),
+            CancellationToken = cancellationToken,
+        };
+
+        await Parallel.ForEachAsync(targets, options, async (target, token) =>
+        {
+            try
+            {
+                var state = await proxmoxService.GetGuestState(target.Info, target.Running, token);
+
+                if (state != null)
+                    states[target.Id] = state;
+            }
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (Exception ex)
+            {
+                // One Vm's failure must not cost the rest of the pass their power state.
+                _logger.LogWarning(ex, $"Could not read the guest state of Proxmox vmid={target.Info.Id}");
+            }
+        });
+
+        return states;
     }
 
     private async Task ProcessVm(IClusterResourceVm pveVm)
@@ -205,13 +302,25 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
         }
     }
 
-    private Domain.Models.Vm UpdateVm(Domain.Models.Vm vm, IClusterResourceVm pveVm)
+    /// <remarks>
+    /// A null <paramref name="guestState"/> leaves the guest-derived columns as they are: the single-Vm
+    /// path does not read them, and a pass whose read failed has nothing to say about them.
+    /// </remarks>
+    private Domain.Models.Vm UpdateVm(
+        Domain.Models.Vm vm,
+        IClusterResourceVm pveVm,
+        ProxmoxGuestState guestState = null)
     {
         if (pveVm != null)
         {
             vm.Type = Domain.Models.VmType.Proxmox;
             vm.PowerState = pveVm.GetPowerState();
             vm.ProxmoxVmInfo.Node = pveVm.Node;
+
+            if (guestState != null)
+            {
+                vm.HasSnapshot = guestState.HasSnapshot;
+            }
         }
 
         return vm;

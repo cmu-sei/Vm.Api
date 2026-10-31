@@ -55,6 +55,17 @@ public interface IProxmoxService
     Task<IEnumerable<IClusterResourceVm>> GetVms();
     Task<IEnumerable<NodeTask>> GetTasks();
 
+    /// <summary>
+    /// Reads the per-Vm state the state poller keeps in the database beyond power state - currently the
+    /// snapshot the Vm is running from. Returns null when the Vm's config could not be read, so the
+    /// caller keeps what it had rather than clearing it.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="info"/> is addressed as given: the poller passes the node /cluster/resources has
+    /// just reported. <paramref name="running"/> is the power state from the same listing.
+    /// </remarks>
+    Task<ProxmoxGuestState> GetGuestState(ProxmoxVmInfo info, bool running, CancellationToken cancellationToken);
+
     Task<string> PowerOnVm(ProxmoxVmInfo info);
     Task<string> PowerOffVm(ProxmoxVmInfo info);
     Task<string> RebootVm(ProxmoxVmInfo info);
@@ -377,6 +388,49 @@ public partial class ProxmoxService : IProxmoxService
     public async Task<IEnumerable<NodeTask>> GetTasks()
     {
         return await _pveClient.Cluster.Tasks.GetAsync();
+    }
+
+    public async Task<ProxmoxGuestState> GetGuestState(
+        ProxmoxVmInfo info,
+        bool running,
+        CancellationToken cancellationToken)
+    {
+        var config = await ReadConfig(info);
+
+        if (!config.IsSuccessStatusCode)
+        {
+            // Debug, not Error: this runs for every tracked Vm on every pass, and a Vm that is being
+            // deleted or migrated mid-pass answers like this without anything being wrong.
+            _logger.LogDebug($"Could not read the config of vmid={info.Id} on {info.Node}: {config.GetErrorMessage()}");
+            return null;
+        }
+
+        var data = ProxmoxExtensions.GetField(config.Response, "data");
+
+        return new ProxmoxGuestState
+        {
+            CurrentSnapshot = ReadParent(data),
+        };
+    }
+
+    /// <summary>
+    /// The Vm's current config as Proxmox sends it, unparsed, so that fields the typed model does not
+    /// carry (and a failed read) are both visible to the caller.
+    /// </summary>
+    private async Task<Result> ReadConfig(ProxmoxVmInfo info) =>
+        info.Type == ProxmoxVmType.LXC
+            ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.VmConfig(current: true)
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.VmConfig(current: true);
+
+    /// <summary>
+    /// The config's <c>parent</c> - the snapshot the running state derives from - or null when there is
+    /// none. PVE leaves the key out entirely for a Vm with no snapshot.
+    /// </summary>
+    private static string ReadParent(object configData)
+    {
+        var parent = ProxmoxExtensions.GetField(configData, "parent")?.ToString();
+
+        return string.IsNullOrWhiteSpace(parent) ? null : parent;
     }
 
     /// <summary>

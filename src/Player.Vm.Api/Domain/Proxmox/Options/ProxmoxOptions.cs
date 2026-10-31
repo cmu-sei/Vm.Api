@@ -13,6 +13,15 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
 
         public int StateRefreshIntervalSeconds { get; set; }
 
+        // How often the state poller also reads per-Vm state (snapshot, IP addresses), which costs a
+        // request or two per tracked Vm rather than one for the whole cluster. A CheckState nudge (after a
+        // revert or power operation) reads it on the next pass regardless. Zero or less: every pass.
+        public int GuestStateRefreshIntervalSeconds { get; set; } = 30;
+
+        // How many Vms the state poller reads per-Vm state for (config, guest agent) at once. Each pass
+        // makes one or two requests per tracked Vm, so this bounds the burst against pveproxy.
+        public int GuestStateParallelism { get; set; } = 8;
+
         // How often ProxmoxTaskService polls cluster tasks while nothing is pending, and while at
         // least one task is still running. Mirrors the equivalent VsphereOptions settings.
         public int CheckTaskProgressIntervalMilliseconds { get; set; } = 5000;
