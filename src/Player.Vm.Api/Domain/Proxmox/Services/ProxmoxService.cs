@@ -689,9 +689,55 @@ public partial class ProxmoxService : IProxmoxService
         return vm;
     }
 
+    /// <summary>
+    /// Sends a call addressed to <c>info.Node</c>; if Proxmox refuses it, re-resolves the node and, only
+    /// when the Vm now lives on a different one, sends the call once more there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The fix for a migration the state poller has not caught up with yet: PVE refuses a
+    /// call addressed to a node the Vm has left, and with PVE 9.2 CRS auto-rebalancing that window is
+    /// routine rather than rare. <paramref name="call"/> must read <c>info.Node</c> when invoked, which a
+    /// lambda over <c>info</c> does, so the retry goes to the corrected node.
+    /// </para>
+    /// <para>
+    /// Retry-on-failure rather than resolving up front, so a call against the right node - nearly every
+    /// call - costs no /cluster/resources read. A refusal on an unchanged node (no such file, a snapshot
+    /// name in use) is returned as it was, after the one resolve, rather than sent twice.
+    /// </para>
+    /// </remarks>
+    private async Task<Result> OnCurrentNode(ProxmoxVmInfo info, Func<Task<Result>> call)
+    {
+        var result = await call();
+
+        if (result.IsSuccessStatusCode)
+            return result;
+
+        var node = info.Node;
+        IClusterResourceVm vm;
+
+        try
+        {
+            vm = await ResolveNode(info);
+        }
+        catch (Exception ex)
+        {
+            // The original refusal is the more useful answer than a failure to look the Vm up.
+            _logger.LogDebug(ex, $"Could not re-resolve the node of vmid={info.Id} after a refused call");
+            return result;
+        }
+
+        if (vm == null || string.Equals(vm.Node, node, StringComparison.Ordinal))
+            return result;
+
+        _logger.LogInformation($"vmid={info.Id} has moved from {node} to {vm.Node}; retrying there");
+
+        return await call();
+    }
+
     public async Task<string> PowerOnVm(ProxmoxVmInfo info)
     {
-        var result = await SubmitPowerOperation(info, PowerOperation.PowerOn);
+        var result = await OnCurrentNode(info, () => SubmitPowerOperation(info, PowerOperation.PowerOn));
         await _pveClient.WaitAndThrow(result, $"PowerOn vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} started";
@@ -699,7 +745,7 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<string> PowerOffVm(ProxmoxVmInfo info)
     {
-        var result = await SubmitPowerOperation(info, PowerOperation.PowerOff);
+        var result = await OnCurrentNode(info, () => SubmitPowerOperation(info, PowerOperation.PowerOff));
         await _pveClient.WaitAndThrow(result, $"PowerOff vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} stopped";
@@ -707,7 +753,7 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<string> RebootVm(ProxmoxVmInfo info)
     {
-        var result = await SubmitPowerOperation(info, PowerOperation.Reboot);
+        var result = await OnCurrentNode(info, () => SubmitPowerOperation(info, PowerOperation.Reboot));
         await _pveClient.WaitAndThrow(result, $"Reboot vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} rebooted";
@@ -715,7 +761,7 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<string> ShutdownVm(ProxmoxVmInfo info)
     {
-        var result = await SubmitPowerOperation(info, PowerOperation.Shutdown);
+        var result = await OnCurrentNode(info, () => SubmitPowerOperation(info, PowerOperation.Shutdown));
         await _pveClient.WaitAndThrow(result, $"Shutdown vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} shutdown";
@@ -808,7 +854,7 @@ public partial class ProxmoxService : IProxmoxService
         EnsureQemu(info, nameof(RunGuestProcess));
 
         var commandList = BuildAgentCommand(command, arguments);
-        var execResult = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList);
+        var execResult = await OnCurrentNode(info, () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList));
         if (!execResult.IsSuccessStatusCode)
             throw new Exception($"QGA exec failed for vmid={info.Id}: {execResult.GetErrorMessage()}");
 
@@ -862,7 +908,7 @@ public partial class ProxmoxService : IProxmoxService
         EnsureQemu(info, nameof(RunGuestProcessFast));
 
         var commandList = BuildAgentCommand(command, arguments);
-        var execResult = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList);
+        var execResult = await OnCurrentNode(info, () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList));
         if (!execResult.IsSuccessStatusCode)
             throw new Exception($"QGA exec failed for vmid={info.Id}: {execResult.GetErrorMessage()}");
 
@@ -873,7 +919,7 @@ public partial class ProxmoxService : IProxmoxService
     {
         EnsureQemu(info, nameof(ReadGuestFile));
 
-        var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath);
+        var result = await OnCurrentNode(info, () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath));
         if (!result.IsSuccessStatusCode)
             throw new Exception($"QGA file-read failed for vmid={info.Id} path={guestFilePath}: {result.GetErrorMessage()}");
 
@@ -903,7 +949,7 @@ public partial class ProxmoxService : IProxmoxService
             throw new BadRequestException("Downloading a file is only supported on QEMU virtual machines.");
 
         // decode=0 has PVE forward the agent's base64 as is, so binary content survives the JSON response.
-        var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath, decode: false);
+        var result = await OnCurrentNode(info, () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath, decode: false));
         var base64 = true;
 
         if (!result.IsSuccessStatusCode && RejectsParameter(result, "decode"))
@@ -987,8 +1033,9 @@ public partial class ProxmoxService : IProxmoxService
 
         // Sent as base64 with encode=0, so PVE hands the agent our encoding rather than base64-encoding a
         // string of its own: any bytes survive, where decoding them as text first corrupted binary files.
-        var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileWrite.FileWrite(
-            Convert.ToBase64String(buffer), guestFilePath, encode: false);
+        var encoded = Convert.ToBase64String(buffer);
+        var result = await OnCurrentNode(info, () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileWrite.FileWrite(
+            encoded, guestFilePath, encode: false));
         if (!result.IsSuccessStatusCode)
             throw new Exception($"QGA file-write failed for vmid={info.Id} path={guestFilePath}: {result.GetErrorMessage()}");
 
@@ -997,9 +1044,9 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<List<ProxmoxSnapshot>> GetSnapshots(ProxmoxVmInfo info)
     {
-        var result = info.Type == ProxmoxVmType.LXC
+        var result = await OnCurrentNode(info, async () => info.Type == ProxmoxVmType.LXC
             ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot.List()
-            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot.SnapshotList();
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot.SnapshotList());
 
         if (!result.IsSuccessStatusCode)
             throw new Exception($"SnapshotList failed for vmid={info.Id}: {result.GetErrorMessage()}");
@@ -1027,16 +1074,10 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<string> CreateSnapshot(ProxmoxVmInfo info, string snapshotName, string description, bool includeRam)
     {
-        Result result;
-        if (info.Type == ProxmoxVmType.LXC)
-        {
-            // LXC snapshots don't capture VM RAM; the includeRam flag is ignored.
-            result = await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot.Snapshot(snapshotName, description);
-        }
-        else
-        {
-            result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot.Snapshot(snapshotName, description, includeRam);
-        }
+        // LXC snapshots don't capture VM RAM; the includeRam flag is ignored.
+        var result = await OnCurrentNode(info, async () => info.Type == ProxmoxVmType.LXC
+            ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot.Snapshot(snapshotName, description)
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot.Snapshot(snapshotName, description, includeRam));
 
         await _pveClient.WaitAndThrow(result, $"CreateSnapshot vmid={info.Id} name={snapshotName}");
         return $"snapshot {snapshotName} created on vmid {info.Id}";
@@ -1044,9 +1085,9 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<string> RevertSnapshot(ProxmoxVmInfo info, string snapshotName)
     {
-        var result = info.Type == ProxmoxVmType.LXC
+        var result = await OnCurrentNode(info, async () => info.Type == ProxmoxVmType.LXC
             ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot[snapshotName].Rollback.Rollback()
-            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshotName].Rollback.Rollback();
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshotName].Rollback.Rollback());
 
         await _pveClient.WaitAndThrow(result, $"RevertSnapshot vmid={info.Id} name={snapshotName}");
         _proxmoxStateService.CheckState();
@@ -1055,7 +1096,7 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<string> RevertToCurrentSnapshot(ProxmoxVmInfo info)
     {
-        var result = await SubmitPowerOperation(info, PowerOperation.Revert);
+        var result = await OnCurrentNode(info, () => SubmitPowerOperation(info, PowerOperation.Revert));
 
         await _pveClient.WaitAndThrow(result, $"RevertToCurrentSnapshot vmid={info.Id}");
         _proxmoxStateService.CheckState();
@@ -1089,9 +1130,9 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<string> DeleteSnapshot(ProxmoxVmInfo info, string snapshotName)
     {
-        var result = info.Type == ProxmoxVmType.LXC
+        var result = await OnCurrentNode(info, async () => info.Type == ProxmoxVmType.LXC
             ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot[snapshotName].Delsnapshot()
-            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshotName].Delsnapshot();
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshotName].Delsnapshot());
 
         await _pveClient.WaitAndThrow(result, $"DeleteSnapshot vmid={info.Id} name={snapshotName}");
         return $"snapshot {snapshotName} deleted on vmid {info.Id}";

@@ -346,7 +346,10 @@ public class ProxmoxServiceGuestAgentTests
 
         Assert.StartsWith($"QGA exec failed for vmid={Vmid}: ", ex.Message);
         Assert.Contains("No QEMU guest agent configured", ex.Message);
-        Assert.Equal([FakeProxmoxCluster.VmPath(info, Exec)], cluster.Http.Paths);
+
+        // The refusal makes the node be re-resolved once; the Vm has not moved, so the exec is
+        // not sent again.
+        Assert.Equal([FakeProxmoxCluster.VmPath(info, Exec), FakeProxmoxCluster.ClusterResources], cluster.Http.Paths);
     }
 
     [Fact]
@@ -364,29 +367,64 @@ public class ProxmoxServiceGuestAgentTests
         Assert.Contains("no such process", ex.Message);
     }
 
-    // Neither request goes through ResolveNode, so a machine that has migrated is addressed on the node the
-    // caller still believes it is on and nothing corrects it. GetConsole, ChangeNetwork and MountIso all
-    // resolve first; these four do not, which makes a guest command the one Proxmox operation that fails
-    // outright after a migration until the state poller has caught up. Asserted by the paths, and by the
-    // cluster resource list never being read at all.
+    // A machine that migrated since the last state poll is addressed on the node the caller still
+    // holds, which PVE refuses. The node is re-resolved and the exec sent again where the machine now is,
+    // and the status polls follow it there.
     [Fact]
-    public async Task RunGuestProcess_AfterAMigration_StillAddressesTheNodeTheCallerHolds()
+    public async Task RunGuestProcess_AfterAMigration_FollowsTheVmToItsNewNode()
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid, node: "pve1");
         cluster.Migrates(Vmid, "pve2");
-        cluster.Answers($"POST api2/json/nodes/pve1/qemu/{Vmid}{Exec}", """{"pid":4242}""");
+        cluster.Rejects($"POST api2/json/nodes/pve1/qemu/{Vmid}{Exec}", "Configuration file 'nodes/pve1/qemu-server/100.conf' does not exist");
+        cluster.Answers($"POST api2/json/nodes/pve2/qemu/{Vmid}{Exec}", """{"pid":4242}""");
         cluster.Answers(
-            $"GET api2/json/nodes/pve1/qemu/{Vmid}{ExecStatus}",
-            """{"exited":1,"exitcode":0,"out-data":"","err-data":""}""");
+            $"GET api2/json/nodes/pve2/qemu/{Vmid}{ExecStatus}",
+            """{"exited":1,"exitcode":0,"out-data":"ok","err-data":""}""");
 
-        await cluster.Service().RunGuestProcess(info, Bash, "-c hello", TimeSpan.FromSeconds(5));
+        var result = await cluster.Service().RunGuestProcess(info, Bash, "-c hello", TimeSpan.FromSeconds(5));
 
+        Assert.Equal("ok", result.Output);
         Assert.Equal(
-            [$"api2/json/nodes/pve1/qemu/{Vmid}{Exec}", $"api2/json/nodes/pve1/qemu/{Vmid}{ExecStatus}"],
+            [
+                $"api2/json/nodes/pve1/qemu/{Vmid}{Exec}",
+                FakeProxmoxCluster.ClusterResources,
+                $"api2/json/nodes/pve2/qemu/{Vmid}{Exec}",
+                $"api2/json/nodes/pve2/qemu/{Vmid}{ExecStatus}",
+            ],
             cluster.Http.Paths);
-        Assert.DoesNotContain(FakeProxmoxCluster.ClusterResources, cluster.Http.Paths);
-        Assert.Equal("pve1", info.Node);
+        Assert.Equal("pve2", info.Node);
+    }
+
+    // The other guest-agent calls take the same retry: each one refused on the node the machine has left
+    // succeeds on the first call from the caller's point of view.
+    [Theory]
+    [InlineData(nameof(IProxmoxService.RunGuestProcessFast), "POST", Exec, """{"pid":4242}""")]
+    [InlineData(nameof(IProxmoxService.ReadGuestFile), "GET", FileRead, """{"content":"x"}""")]
+    [InlineData(nameof(IProxmoxService.DownloadGuestFile), "GET", FileRead, """{"content":"eA=="}""")]
+    [InlineData(nameof(IProxmoxService.UploadFileToGuest), "POST", FileWrite, "null")]
+    public async Task GuestAgentCalls_AfterAMigration_AreSentAgainToTheNewNode(
+        string operation, string method, string tail, string answer)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, node: "pve1");
+        cluster.Migrates(Vmid, "pve2");
+        cluster.Rejects($"{method} api2/json/nodes/pve1/qemu/{Vmid}{tail}", "does not exist");
+        cluster.Answers($"{method} api2/json/nodes/pve2/qemu/{Vmid}{tail}", answer);
+        var service = cluster.Service();
+
+        Task call = operation switch
+        {
+            nameof(IProxmoxService.RunGuestProcessFast) => service.RunGuestProcessFast(info, Bash, "-c hello"),
+            nameof(IProxmoxService.ReadGuestFile) => service.ReadGuestFile(info, "/tmp/f.txt"),
+            nameof(IProxmoxService.DownloadGuestFile) => service.DownloadGuestFile(info, "/tmp/f.txt"),
+            nameof(IProxmoxService.UploadFileToGuest) => service.UploadFileToGuest(info, "/tmp/f.txt", new MemoryStream([1, 2, 3])),
+            _ => throw new ArgumentOutOfRangeException(nameof(operation)),
+        };
+        await call;
+
+        Assert.Equal($"api2/json/nodes/pve2/qemu/{Vmid}{tail}", cluster.Http.Paths[^1]);
+        Assert.Equal("pve2", info.Node);
     }
 
     // A guest command changes nothing Proxmox reports about the machine, so unlike every power operation it

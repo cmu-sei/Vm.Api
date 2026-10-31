@@ -533,25 +533,73 @@ public class ProxmoxServiceSnapshotTests
 
     #region The node the caller holds
 
-    /// <summary>Each snapshot operation is addressed to the node the caller's <c>ProxmoxVmInfo</c> names, without resolving it.</summary>
+    /// <summary>
+    /// Each snapshot operation is addressed to the node the caller's <c>ProxmoxVmInfo</c> names, and costs no
+    /// /cluster/resources read when that node is right.
+    /// </summary>
     [Theory]
     [InlineData("GetSnapshots")]
     [InlineData("CreateSnapshot")]
     [InlineData("RevertSnapshot")]
     [InlineData("DeleteSnapshot")]
-    public async Task SnapshotOperation_IsAddressedToTheStaleNodeTheCallerHoldsRatherThanResolvingIt(
-        string operation)
+    public async Task SnapshotOperation_OnTheRightNode_DoesNotResolveIt(string operation)
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid, node: "pve1");
-        cluster.Migrates(Vmid, "pve7");
         Arrange(cluster, info);
 
         await Run(cluster.Service(), info, operation);
 
-        // Every path begins pve1, and /cluster/resources - the read ResolveNode would have made, and the
-        // only thing that could have discovered pve7 - was never asked for.
         Assert.All(cluster.Http.Paths, x => Assert.StartsWith("api2/json/nodes/pve1/", x));
+    }
+
+    /// <summary>
+    /// After a migration the state poller has not caught up with, PVE refuses the operation on the
+    /// node the machine has left. The node is re-resolved and the operation sent once more where the machine
+    /// now is, so the caller sees it succeed on the first attempt.
+    /// </summary>
+    [Theory]
+    [InlineData("GetSnapshots")]
+    [InlineData("CreateSnapshot")]
+    [InlineData("RevertSnapshot")]
+    [InlineData("DeleteSnapshot")]
+    [InlineData("RevertToCurrentSnapshot")]
+    public async Task SnapshotOperation_AfterAMigration_IsSentAgainToTheNewNode(string operation)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var stale = cluster.Has(Vmid, node: "pve1");
+        cluster.Migrates(Vmid, "pve7");
+        var live = new ProxmoxVmInfo { Id = Vmid, Node = "pve7", Type = ProxmoxVmType.QEMU };
+        cluster.Rejects($"GET {SnapshotPath(stale)}", "does not exist");
+        cluster.Rejects($"POST {SnapshotPath(stale)}", "does not exist");
+        cluster.Rejects($"POST {SnapshotPath(stale)}/{Snap}/rollback", "does not exist");
+        cluster.Rejects($"DELETE {SnapshotPath(stale)}/{Snap}", "does not exist");
+        cluster.Rejects($"GET {FakeProxmoxCluster.VmPath(stale, "/config")}", "does not exist");
+        Arrange(cluster, live);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(live, "/config")}", $$"""{"parent":"{{Snap}}"}""");
+
+        await Run(cluster.Service(), stale, operation);
+
+        Assert.StartsWith("api2/json/nodes/pve7/", cluster.Http.Paths[^1]);
+        Assert.Contains(FakeProxmoxCluster.ClusterResources, cluster.Http.Paths);
+        Assert.Equal("pve7", stale.Node);
+    }
+
+    /// <summary>
+    /// A refusal on a node the machine has not left is reported as it was, after one resolve, rather than
+    /// sent a second time - a snapshot name already in use is not made better by asking twice.
+    /// </summary>
+    [Fact]
+    public async Task CreateSnapshot_RefusedOnTheRightNode_IsNotSentTwice()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Rejects($"POST {SnapshotPath(info)}", "snapshot name 'snap1' already used");
+
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => cluster.Service().CreateSnapshot(info, Snap, "again", includeRam: false));
+
+        Assert.Single(cluster.Requests(HttpMethod.Post, SnapshotPath(info)));
     }
 
     #endregion
@@ -582,6 +630,9 @@ public class ProxmoxServiceSnapshotTests
                 break;
             case "DeleteSnapshot":
                 await service.DeleteSnapshot(info, Snap);
+                break;
+            case "RevertToCurrentSnapshot":
+                await service.RevertToCurrentSnapshot(info);
                 break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(operation));
