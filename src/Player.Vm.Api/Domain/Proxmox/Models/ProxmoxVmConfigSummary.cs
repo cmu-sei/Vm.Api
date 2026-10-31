@@ -16,5 +16,17 @@ namespace Player.Vm.Api.Domain.Proxmox.Models
     /// </param>
     public sealed record ProxmoxVmConfigSummary(
         Dictionary<string, string> CurrentNetworks,
-        bool HasCdromDrive);
+        bool HasCdromDrive)
+    {
+        /// <summary>
+        /// The snapshot the Vm is running from (the config's <c>parent</c>), or null when it has none.
+        /// </summary>
+        public string CurrentSnapshot { get; init; }
+
+        /// <summary>
+        /// Whether the config turns the QEMU guest agent on. Always false for LXC, which has none. Whether
+        /// an agent is actually running in the guest is a separate question, answered by a ping.
+        /// </summary>
+        public bool AgentEnabled { get; init; }
+    }
 }

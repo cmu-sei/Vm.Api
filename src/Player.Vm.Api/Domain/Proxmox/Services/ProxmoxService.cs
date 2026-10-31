@@ -85,6 +85,13 @@ public interface IProxmoxService
     Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content);
 
     /// <summary>
+    /// Whether a QEMU guest agent answers a ping, within
+    /// <see cref="ProxmoxOptions.GuestAgentTimeoutMilliseconds"/>. False on any failure, and always
+    /// false for LXC, which has no guest agent. Never throws.
+    /// </summary>
+    Task<bool> IsGuestAgentRunning(ProxmoxVmInfo info);
+
+    /// <summary>
     /// The Proxmox node the given Vm currently runs on, or null if it is not a Proxmox Vm. Also
     /// refreshes the stored node, which goes stale when a Vm is migrated.
     /// </summary>
@@ -261,6 +268,8 @@ public partial class ProxmoxService : IProxmoxService
 
         IEnumerable<VmNetwork> networks;
         var hasCdromDrive = false;
+        var agentEnabled = false;
+        string parent;
 
         if (info.Type == ProxmoxVmType.QEMU)
         {
@@ -270,12 +279,15 @@ public partial class ProxmoxService : IProxmoxService
             // The same helper MountIso selects from, so what this reports and what a mount can find
             // cannot disagree.
             hasCdromDrive = GetCdromDrives(config).Count > 0;
+            agentEnabled = IsAgentEnabled(config.Agent);
+            parent = config.Parent;
         }
         else
         {
-            // An LXC container has no optical drive, so hasCdromDrive stays false.
+            // An LXC container has no optical drive and no guest agent, so both stay false.
             var containerConfig = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.GetAsync(true);
             networks = containerConfig.Networks ?? [];
+            parent = containerConfig.Parent;
         }
 
         return new ProxmoxVmConfigSummary(
@@ -284,7 +296,11 @@ public partial class ProxmoxService : IProxmoxService
                     !string.IsNullOrWhiteSpace(network.Id) &&
                     !string.IsNullOrWhiteSpace(network.Bridge))
                 .ToDictionary(network => network.Id, network => network.Bridge),
-            hasCdromDrive);
+            hasCdromDrive)
+        {
+            CurrentSnapshot = string.IsNullOrWhiteSpace(parent) ? null : parent,
+            AgentEnabled = agentEnabled,
+        };
     }
 
     public async Task ChangeNetwork(
@@ -856,6 +872,19 @@ public partial class ProxmoxService : IProxmoxService
 
         return ProxmoxExtensions.GetField(ProxmoxExtensions.GetField(result.Response, "data"), "content")?.ToString()
             ?? string.Empty;
+    }
+
+    public async Task<bool> IsGuestAgentRunning(ProxmoxVmInfo info)
+    {
+        if (info.Type != ProxmoxVmType.QEMU)
+            return false;
+
+        var result = await WithAgentTimeout(
+            () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Ping.Ping(),
+            info,
+            "QGA ping");
+
+        return result?.IsSuccessStatusCode == true;
     }
 
     public async Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content)

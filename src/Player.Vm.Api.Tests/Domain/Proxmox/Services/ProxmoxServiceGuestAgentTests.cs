@@ -779,6 +779,60 @@ public class ProxmoxServiceGuestAgentTests
 
     #endregion
 
+    #region IsGuestAgentRunning
+
+    private const string Ping = "/agent/ping";
+
+    // A ping the agent answers is a running agent. POST, as PVE's agent commands are.
+    [Fact]
+    public async Task IsGuestAgentRunning_WhenThePingIsAnswered_IsTrue()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"POST {FakeProxmoxCluster.VmPath(info, Ping)}", """{"result":{}}""");
+
+        Assert.True(await cluster.Service().IsGuestAgentRunning(info));
+        Assert.Equal([FakeProxmoxCluster.VmPath(info, Ping)], cluster.Http.Paths);
+    }
+
+    // Every way the ping can fail is false rather than an exception: the answer feeds a response field,
+    // and an agent that is not there is a normal state of a guest, not an error.
+    [Fact]
+    public async Task IsGuestAgentRunning_WhenTheAgentIsNotRunning_IsFalse()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Http.AnswersJson(
+            $"POST {FakeProxmoxCluster.VmPath(info, Ping)}",
+            """{"data":null,"message":"QEMU guest agent is not running\n"}""",
+            HttpStatusCode.InternalServerError);
+
+        Assert.False(await cluster.Service().IsGuestAgentRunning(info));
+    }
+
+    [Fact]
+    public async Task IsGuestAgentRunning_WhenThePingFailsInTransport_IsFalse()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Http.Throws($"POST {FakeProxmoxCluster.VmPath(info, Ping)}");
+
+        Assert.False(await cluster.Service().IsGuestAgentRunning(info));
+    }
+
+    // A container has no guest agent, so it is not asked.
+    [Fact]
+    public async Task IsGuestAgentRunning_ForAContainer_IsFalseWithoutAsking()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, ProxmoxVmType.LXC);
+
+        Assert.False(await cluster.Service().IsGuestAgentRunning(info));
+        Assert.Empty(cluster.Http.Sent);
+    }
+
+    #endregion
+
     #region EnsureQemu
 
     // The guest agent is a QEMU feature - an LXC container has no QGA at all - so all four methods refuse a

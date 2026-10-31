@@ -762,6 +762,30 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     /// With nothing registered there is nothing to choose between, and the UI reads this flag to decide
     /// whether to offer the control at all.
     /// </summary>
+    /// <summary>
+    /// The guest-agent and snapshot fields reach the wire under the camelCase names the console client is
+    /// generated against.
+    /// </summary>
+    [Fact]
+    public async Task Get_ReportsGuestAgentAndSnapshotStateUnderTheirWireNames()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.GetVmConfigSummary(Arg.Any<ProxmoxVmInfo>(), Arg.Any<CancellationToken>())
+            .Returns(new ProxmoxVmConfigSummary(new() { ["net0"] = "vmbr0" }, true)
+            {
+                AgentEnabled = true,
+                CurrentSnapshot = "before-patching",
+            });
+        Factory.Proxmox.IsGuestAgentRunning(TheVm).Returns(true);
+
+        var response = await RootClient.GetAsync(Route(vm.Id), Ct);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
+
+        Assert.True(body.RootElement.GetProperty("guestAgentRunning").GetBoolean());
+        Assert.True(body.RootElement.GetProperty("hasSnapshot").GetBoolean());
+        Assert.Equal("before-patching", body.RootElement.GetProperty("currentSnapshot").GetString());
+    }
+
     [Fact]
     public async Task Get_WithNoNetworksRegistered_ReportsTheNicConfigurationAsUnavailable()
     {

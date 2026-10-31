@@ -118,7 +118,13 @@ namespace Player.Vm.Api.Features.Proxmox
                 // produce a 400 once the picker had already been filled in.
                 CanMountIso = _isoProviderEnabled
                     && vm.ProxmoxVmInfo.Type == ProxmoxVmType.QEMU
-                    && config.HasCdromDrive
+                    && config.HasCdromDrive,
+                // Pinged only where the config turns the agent on: PVE refuses the ping otherwise, and
+                // the answer could only be false.
+                GuestAgentRunning = config.AgentEnabled
+                    && await _proxmoxService.IsGuestAgentRunning(vm.ProxmoxVmInfo),
+                HasSnapshot = config.CurrentSnapshot != null,
+                CurrentSnapshot = config.CurrentSnapshot,
             };
         }
     }

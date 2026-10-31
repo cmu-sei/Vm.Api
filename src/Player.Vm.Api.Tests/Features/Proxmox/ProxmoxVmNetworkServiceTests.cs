@@ -103,4 +103,62 @@ public class ProxmoxVmNetworkServiceTests
     {
         Assert.False(await CanMountIso(ProxmoxVmType.QEMU, hasCdromDrive: true, isoProviderEnabled: false));
     }
+    private static async Task<(ProxmoxVirtualMachine Response, IProxmoxService Proxmox)> Respond(
+        ProxmoxVmConfigSummary summary, bool pingAnswers = true)
+    {
+        var vm = Vm(ProxmoxVmType.QEMU);
+
+        var proxmox = Substitute.For<IProxmoxService>();
+        proxmox.GetVmConfigSummary(vm.ProxmoxVmInfo, Arg.Any<CancellationToken>()).Returns(summary);
+        proxmox.IsGuestAgentRunning(vm.ProxmoxVmInfo).Returns(pingAnswers);
+
+        var service = new ProxmoxVmNetworkService(
+            Substitute.For<IViewService>(),
+            Substitute.For<INetworkService>(),
+            proxmox,
+            new ProxmoxOptions { Host = "pve.example.test" },
+            [IsoProvider(true)]);
+
+        var response = await service.ToResponse(
+            vm,
+            new ProxmoxNetworkPermissions(ViewId, new EffectiveNetworkPermission()),
+            CancellationToken.None);
+
+        return (response, proxmox);
+    }
+
+    // GuestAgentRunning is the ping's answer where the config turns the agent on.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GuestAgentRunning_IsWhatThePingSays_WhenTheAgentIsEnabled(bool pingAnswers)
+    {
+        var (response, _) = await Respond(
+            new ProxmoxVmConfigSummary([], false) { AgentEnabled = true }, pingAnswers);
+
+        Assert.Equal(pingAnswers, response.GuestAgentRunning);
+    }
+
+    // Where the config does not enable the agent the answer can only be false, so there is no ping - which
+    // would otherwise be paid on every Get, network change and ISO mount response.
+    [Fact]
+    public async Task GuestAgentRunning_IsFalseWithoutAPing_WhenTheAgentIsNotEnabled()
+    {
+        var (response, proxmox) = await Respond(new ProxmoxVmConfigSummary([], false) { AgentEnabled = false });
+
+        Assert.False(response.GuestAgentRunning);
+        await proxmox.DidNotReceive().IsGuestAgentRunning(Arg.Any<ProxmoxVmInfo>());
+    }
+
+    // The snapshot fields come from the same live config read.
+    [Theory]
+    [InlineData("before-patching", true)]
+    [InlineData(null, false)]
+    public async Task HasSnapshotAndCurrentSnapshot_ComeFromTheConfigsParent(string parent, bool hasSnapshot)
+    {
+        var (response, _) = await Respond(new ProxmoxVmConfigSummary([], false) { CurrentSnapshot = parent });
+
+        Assert.Equal(hasSnapshot, response.HasSnapshot);
+        Assert.Equal(parent, response.CurrentSnapshot);
+    }
 }

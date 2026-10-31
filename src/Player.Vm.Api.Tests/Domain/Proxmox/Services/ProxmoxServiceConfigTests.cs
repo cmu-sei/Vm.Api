@@ -75,6 +75,39 @@ public class ProxmoxServiceConfigTests
         Assert.Equal("?current=1", cluster.Request(HttpMethod.Get, config).Query);
     }
 
+    // The same single read also says which snapshot the Vm is running from and whether its config turns
+    // the guest agent on - the two facts the console needs to offer Revert and gate the agent-backed menus.
+    [Theory]
+    [InlineData("""{"agent":"1","parent":"snap1"}""", true, "snap1")]
+    [InlineData("""{"agent":"enabled=0"}""", false, null)]
+    [InlineData("{}", false, null)]
+    public async Task GetVmConfigSummary_ReportsTheCurrentSnapshotAndWhetherTheAgentIsEnabled(
+        string configJson, bool agentEnabled, string currentSnapshot)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", configJson);
+
+        var summary = await cluster.Service().GetVmConfigSummary(info, Ct);
+
+        Assert.Equal(agentEnabled, summary.AgentEnabled);
+        Assert.Equal(currentSnapshot, summary.CurrentSnapshot);
+    }
+
+    // A container has a parent like a VM does, but never a guest agent.
+    [Fact]
+    public async Task GetVmConfigSummary_OnAContainer_ReportsItsSnapshotAndNoAgent()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, ProxmoxVmType.LXC);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"parent":"ct-snap","agent":"1"}""");
+
+        var summary = await cluster.Service().GetVmConfigSummary(info, Ct);
+
+        Assert.False(summary.AgentEnabled);
+        Assert.Equal("ct-snap", summary.CurrentSnapshot);
+    }
+
     // Every adapter the Vm has, keyed by the adapter the caller then changes - so a multi-homed Vm shows
     // one entry per NIC rather than whichever one happened to be parsed first.
     [Fact]

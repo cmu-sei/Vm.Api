@@ -22,4 +22,15 @@ public class ProxmoxVirtualMachine
     // where the deployment has configured Proxmox ISO storage. Lets the UI hide the Mount ISO control
     // rather than offer one that is guaranteed to 400.
     public bool CanMountIso { get; set; }
+
+    // Whether a QEMU guest agent is answering right now (agent/ping), the counterpart of vSphere's
+    // VMware Tools status. IP addresses, guest file transfer and guest processes all need it. Always
+    // false for LXC, and false when the Vm's config does not enable the agent.
+    public bool GuestAgentRunning { get; set; }
+
+    // Whether the Vm has a snapshot to revert to, read live from its config.
+    public bool HasSnapshot { get; set; }
+
+    // The snapshot the Vm is running from - what actions/revert reverts to - or null when it has none.
+    public string CurrentSnapshot { get; set; }
 }
