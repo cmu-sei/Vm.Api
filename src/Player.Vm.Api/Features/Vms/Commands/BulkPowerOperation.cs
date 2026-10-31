@@ -104,13 +104,6 @@ namespace Player.Vm.Api.Features.Vms
                         continue;
                     }
 
-                    // Revert needs HasSnapshot, which nothing populates for Proxmox yet.
-                    if (vm.Type == VmType.Proxmox && request.Operation == PowerOperation.Revert)
-                    {
-                        errorsDict.Add(id, "Unsupported Operation");
-                        continue;
-                    }
-
                     if (!await TryCanAccessVm(vm, cancellationToken))
                     {
                         errorsDict.Add(id, "Unauthorized");
@@ -123,6 +116,8 @@ namespace Player.Vm.Api.Features.Vms
                         continue;
                     }
 
+                    // HasSnapshot is kept by both pollers: ConnectionService for vSphere and
+                    // ProxmoxStateService (from the config's parent snapshot) for Proxmox.
                     if (request.Operation == PowerOperation.Revert && !vm.HasSnapshot)
                     {
                         errorsDict.Add(id, "Virtual Machine does not have a snapshot");

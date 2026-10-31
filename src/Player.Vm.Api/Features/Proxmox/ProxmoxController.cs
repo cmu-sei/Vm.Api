@@ -242,6 +242,21 @@ public class ProxmoxController : Controller
     }
 
     /// <summary>
+    /// Revert a proxmox virtual machine to its current snapshot (the snapshot it is running from)
+    /// </summary>
+    /// <remarks>
+    /// Answers 400 when the virtual machine has no snapshot.
+    /// </remarks>
+    [HttpPost("vms/proxmox/{id}/actions/revert")]
+    [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
+    [SwaggerOperation(OperationId = "revertProxmoxVirtualMachine")]
+    public async Task<IActionResult> Revert([FromRoute] Guid id)
+    {
+        var result = await _mediator.Send(new Revert.Command { Id = id });
+        return Json(result);
+    }
+
+    /// <summary>
     /// Delete a snapshot of a proxmox virtual machine
     /// </summary>
     [HttpDelete("vms/proxmox/{id}/actions/snapshots/{name}")]

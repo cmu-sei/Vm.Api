@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.CSharp.RuntimeBinder;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Proxmox.Services;
+using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Tests.Support;
 
 namespace Player.Vm.Api.Tests.Domain.Proxmox.Services;
@@ -418,6 +419,62 @@ public class ProxmoxServiceSnapshotTests
 
         await service.RevertSnapshot(info, Snap);
         cluster.State.Received(1).CheckState();
+    }
+
+    #endregion
+
+    #region RevertToCurrentSnapshot
+
+    // The snapshot to revert to is the one the config names as the running state's parent, read first and
+    // then rolled back on its own route - for each machine type through its own config and snapshot routes.
+    [Theory]
+    [InlineData(ProxmoxVmType.QEMU)]
+    [InlineData(ProxmoxVmType.LXC)]
+    public async Task RevertToCurrentSnapshot_RollsBackTheSnapshotTheConfigNamesAsParent(ProxmoxVmType type)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, type);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"parent":"before-patching"}""");
+        cluster.Accepts($"POST {SnapshotPath(info)}/before-patching/rollback");
+
+        var reported = await cluster.Service().RevertToCurrentSnapshot(info);
+
+        Assert.Equal($"vmid {Vmid} reverted to its current snapshot", reported);
+        Assert.Equal(
+            [FakeProxmoxCluster.VmPath(info, "/config"), $"{SnapshotPath(info)}/before-patching/rollback"],
+            cluster.Http.Paths);
+        cluster.State.Received(1).CheckState();
+    }
+
+    // No parent is no snapshot to revert to, which is the caller's problem rather than the server's - a 400
+    // with a sentence a user can read - and nothing is rolled back.
+    [Fact]
+    public async Task RevertToCurrentSnapshot_WithNoSnapshot_IsABadRequestAndRollsNothingBack()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"name":"vm"}""");
+
+        var ex = await Assert.ThrowsAsync<BadRequestException>(
+            () => cluster.Service().RevertToCurrentSnapshot(info));
+
+        Assert.Equal("This virtual machine has no snapshot to revert to.", ex.Message);
+        Assert.DoesNotContain(cluster.Http.Sent, x => x.Method == HttpMethod.Post);
+        cluster.State.DidNotReceive().CheckState();
+    }
+
+    // A refused config read is reported as the revert failing, with what Proxmox said.
+    [Fact]
+    public async Task RevertToCurrentSnapshot_WhenTheConfigCannotBeRead_ThrowsWithProxmoxsReason()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Rejects($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", "no such VM");
+
+        var ex = await Assert.ThrowsAsync<Exception>(() => cluster.Service().RevertToCurrentSnapshot(info));
+
+        Assert.StartsWith($"RevertToCurrentSnapshot vmid={Vmid} failed: ", ex.Message);
+        Assert.Contains("no such VM", ex.Message);
     }
 
     #endregion

@@ -500,22 +500,36 @@ public class BulkPowerOperationEndpointTests(DatabaseFixture fixture, VmAppFacto
     }
 
     /// <summary>
-    /// Revert is refused for a Proxmox Vm outright, and before the snapshot gate rather than by it:
-    /// nothing populates <c>HasSnapshot</c> for Proxmox, so every Proxmox Vm would otherwise be reported
-    /// as having no snapshot - a true statement about the column and a misleading one about the Vm, which
-    /// may well have several.
+    /// Revert reaches the Proxmox driver for a Proxmox Vm with a snapshot, through the same snapshot gate
+    /// as vSphere: the state poller now keeps <c>HasSnapshot</c> for Proxmox too.
     /// </summary>
     [Fact]
-    public async Task Revert_ForAProxmoxVm_IsUnsupported()
+    public async Task Revert_ForAProxmoxVmWithASnapshot_IsSubmittedToProxmox()
     {
-        var vm = TestData.ProxmoxVm();
+        var vm = TestData.ProxmoxVm(hasSnapshot: true);
+        await Seed(vm);
+
+        ProxmoxReturns(PowerOperation.Revert, new Dictionary<Guid, string> { [vm.Id] = string.Empty });
+
+        var result = await Post("revert", vm.Id);
+
+        Assert.Empty(result.Errors);
+        Assert.Equal([vm.Id], result.Accepted);
+        await Factory.Proxmox.Received(1).BulkPowerOperation(
+            Arg.Is<Guid[]>(x => x.SequenceEqual(new[] { vm.Id })), PowerOperation.Revert);
+    }
+
+    /// <summary>A Proxmox Vm with no snapshot gets the same answer a vSphere one does.</summary>
+    [Fact]
+    public async Task Revert_ForAProxmoxVmWithoutASnapshot_ReportsIt()
+    {
+        var vm = TestData.ProxmoxVm(hasSnapshot: false);
         await Seed(vm);
 
         var result = await Post("revert", vm.Id);
 
-        Assert.Equal("Unsupported Operation", result.Errors.For(vm.Id));
+        Assert.Equal("Virtual Machine does not have a snapshot", result.Errors.For(vm.Id));
         Assert.Empty(result.Accepted);
-
         await Factory.Proxmox.DidNotReceive().BulkPowerOperation(
             Arg.Any<Guid[]>(), Arg.Any<PowerOperation>());
     }

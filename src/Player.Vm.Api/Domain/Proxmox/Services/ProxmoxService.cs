@@ -97,6 +97,13 @@ public interface IProxmoxService
     Task<List<ProxmoxSnapshot>> GetSnapshots(ProxmoxVmInfo info);
     Task<string> CreateSnapshot(ProxmoxVmInfo info, string snapshotName, string description, bool includeRam);
     Task<string> RevertSnapshot(ProxmoxVmInfo info, string snapshotName);
+
+    /// <summary>
+    /// Reverts the Vm to the snapshot it is currently running from (its config's <c>parent</c>), the
+    /// Proxmox counterpart of vSphere's revert to current snapshot. Throws a
+    /// <see cref="BadRequestException"/> when the Vm has no snapshot.
+    /// </summary>
+    Task<string> RevertToCurrentSnapshot(ProxmoxVmInfo info);
     Task<string> DeleteSnapshot(ProxmoxVmInfo info, string snapshotName);
 }
 
@@ -548,9 +555,16 @@ public partial class ProxmoxService : IProxmoxService
     /// Submits a power operation and returns as soon as Proxmox accepts it, without waiting for the
     /// resulting task to finish. Callers that need the outcome pass the Result to WaitAndThrow.
     /// </summary>
+    /// <remarks>
+    /// Revert is here, rather than only beside the snapshot methods, so the single-Vm route and the bulk
+    /// path share one implementation of "revert to current".
+    /// </remarks>
     private async Task<Result> SubmitPowerOperation(ProxmoxVmInfo info, PowerOperation operation)
     {
         var lxc = info.Type == ProxmoxVmType.LXC;
+
+        if (operation == PowerOperation.Revert)
+            return await SubmitRevertToCurrentSnapshot(info);
 
         return operation switch
         {
@@ -724,6 +738,40 @@ public partial class ProxmoxService : IProxmoxService
         await _pveClient.WaitAndThrow(result, $"RevertSnapshot vmid={info.Id} name={snapshotName}");
         _proxmoxStateService.CheckState();
         return $"snapshot {snapshotName} restored on vmid {info.Id}";
+    }
+
+    public async Task<string> RevertToCurrentSnapshot(ProxmoxVmInfo info)
+    {
+        var result = await SubmitPowerOperation(info, PowerOperation.Revert);
+
+        await _pveClient.WaitAndThrow(result, $"RevertToCurrentSnapshot vmid={info.Id}");
+        _proxmoxStateService.CheckState();
+        return $"vmid {info.Id} reverted to its current snapshot";
+    }
+
+    /// <summary>
+    /// Reads the snapshot the Vm is running from and submits a rollback to it, without waiting for the
+    /// rollback task.
+    /// </summary>
+    /// <remarks>
+    /// A refused config read is returned as the Result rather than thrown, so a caller handling a failed
+    /// submit - the bulk path's stale-node retry - treats it like any other refusal.
+    /// </remarks>
+    private async Task<Result> SubmitRevertToCurrentSnapshot(ProxmoxVmInfo info)
+    {
+        var config = await ReadConfig(info);
+
+        if (!config.IsSuccessStatusCode)
+            return config;
+
+        var snapshot = ReadParent(ProxmoxExtensions.GetField(config.Response, "data"));
+
+        if (snapshot == null)
+            throw new BadRequestException("This virtual machine has no snapshot to revert to.");
+
+        return info.Type == ProxmoxVmType.LXC
+            ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot[snapshot].Rollback.Rollback()
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshot].Rollback.Rollback();
     }
 
     public async Task<string> DeleteSnapshot(ProxmoxVmInfo info, string snapshotName)

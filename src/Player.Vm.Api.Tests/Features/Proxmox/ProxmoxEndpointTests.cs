@@ -127,6 +127,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         { "POST", "/actions/upload-file" },
         { "POST", "/actions/snapshots" },
         { "POST", "/actions/snapshots/snap-1/revert" },
+        { "POST", "/actions/revert" },
         { "DELETE", "/actions/snapshots/snap-1" },
     };
 
@@ -301,6 +302,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [InlineData("GET", "/snapshots", "You do not have permission to view snapshots for this vm.")]
     [InlineData("POST", "/actions/snapshots", "You do not have permission to manage snapshots for this vm.")]
     [InlineData("POST", "/actions/snapshots/snap-1/revert", "You do not have permission to revert this vm.")]
+    [InlineData("POST", "/actions/revert", "You do not have permission to revert this vm.")]
     [InlineData("DELETE", "/actions/snapshots/snap-1", "You do not have permission to manage snapshots for this vm.")]
     public async Task SnapshotRoutes_WithoutTheRevertPermission_Is403(
         string method, string suffix, string message)
@@ -543,6 +545,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [InlineData("GET", "/snapshots", AppSystemPermission.RevertVms)]
     [InlineData("POST", "/actions/snapshots", AppSystemPermission.RevertVms)]
     [InlineData("POST", "/actions/snapshots/snap-1/revert", AppSystemPermission.RevertVms)]
+    [InlineData("POST", "/actions/revert", AppSystemPermission.RevertVms)]
     [InlineData("DELETE", "/actions/snapshots/snap-1", AppSystemPermission.RevertVms)]
     [InlineData("POST", "/actions/read-guest-file", AppSystemPermission.DownloadVmFiles)]
     [InlineData("POST", "/actions/upload-file", AppSystemPermission.UploadVmFiles)]
@@ -567,6 +570,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [InlineData("GET", "/snapshots", "You do not have permission to view snapshots for this vm.")]
     [InlineData("POST", "/actions/snapshots", "You do not have permission to manage snapshots for this vm.")]
     [InlineData("POST", "/actions/snapshots/snap-1/revert", "You do not have permission to revert this vm.")]
+    [InlineData("POST", "/actions/revert", "You do not have permission to revert this vm.")]
     [InlineData("DELETE", "/actions/snapshots/snap-1", "You do not have permission to manage snapshots for this vm.")]
     [InlineData("POST", "/actions/read-guest-file", "You do not have permission to download files from this vm.")]
     [InlineData("POST", "/actions/upload-file", "You do not have permission to upload files to this vm.")]
@@ -710,6 +714,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [InlineData("POST", "/actions/reboot", true)]
     [InlineData("POST", "/actions/shutdown", true)]
     [InlineData("POST", "/actions/snapshots/snap-1/revert", true)]
+    [InlineData("POST", "/actions/revert", true)]
     [InlineData("POST", "/actions/snapshots", false)]
     [InlineData("DELETE", "/actions/snapshots/snap-1", false)]
     [InlineData("POST", "/actions/read-guest-file", false)]
@@ -874,6 +879,36 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("before patch", ProxmoxCall(serviceMethod)[1]);
+    }
+
+    /// <summary>
+    /// Revert to the current snapshot hands the cluster the Vm that was asked for, and relays what it said.
+    /// </summary>
+    [Fact]
+    public async Task Revert_RevertsTheVmToItsCurrentSnapshot()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.RevertToCurrentSnapshot(TheVm).Returns("vmid 101 reverted to its current snapshot");
+
+        var response = await RootClient.PostAsync($"{Route(vm.Id)}/actions/revert", null, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("\"vmid 101 reverted to its current snapshot\"", await response.Content.ReadAsStringAsync(Ct));
+    }
+
+    /// <summary>A Vm with no snapshot is a 400 carrying the driver's sentence, which the UI shows as is.</summary>
+    [Fact]
+    public async Task Revert_ForAVmWithNoSnapshot_Is400()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.RevertToCurrentSnapshot(TheVm)
+            .ThrowsAsync(new Player.Vm.Api.Infrastructure.Exceptions.BadRequestException(
+                "This virtual machine has no snapshot to revert to."));
+
+        var response = await RootClient.PostAsync($"{Route(vm.Id)}/actions/revert", null, Ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("This virtual machine has no snapshot to revert to.", await Title(response));
     }
 
     #endregion
