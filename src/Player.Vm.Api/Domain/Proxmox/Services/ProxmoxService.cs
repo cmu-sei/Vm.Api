@@ -82,6 +82,13 @@ public interface IProxmoxService
     Task<GuestProcessResult> RunGuestProcess(ProxmoxVmInfo info, string command, string arguments, TimeSpan timeout);
     Task<long> RunGuestProcessFast(ProxmoxVmInfo info, string command, string arguments);
     Task<string> ReadGuestFile(ProxmoxVmInfo info, string guestFilePath);
+
+    /// <summary>
+    /// Reads a file out of a QEMU guest as raw bytes, through agent/file-read. Throws a
+    /// <see cref="BadRequestException"/> for an LXC container, a file the agent cannot read, or a file
+    /// over PVE's 16 MiB read limit.
+    /// </summary>
+    Task<byte[]> DownloadGuestFile(ProxmoxVmInfo info, string guestFilePath);
     Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content);
 
     /// <summary>
@@ -886,6 +893,61 @@ public partial class ProxmoxService : IProxmoxService
 
         return result?.IsSuccessStatusCode == true;
     }
+
+    /// <summary>The most agent/file-read returns in one call; a larger file comes back truncated.</summary>
+    internal const string PveFileReadLimit = "16 MiB";
+
+    public async Task<byte[]> DownloadGuestFile(ProxmoxVmInfo info, string guestFilePath)
+    {
+        if (info.Type != ProxmoxVmType.QEMU)
+            throw new BadRequestException("Downloading a file is only supported on QEMU virtual machines.");
+
+        // decode=0 has PVE forward the agent's base64 as is, so binary content survives the JSON response.
+        var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath, decode: false);
+        var base64 = true;
+
+        if (!result.IsSuccessStatusCode && RejectsParameter(result, "decode"))
+        {
+            // PVE before 9 has no decode parameter and rejects the request outright. It always decodes,
+            // and its JSON encoder writes each byte of the decoded content as the character of the same
+            // code point, so Latin-1 recovers the bytes.
+            result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath);
+            base64 = false;
+        }
+
+        if (!result.IsSuccessStatusCode)
+            throw new BadRequestException($"Could not read {guestFilePath} from the virtual machine: {result.GetErrorMessage()}");
+
+        var data = ProxmoxExtensions.GetField(result.Response, "data");
+
+        if (IsTrue(ProxmoxExtensions.GetField(data, "truncated")))
+            throw new BadRequestException($"{guestFilePath} exceeds the Proxmox read limit ({PveFileReadLimit}).");
+
+        var content = ProxmoxExtensions.GetField(data, "content")?.ToString() ?? string.Empty;
+
+        if (!base64)
+            return System.Text.Encoding.Latin1.GetBytes(content);
+
+        try
+        {
+            return Convert.FromBase64String(content);
+        }
+        catch (FormatException)
+        {
+            throw new Exception($"QGA file-read for vmid={info.Id} path={guestFilePath} returned content that is not base64");
+        }
+    }
+
+    /// <summary>Whether PVE refused a call because of the named parameter (its schema validation).</summary>
+    private static bool RejectsParameter(Result result, string parameter) =>
+        result.StatusCode == HttpStatusCode.BadRequest &&
+        ProxmoxExtensions.GetField(result.Response, "errors") is IDictionary<string, object> errors &&
+        errors.ContainsKey(parameter);
+
+    /// <summary>A PVE boolean, which arrives as 1/0, true/false or their strings.</summary>
+    private static bool IsTrue(object value) =>
+        value?.ToString() is { } text &&
+        (text == "1" || string.Equals(text, "true", StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// The longest <c>content</c> PVE's agent/file-write accepts (its schema's maxLength, 60 KiB).

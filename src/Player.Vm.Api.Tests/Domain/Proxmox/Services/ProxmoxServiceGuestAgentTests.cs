@@ -645,6 +645,101 @@ public class ProxmoxServiceGuestAgentTests
 
     #endregion
 
+    #region DownloadGuestFile
+
+    // decode=0 has PVE forward the agent's base64 untouched, which is what lets bytes that are not text
+    // survive a JSON response; they are decoded here.
+    [Fact]
+    public async Task DownloadGuestFile_AsksForBase64AndDecodesItToTheFilesBytes()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        byte[] bytes = [0x00, 0xFF, 0xFE, 0x80, 0x0A];
+        cluster.Answers(
+            $"GET {FakeProxmoxCluster.VmPath(info, FileRead)}",
+            $$"""{"content":"{{Convert.ToBase64String(bytes)}}","bytes-read":5}""");
+
+        Assert.Equal(bytes, await cluster.Service().DownloadGuestFile(info, "/tmp/f.bin"));
+        Assert.Equal(
+            "?file=%2ftmp%2ff.bin&decode=0",
+            cluster.Request(HttpMethod.Get, FakeProxmoxCluster.VmPath(info, FileRead)).Query);
+    }
+
+    // PVE reads at most 16 MiB and flags a longer file as truncated; handing back the first 16 MiB as if it
+    // were the file would be worse than refusing.
+    [Theory]
+    [InlineData("1")]
+    [InlineData("true")]
+    public async Task DownloadGuestFile_WhenPveTruncatedTheRead_IsABadRequestNamingTheLimit(string truncated)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers(
+            $"GET {FakeProxmoxCluster.VmPath(info, FileRead)}",
+            $$"""{"content":"AAAA","bytes-read":16777216,"truncated":{{truncated}}}""");
+
+        var ex = await Assert.ThrowsAsync<BadRequestException>(
+            () => cluster.Service().DownloadGuestFile(info, "/tmp/big.iso"));
+
+        Assert.Equal("/tmp/big.iso exceeds the Proxmox read limit (16 MiB).", ex.Message);
+    }
+
+    // A PVE that predates the decode parameter rejects it in schema validation. The read is made again
+    // without it, and the content - which that PVE has already decoded - is taken a byte per character.
+    [Fact]
+    public async Task DownloadGuestFile_OnAPveWithoutTheDecodeParameter_ReadsAgainWithoutIt()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        var path = FakeProxmoxCluster.VmPath(info, FileRead);
+        cluster.Rejects(
+            $"GET {path}",
+            "property is not defined in schema and the schema does not allow additional properties",
+            field: "decode",
+            status: HttpStatusCode.BadRequest,
+            once: true);
+        cluster.Answers($"GET {path}", """{"content":"h\u00e9\u00ff"}""");
+
+        Assert.Equal(
+            new byte[] { (byte)'h', 0xE9, 0xFF },
+            await cluster.Service().DownloadGuestFile(info, "/tmp/f.txt"));
+
+        var queries = cluster.Requests(HttpMethod.Get, path).Select(x => x.Query).ToArray();
+        Assert.Equal(["?file=%2ftmp%2ff.txt&decode=0", "?file=%2ftmp%2ff.txt"], queries);
+    }
+
+    // Any other refusal - no such file, no agent - is the caller's to act on, so a 400 carrying what PVE said.
+    [Fact]
+    public async Task DownloadGuestFile_WhenTheAgentRefuses_IsABadRequestWithTheReason()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Rejects($"GET {FakeProxmoxCluster.VmPath(info, FileRead)}", "open failed: No such file");
+
+        var ex = await Assert.ThrowsAsync<BadRequestException>(
+            () => cluster.Service().DownloadGuestFile(info, "/tmp/missing"));
+
+        Assert.StartsWith("Could not read /tmp/missing from the virtual machine: ", ex.Message);
+        Assert.Contains("open failed: No such file", ex.Message);
+        Assert.Single(cluster.Requests(HttpMethod.Get, FakeProxmoxCluster.VmPath(info, FileRead)));
+    }
+
+    // A container has no guest agent; that is a property of the request, so a 400 like MountIso's.
+    [Fact]
+    public async Task DownloadGuestFile_ForAContainer_IsABadRequestWithoutAsking()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, ProxmoxVmType.LXC);
+
+        var ex = await Assert.ThrowsAsync<BadRequestException>(
+            () => cluster.Service().DownloadGuestFile(info, "/tmp/f.txt"));
+
+        Assert.Equal("Downloading a file is only supported on QEMU virtual machines.", ex.Message);
+        Assert.Empty(cluster.Http.Sent);
+    }
+
+    #endregion
+
     #region UploadFileToGuest
 
     // A POST carrying the content and the destination in the body. The content goes out base64-encoded

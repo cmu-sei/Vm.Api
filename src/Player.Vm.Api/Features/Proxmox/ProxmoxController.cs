@@ -192,6 +192,24 @@ public class ProxmoxController : Controller
     }
 
     /// <summary>
+    /// Download a file from the guest OS of a proxmox virtual machine via qemu-guest-agent, as raw bytes
+    /// </summary>
+    /// <remarks>
+    /// Any file content, binary included, up to Proxmox's 16 MiB read limit; a larger file is a 400. The
+    /// response's Content-Disposition carries the file name from the path.
+    /// </remarks>
+    /// <param name="id">The virtual machine.</param>
+    /// <param name="path">The file's path in the guest.</param>
+    [HttpGet("vms/proxmox/{id}/actions/download-file")]
+    [Produces("application/octet-stream")]
+    [ProducesResponseType(typeof(FileResult), (int)HttpStatusCode.OK, "application/octet-stream")]
+    [SwaggerOperation(OperationId = "downloadFileFromProxmoxVirtualMachine")]
+    public async Task<IActionResult> DownloadFile([FromRoute] Guid id, [FromQuery] string path)
+    {
+        return await _mediator.Send(new DownloadFile.Query { Id = id, Path = path });
+    }
+
+    /// <summary>
     /// Upload a file to a proxmox virtual machine via qemu-guest-agent (limited to 45 KB per file)
     /// </summary>
     /// <remarks>

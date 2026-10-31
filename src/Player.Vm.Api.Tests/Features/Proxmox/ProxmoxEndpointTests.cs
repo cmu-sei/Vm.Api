@@ -99,6 +99,9 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Factory.Player.Caller(Root.Id).System.ExceptWith(NetworkPermissions);
         Factory.Proxmox.GetVmConfigSummary(Arg.Any<ProxmoxVmInfo>(), Arg.Any<CancellationToken>())
             .Returns(new ProxmoxVmConfigSummary(new() { ["net0"] = "vmbr0" }, true));
+
+        // A FileContentResult refuses null contents, which is what an unstubbed byte[] answers.
+        Factory.Proxmox.DownloadGuestFile(Arg.Any<ProxmoxVmInfo>(), Arg.Any<string>()).Returns([]);
     }
 
     #region The route table
@@ -124,6 +127,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         { "POST", "/actions/run-guest-process" },
         { "POST", "/actions/run-guest-process-fast" },
         { "POST", "/actions/read-guest-file" },
+        { "GET", "/actions/download-file?path=/tmp/f.bin" },
         { "POST", "/actions/upload-file" },
         { "POST", "/actions/snapshots" },
         { "POST", "/actions/snapshots/snap-1/revert" },
@@ -148,6 +152,39 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     #endregion
+
+    /// <summary>
+    /// console.ui's client is generated from the OpenAPI document, so the operation ids, the download's
+    /// binary response and the Vm's guest-agent and snapshot fields are part of the contract with it.
+    /// </summary>
+    [Fact]
+    public async Task TheOpenApiDocument_DescribesTheConsoleContract()
+    {
+        var response = await Client().GetAsync("/swagger/v1/swagger.json", Ct);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
+        var root = document.RootElement;
+        var paths = root.GetProperty("paths");
+
+        var revert = paths.GetProperty("/api/vms/proxmox/{id}/actions/revert").GetProperty("post");
+        Assert.Equal("revertProxmoxVirtualMachine", revert.GetProperty("operationId").GetString());
+
+        var download = paths.GetProperty("/api/vms/proxmox/{id}/actions/download-file").GetProperty("get");
+        Assert.Equal("downloadFileFromProxmoxVirtualMachine", download.GetProperty("operationId").GetString());
+        Assert.Contains(
+            download.GetProperty("parameters").EnumerateArray(),
+            x => x.GetProperty("name").GetString() == "path" && x.GetProperty("in").GetString() == "query");
+        var ok = download.GetProperty("responses").GetProperty("200").GetProperty("content");
+        Assert.Equal(
+            "binary",
+            ok.GetProperty("application/octet-stream").GetProperty("schema").GetProperty("format").GetString());
+
+        var vm = root.GetProperty("components").GetProperty("schemas")
+            .GetProperty("ProxmoxVirtualMachine").GetProperty("properties");
+        Assert.True(vm.TryGetProperty("guestAgentRunning", out _));
+        Assert.True(vm.TryGetProperty("hasSnapshot", out _));
+        Assert.True(vm.TryGetProperty("currentSnapshot", out _));
+    }
 
     #region The gate every route shares
 
@@ -548,6 +585,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [InlineData("POST", "/actions/revert", AppSystemPermission.RevertVms)]
     [InlineData("DELETE", "/actions/snapshots/snap-1", AppSystemPermission.RevertVms)]
     [InlineData("POST", "/actions/read-guest-file", AppSystemPermission.DownloadVmFiles)]
+    [InlineData("GET", "/actions/download-file?path=/tmp/f.bin", AppSystemPermission.DownloadVmFiles)]
     [InlineData("POST", "/actions/upload-file", AppSystemPermission.UploadVmFiles)]
     public async Task SnapshotAndGuestFileRoutes_are_allowed_for_a_caller_holding_exactly_their_system_permission_and_ViewVms(
         string method, string suffix, AppSystemPermission permission)
@@ -573,6 +611,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [InlineData("POST", "/actions/revert", "You do not have permission to revert this vm.")]
     [InlineData("DELETE", "/actions/snapshots/snap-1", "You do not have permission to manage snapshots for this vm.")]
     [InlineData("POST", "/actions/read-guest-file", "You do not have permission to download files from this vm.")]
+    [InlineData("GET", "/actions/download-file?path=/tmp/f.bin", "You do not have permission to download files from this vm.")]
     [InlineData("POST", "/actions/upload-file", "You do not have permission to upload files to this vm.")]
     public async Task SnapshotAndGuestFileRoutes_are_forbidden_for_a_caller_holding_only_the_system_ControlVms(
         string method, string suffix, string message)
@@ -1032,6 +1071,73 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         Assert.Equal("\"127.0.0.1 localhost\"", await response.Content.ReadAsStringAsync(Ct));
         Assert.Equal(path, ProxmoxCall(nameof(IProxmoxService.ReadGuestFile))[1]);
+    }
+
+    /// <summary>
+    /// Downloading a file asks for the same permission reading one does, and not the edit permission.
+    /// </summary>
+    [Fact]
+    public async Task DownloadFile_WithoutTheDownloadPermission_Is403()
+    {
+        var vm = await SeedProxmoxVm();
+        var response = await Send("GET", "/actions/download-file?path=/tmp/f.bin", vm.Id, await AllBut(AppViewPermission.DownloadVmFiles));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("You do not have permission to download files from this vm.", await Title(response));
+    }
+
+    /// <summary>
+    /// The file comes back as the raw bytes the driver read, as an octet stream named after the last
+    /// segment of the guest path - whichever separator the guest uses.
+    /// </summary>
+    [Theory]
+    [InlineData("/var/log/app data.bin", "app data.bin")]
+    [InlineData(@"C:\Users\student\notes.txt", "notes.txt")]
+    public async Task DownloadFile_ReturnsTheBytesAsAnAttachmentNamedAfterThePath(string path, string fileName)
+    {
+        var vm = await SeedProxmoxVm();
+        byte[] bytes = [0x00, 0xFF, 0x10, 0x80];
+        Factory.Proxmox.DownloadGuestFile(TheVm, path).Returns(bytes);
+
+        var response = await RootClient.GetAsync(
+            $"{Route(vm.Id)}/actions/download-file?path={Uri.EscapeDataString(path)}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/octet-stream", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(fileName, response.Content.Headers.ContentDisposition?.FileNameStar);
+        Assert.Equal(bytes, await response.Content.ReadAsByteArrayAsync(Ct));
+    }
+
+    /// <summary>No path is the caller's mistake, refused before the cluster is asked.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("?path=")]
+    [InlineData("?path=%20")]
+    public async Task DownloadFile_WithNoPath_Is400(string query)
+    {
+        var vm = await SeedProxmoxVm();
+
+        var response = await RootClient.GetAsync($"{Route(vm.Id)}/actions/download-file{query}", Ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("A guest file path is required.", await Title(response));
+        await Factory.Proxmox.DidNotReceive().DownloadGuestFile(Arg.Any<ProxmoxVmInfo>(), Arg.Any<string>());
+    }
+
+    /// <summary>The driver's refusals - the read limit among them - reach the caller as a 400 with its message.</summary>
+    [Fact]
+    public async Task DownloadFile_WhenTheFileIsOverTheReadLimit_Is400SayingSo()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.DownloadGuestFile(TheVm, "/tmp/big.iso")
+            .ThrowsAsync(new Player.Vm.Api.Infrastructure.Exceptions.BadRequestException(
+                "/tmp/big.iso exceeds the Proxmox read limit (16 MiB)."));
+
+        var response = await RootClient.GetAsync($"{Route(vm.Id)}/actions/download-file?path=/tmp/big.iso", Ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("/tmp/big.iso exceeds the Proxmox read limit (16 MiB).", await Title(response));
     }
 
     /// <summary>
