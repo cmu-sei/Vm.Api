@@ -31,6 +31,11 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
         // (~64 KiB per call), so this defaults to 60 KiB to stay safely under that ceiling.
         public int FileUploadMaxBytes { get; set; } = 61440;
 
+        // How long to wait on a guest-agent query made only to report status - agent/ping and the
+        // state poller's network-get-interfaces - before treating it as unanswered. PVE itself waits
+        // several seconds on an agent that is configured but not running in the guest.
+        public int GuestAgentTimeoutMilliseconds { get; set; } = 2000;
+
         // Interval, in milliseconds, between guest-agent exec-status polls while waiting for a
         // RunGuestProcess command to finish.
         public int GuestProcessPollMs { get; set; } = 500;

@@ -320,6 +320,14 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
             if (guestState != null)
             {
                 vm.HasSnapshot = guestState.HasSnapshot;
+
+                // Only on a change, so an unchanged list is not a Modified entry and an idle cluster
+                // stays silent.
+                if (guestState.IpAddresses != null &&
+                    !(vm.IpAddresses ?? []).SequenceEqual(guestState.IpAddresses))
+                {
+                    vm.IpAddresses = guestState.IpAddresses;
+                }
             }
         }
 

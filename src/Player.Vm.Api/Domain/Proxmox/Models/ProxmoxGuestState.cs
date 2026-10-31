@@ -20,5 +20,12 @@ namespace Player.Vm.Api.Domain.Proxmox.Models
         /// whenever a real snapshot lies under the running state.
         /// </summary>
         public bool HasSnapshot => !string.IsNullOrEmpty(CurrentSnapshot);
+
+        /// <summary>
+        /// The guest's addresses, loopback and link-local left out, in the bare form vSphere's are stored
+        /// in. Empty for a Vm that is off or whose guest agent is not configured or not running; null when
+        /// the guest did not answer in time, so the stored value stands.
+        /// </summary>
+        public string[] IpAddresses { get; init; }
     }
 }

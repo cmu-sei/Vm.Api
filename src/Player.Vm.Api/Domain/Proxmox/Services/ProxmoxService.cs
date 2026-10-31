@@ -56,8 +56,9 @@ public interface IProxmoxService
     Task<IEnumerable<NodeTask>> GetTasks();
 
     /// <summary>
-    /// Reads the per-Vm state the state poller keeps in the database beyond power state - currently the
-    /// snapshot the Vm is running from. Returns null when the Vm's config could not be read, so the
+    /// Reads the per-Vm state the state poller keeps in the database beyond power state: the snapshot
+    /// the Vm is running from, and its IP addresses (QEMU through the guest agent, LXC through the
+    /// container's interfaces). Returns null when the Vm's config could not be read, so the
     /// caller keeps what it had rather than clearing it.
     /// </summary>
     /// <remarks>
@@ -414,10 +415,205 @@ public partial class ProxmoxService : IProxmoxService
 
         var data = ProxmoxExtensions.GetField(config.Response, "data");
 
+        string[] ipAddresses = [];
+
+        if (running)
+        {
+            if (info.Type == ProxmoxVmType.LXC)
+            {
+                ipAddresses = await ReadContainerAddresses(info);
+            }
+            else if (IsAgentEnabled(ProxmoxExtensions.GetField(data, "agent")))
+            {
+                ipAddresses = await ReadAgentAddresses(info);
+            }
+        }
+
         return new ProxmoxGuestState
         {
             CurrentSnapshot = ReadParent(data),
+            IpAddresses = ipAddresses,
         };
+    }
+
+    /// <summary>
+    /// Whether a QEMU config's <c>agent</c> property turns the guest agent on. It is a property string -
+    /// <c>1</c>, <c>0</c>, or <c>enabled=1,fstrim_cloned_disks=1</c> and the like - whose enabled flag is
+    /// either the positional first value or the <c>enabled</c> key.
+    /// </summary>
+    internal static bool IsAgentEnabled(object agent)
+    {
+        var text = agent?.ToString();
+
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        foreach (var part in text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
+
+            if (pair.Length == 1)
+                return pair[0] == "1";
+
+            if (string.Equals(pair[0], "enabled", StringComparison.OrdinalIgnoreCase))
+                return pair[1] == "1";
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The guest's addresses from the QEMU guest agent's network-get-interfaces. Empty when the agent
+    /// refuses (not running in the guest); null when it does not answer in time, so a slow agent does not
+    /// blank addresses that were good a moment ago.
+    /// </summary>
+    private async Task<string[]> ReadAgentAddresses(ProxmoxVmInfo info)
+    {
+        var result = await WithAgentTimeout(
+            () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.NetworkGetInterfaces.NetworkGetInterfaces(),
+            info,
+            "network-get-interfaces");
+
+        if (result == null)
+            return null;
+
+        if (!result.IsSuccessStatusCode)
+        {
+            // What PVE answers for an agent that is configured but not running in the guest. Normal for a
+            // guest still booting, so not worth more than Debug.
+            _logger.LogDebug($"QGA network-get-interfaces refused for vmid={info.Id}: {result.GetErrorMessage()}");
+            return [];
+        }
+
+        var interfaces = ProxmoxExtensions.GetField(ProxmoxExtensions.GetField(result.Response, "data"), "result");
+
+        return CollectAddresses(
+            (interfaces as IEnumerable<object> ?? [])
+                .SelectMany(nic => ProxmoxExtensions.GetField(nic, "ip-addresses") as IEnumerable<object> ?? [])
+                .Select(ip => ProxmoxExtensions.GetField(ip, "ip-address")?.ToString()));
+    }
+
+    /// <summary>
+    /// A container's addresses from <c>/nodes/{node}/lxc/{vmid}/interfaces</c>, which needs no agent.
+    /// Newer PVE sends an <c>ip-addresses</c> list per interface; older PVE only <c>inet</c> and
+    /// <c>inet6</c> in CIDR form, so both are read.
+    /// </summary>
+    private async Task<string[]> ReadContainerAddresses(ProxmoxVmInfo info)
+    {
+        var result = await WithAgentTimeout(
+            () => _pveClient.Nodes[info.Node].Lxc[info.Id].Interfaces.Ip(),
+            info,
+            "lxc interfaces");
+
+        if (result == null)
+            return null;
+
+        if (!result.IsSuccessStatusCode)
+        {
+            _logger.LogDebug($"LXC interfaces refused for vmid={info.Id}: {result.GetErrorMessage()}");
+            return [];
+        }
+
+        var interfaces = ProxmoxExtensions.GetField(result.Response, "data") as IEnumerable<object> ?? [];
+        var addresses = new List<string>();
+
+        foreach (var nic in interfaces)
+        {
+            if (ProxmoxExtensions.GetField(nic, "ip-addresses") is IEnumerable<object> listed)
+            {
+                addresses.AddRange(listed.Select(ip => ProxmoxExtensions.GetField(ip, "ip-address")?.ToString()));
+                continue;
+            }
+
+            foreach (var key in new[] { "inet", "inet6" })
+            {
+                var value = ProxmoxExtensions.GetField(nic, key)?.ToString();
+
+                if (!string.IsNullOrWhiteSpace(value))
+                    addresses.AddRange(value.Split([' ', ','], StringSplitOptions.RemoveEmptyEntries));
+            }
+        }
+
+        return CollectAddresses(addresses);
+    }
+
+    /// <summary>
+    /// Bare addresses, in the order the guest listed them, without duplicates, loopback or link-local -
+    /// a CIDR suffix or an IPv6 zone index is dropped, and anything that does not parse is skipped.
+    /// </summary>
+    internal static string[] CollectAddresses(IEnumerable<string> candidates)
+    {
+        var addresses = new List<string>();
+
+        foreach (var candidate in candidates)
+        {
+            var text = candidate?.Trim();
+
+            if (string.IsNullOrEmpty(text))
+                continue;
+
+            var slash = text.IndexOf('/');
+            if (slash >= 0)
+                text = text[..slash];
+
+            var percent = text.IndexOf('%');
+            if (percent >= 0)
+                text = text[..percent];
+
+            if (!IPAddress.TryParse(text, out var address) || IPAddress.IsLoopback(address))
+                continue;
+
+            if (address.IsIPv6LinkLocal ||
+                (address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                 address.GetAddressBytes() is [169, 254, _, _]))
+                continue;
+
+            var formatted = address.ToString();
+
+            if (!addresses.Contains(formatted))
+                addresses.Add(formatted);
+        }
+
+        return [.. addresses];
+    }
+
+    /// <summary>
+    /// A status-only guest query, given <see cref="ProxmoxOptions.GuestAgentTimeoutMilliseconds"/> to
+    /// answer. Null when it did not, or failed in transport; the abandoned call is left to finish on its
+    /// own, with its outcome observed so it cannot surface as an unobserved task exception.
+    /// </summary>
+    private async Task<Result> WithAgentTimeout(Func<Task<Result>> query, ProxmoxVmInfo info, string what)
+    {
+        Task<Result> call;
+
+        try
+        {
+            call = query();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, $"{what} failed for vmid={info.Id}");
+            return null;
+        }
+
+        var finished = await Task.WhenAny(call, Task.Delay(Math.Max(1, _options.GuestAgentTimeoutMilliseconds)));
+
+        if (finished != call)
+        {
+            _ = call.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            _logger.LogDebug($"{what} for vmid={info.Id} did not answer within {_options.GuestAgentTimeoutMilliseconds}ms");
+            return null;
+        }
+
+        try
+        {
+            return await call;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, $"{what} failed for vmid={info.Id}");
+            return null;
+        }
     }
 
     /// <summary>

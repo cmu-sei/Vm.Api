@@ -765,6 +765,49 @@ public class ProxmoxStateServiceTests(DatabaseFixture fixture) : DatabaseTestBas
     }
 
     /// <summary>
+    /// A pass records the guest's addresses, which nothing else writes for a Proxmox machine and which the
+    /// vm.ui list and IP search, the usage log and xAPI statements all read.
+    /// </summary>
+    [Fact]
+    public async Task APass_RecordsTheGuestsIpAddresses()
+    {
+        var h = Build();
+        await SeedVm(VmA, Vmid);
+        h.Returns(await Reporting(Vmid));
+        h.GuestState(Vmid, new ProxmoxGuestState { IpAddresses = ["10.0.0.5", "2001:db8::5"] });
+
+        await h.Loop.Run(h.Service, h.Service.CheckState);
+
+        Assert.Equal(["10.0.0.5", "2001:db8::5"], (await Reread(VmA)).IpAddresses);
+    }
+
+    /// <summary>
+    /// Addresses the read could not complete are null, and leave the stored ones alone; an empty list is an
+    /// answer - the machine is off, or has no agent running - and clears them.
+    /// </summary>
+    [Theory]
+    [InlineData(false, new[] { "10.0.0.5" })]
+    [InlineData(true, new string[0])]
+    public async Task UnknownAddressesKeepTheStoredOnesWhileAnEmptyListClearsThem(bool answered, string[] expected)
+    {
+        var h = Build();
+        await Seed(new VmEntity
+        {
+            Id = VmA,
+            Name = "proxmox",
+            Type = VmType.Proxmox,
+            IpAddresses = ["10.0.0.5"],
+            ProxmoxVmInfo = new ProxmoxVmInfo { VmId = VmA, Id = Vmid, Node = Node },
+        });
+        h.Returns(await Reporting(Vmid));
+        h.GuestState(Vmid, new ProxmoxGuestState { IpAddresses = answered ? [] : null });
+
+        await h.Loop.Run(h.Service, h.Service.CheckState);
+
+        Assert.Equal(expected, (await Reread(VmA)).IpAddresses);
+    }
+
+    /// <summary>
     /// A machine whose config could not be read keeps what it had: null is "no answer", not "no snapshot",
     /// and clearing the flag on a transient failure would drop the machine out of bulk Revert.
     /// </summary>
@@ -879,14 +922,27 @@ public class ProxmoxStateServiceTests(DatabaseFixture fixture) : DatabaseTestBas
     {
         var h = Build();
         h.Options.GuestStateRefreshIntervalSeconds = 3600;
+        h.Loop.AllowedPasses = 3;
         await SeedVm(VmA, Vmid);
         h.Returns(await Reporting(Vmid));
 
-        await h.Loop.Run(h.Service, h.Service.CheckState, passes: 2);
+        await h.Service.StartAsync(Ct);
 
-        await h.Proxmox.Received(2).GetGuestState(
-            Arg.Any<ProxmoxVmInfo>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
+        try
+        {
+            // The first pass runs at start, unasked, and reads; the second only comes from the nudge.
+            await PollLoop.Until(() => GuestStateReads(h) == 1, "the first pass to read guest state");
+            h.Service.CheckState();
+            await PollLoop.Until(() => GuestStateReads(h) == 2, "the nudged pass to read guest state");
+        }
+        finally
+        {
+            await h.Service.StopAsync(Ct);
+        }
     }
+
+    private static int GuestStateReads(Harness h) =>
+        h.Proxmox.ReceivedCalls().Count(x => x.GetMethodInfo().Name == nameof(IProxmoxService.GetGuestState));
 
     /// <summary>
     /// The single-machine path does not read guest state: it runs behind commands that discovered a

@@ -5,6 +5,7 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Player.Vm.Api.Domain.Models;
+using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Tests.Support;
 
 namespace Player.Vm.Api.Tests.Domain.Proxmox.Services;
@@ -102,6 +103,176 @@ public class ProxmoxServiceGuestStateTests
         Assert.Null(await cluster.Service().GetGuestState(info, running: false, Ct));
         Assert.DoesNotContain(cluster.Http.Sent, x => x.Method != HttpMethod.Get);
     }
+
+    #endregion
+
+    #region IP addresses
+
+    private const string Interfaces = "/agent/network-get-interfaces";
+
+    /// <summary>
+    /// What QGA's network-get-interfaces sends for a typical Linux guest: loopback, and one NIC carrying an
+    /// IPv4, a global IPv6 and a link-local IPv6 address.
+    /// </summary>
+    private const string AgentInterfaces = """
+        {"result":[
+          {"name":"lo","hardware-address":"00:00:00:00:00:00","ip-addresses":[
+            {"ip-address":"127.0.0.1","ip-address-type":"ipv4","prefix":8},
+            {"ip-address":"::1","ip-address-type":"ipv6","prefix":128}]},
+          {"name":"eth0","hardware-address":"bc:24:11:00:00:01","ip-addresses":[
+            {"ip-address":"10.0.0.5","ip-address-type":"ipv4","prefix":24},
+            {"ip-address":"2001:db8::5","ip-address-type":"ipv6","prefix":64},
+            {"ip-address":"fe80::be24:11ff:fe00:1","ip-address-type":"ipv6","prefix":64}]}]}
+        """;
+
+    /// <summary>
+    /// A running QEMU Vm with the agent on reports the guest's addresses, bare as vSphere's are stored,
+    /// with loopback and link-local left out.
+    /// </summary>
+    [Theory]
+    [InlineData("1")]
+    [InlineData("enabled=1,fstrim_cloned_disks=1")]
+    [InlineData("1,type=virtio")]
+    public async Task ARunningQemuVmWithTheAgentOn_ReportsTheGuestsAddresses(string agent)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", $$"""{"agent":"{{agent}}"}""");
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, Interfaces)}", AgentInterfaces);
+
+        var state = await cluster.Service().GetGuestState(info, running: true, Ct);
+
+        Assert.Equal(["10.0.0.5", "2001:db8::5"], state.IpAddresses);
+    }
+
+    /// <summary>
+    /// The agent is not asked at all when the config does not turn it on, or the Vm is off: PVE refuses
+    /// both, and the poller would otherwise make that refused call for every such Vm on every pass.
+    /// </summary>
+    [Theory]
+    [InlineData("""{"agent":"0"}""", true)]
+    [InlineData("""{"agent":"enabled=0"}""", true)]
+    [InlineData("{}", true)]
+    [InlineData("""{"agent":"1"}""", false)]
+    public async Task WithTheAgentOffOrTheVmStopped_TheAgentIsNotAskedAndThereAreNoAddresses(
+        string config, bool running)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", config);
+
+        var state = await cluster.Service().GetGuestState(info, running, Ct);
+
+        Assert.Empty(state.IpAddresses);
+        Assert.Equal([FakeProxmoxCluster.VmPath(info, "/config")], cluster.Http.Paths);
+    }
+
+    /// <summary>
+    /// An agent configured but not running in the guest - a guest still booting, or one without the agent
+    /// installed - is refused by PVE. That is no addresses, not an exception.
+    /// </summary>
+    [Fact]
+    public async Task WhenTheAgentIsNotRunning_ThereAreNoAddressesAndNothingThrows()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"agent":"1"}""");
+        cluster.Http.AnswersJson(
+            $"GET {FakeProxmoxCluster.VmPath(info, Interfaces)}",
+            """{"data":null,"message":"QEMU guest agent is not running\n"}""",
+            System.Net.HttpStatusCode.InternalServerError);
+
+        var state = await cluster.Service().GetGuestState(info, running: true, Ct);
+
+        Assert.Empty(state.IpAddresses);
+        Assert.Null(state.CurrentSnapshot);
+    }
+
+    /// <summary>
+    /// A call that fails in transport is turned into a failed Result by the Proxmox client, so it reads as a
+    /// refusal - no addresses - rather than throwing out of the poller's pass. The snapshot, which came from
+    /// the config read, still stands.
+    /// </summary>
+    [Fact]
+    public async Task WhenTheAgentQueryFailsInTransport_ThereAreNoAddressesAndNothingThrows()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"agent":"1","parent":"s1"}""");
+        cluster.Http.Throws($"GET {FakeProxmoxCluster.VmPath(info, Interfaces)}");
+
+        var state = await cluster.Service().GetGuestState(info, running: true, Ct);
+
+        Assert.Empty(state.IpAddresses);
+        Assert.True(state.HasSnapshot);
+    }
+
+    /// <summary>
+    /// A container is read from its own interfaces route, which needs no agent. Newer PVE lists
+    /// <c>ip-addresses</c> per interface the way QGA does.
+    /// </summary>
+    [Fact]
+    public async Task ARunningContainer_ReportsItsInterfaceAddresses()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, ProxmoxVmType.LXC);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"hostname":"ct"}""");
+        cluster.Answers(
+            $"GET {FakeProxmoxCluster.VmPath(info, "/interfaces")}",
+            """
+            [{"name":"lo","hwaddr":"00:00:00:00:00:00","inet":"127.0.0.1/8","inet6":"::1/128","ip-addresses":[
+               {"ip-address":"127.0.0.1","ip-address-type":"inet","prefix":"8"}]},
+             {"name":"eth0","hwaddr":"bc:24:11:00:00:02","inet":"10.0.0.6/24","inet6":"fe80::1/64","ip-addresses":[
+               {"ip-address":"10.0.0.6","ip-address-type":"inet","prefix":"24"},
+               {"ip-address":"fe80::1","ip-address-type":"inet6","prefix":"64"}]}]
+            """);
+
+        var state = await cluster.Service().GetGuestState(info, running: true, Ct);
+
+        Assert.Equal(["10.0.0.6"], state.IpAddresses);
+    }
+
+    /// <summary>Older PVE sends only <c>inet</c> and <c>inet6</c>, in CIDR form.</summary>
+    [Fact]
+    public async Task ARunningContainerOnOlderPve_ReportsItsInetAddresses()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, ProxmoxVmType.LXC);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", "{}");
+        cluster.Answers(
+            $"GET {FakeProxmoxCluster.VmPath(info, "/interfaces")}",
+            """
+            [{"name":"lo","hwaddr":"00:00:00:00:00:00","inet":"127.0.0.1/8","inet6":"::1/128"},
+             {"name":"eth0","hwaddr":"bc:24:11:00:00:02","inet":"10.0.0.6/24","inet6":"2001:db8::6/64"}]
+            """);
+
+        var state = await cluster.Service().GetGuestState(info, running: true, Ct);
+
+        Assert.Equal(["10.0.0.6", "2001:db8::6"], state.IpAddresses);
+    }
+
+    /// <summary>A stopped container has no interfaces to read, and is not asked.</summary>
+    [Fact]
+    public async Task AStoppedContainer_IsNotAskedForItsInterfaces()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, ProxmoxVmType.LXC, status: "stopped");
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", "{}");
+
+        var state = await cluster.Service().GetGuestState(info, running: false, Ct);
+
+        Assert.Empty(state.IpAddresses);
+        Assert.Single(cluster.Http.Paths);
+    }
+
+    [Theory]
+    [InlineData(new[] { "10.0.0.5" }, new[] { "10.0.0.5" })]
+    [InlineData(new[] { "10.0.0.5/24", "10.0.0.5" }, new[] { "10.0.0.5" })]
+    [InlineData(new[] { "127.0.0.1", "::1", "169.254.10.1", "fe80::1%eth0" }, new string[0])]
+    [InlineData(new[] { "2001:db8::5%2", "not-an-address", "", null }, new[] { "2001:db8::5" })]
+    [InlineData(new[] { "192.168.1.9", "10.0.0.5" }, new[] { "192.168.1.9", "10.0.0.5" })]
+    public void CollectAddresses_KeepsRoutableAddressesInOrderWithoutDuplicates(string[] given, string[] expected) =>
+        Assert.Equal(expected, ProxmoxService.CollectAddresses(given));
 
     #endregion
 }
