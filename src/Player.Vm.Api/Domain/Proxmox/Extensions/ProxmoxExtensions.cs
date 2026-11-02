@@ -106,9 +106,34 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
                 throw new TimeoutException($"{operation} timed out waiting for the Proxmox task to finish.");
         }
 
-        // The operations are logged as e.g. "Reboot vmid=100"; a user sees just "Reboot".
-        private static string OperationName(string operation) =>
-            string.IsNullOrWhiteSpace(operation) ? null : operation.Split(' ', 2)[0];
+        // The callers describe an operation as e.g. "RevertToCurrentSnapshot vmid=100"; a user is told
+        // about it by the name the UI gives the action, without the identifiers.
+        private static readonly IReadOnlyDictionary<string, string> OperationNames =
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["PowerOn"] = "Power On",
+                ["PowerOff"] = "Power Off",
+                ["Reboot"] = "Reboot",
+                ["Shutdown"] = "Shutdown",
+                ["CreateSnapshot"] = "Create Snapshot",
+                ["RevertSnapshot"] = "Revert to Snapshot",
+                ["RevertToCurrentSnapshot"] = "Revert",
+                ["DeleteSnapshot"] = "Delete Snapshot",
+                ["MountIso"] = "Mount ISO",
+                ["ChangeNetwork"] = "Change Network",
+                ["UploadIso"] = "Upload ISO",
+                ["DeleteIso"] = "Delete ISO",
+            };
+
+        internal static string OperationName(string operation)
+        {
+            if (string.IsNullOrWhiteSpace(operation))
+                return null;
+
+            var verb = operation.Split(' ', 2)[0];
+
+            return OperationNames.TryGetValue(verb, out var name) ? name : verb;
+        }
 
         /// <summary>
         /// Waits for a Proxmox task to finish and checks its final exit status.

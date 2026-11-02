@@ -241,7 +241,7 @@ public class ProxmoxServiceCommandTests
             exitStatus: "start failed: QEMU exited with code 1");
 
         var ex = await Assert.ThrowsAsync<ProxmoxTaskFailedException>(() => cluster.Service().PowerOnVm(info));
-        Assert.Equal("PowerOn failed: start failed: QEMU exited with code 1", ex.Message);
+        Assert.Equal("Power On failed: start failed: QEMU exited with code 1", ex.Message);
     }
 
     // PVE's graceful reboot gives up with this status when nothing in the guest answers ACPI. That is
