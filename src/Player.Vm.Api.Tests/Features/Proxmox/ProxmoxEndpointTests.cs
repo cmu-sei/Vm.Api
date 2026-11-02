@@ -33,6 +33,7 @@ using Player.Vm.Api.Tests.Support;
 using ConsoleResponse = Player.Vm.Api.Features.Proxmox.GetConsole.ProxmoxConsole;
 using PlayerTeam = Player.Api.Client.Team;
 using VmEntity = Player.Vm.Api.Domain.Models.Vm;
+using Player.Vm.Api.Infrastructure.Exceptions;
 
 namespace Player.Vm.Api.Tests.Features.Proxmox;
 
@@ -773,6 +774,19 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         {
             Factory.ProxmoxTasks.DidNotReceive().CheckTasks();
         }
+    }
+
+    [Fact]
+    public async Task Reboot_WhenTheProxmoxTaskFails_Is400WithProxmoxsReason()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.RebootVm(Arg.Any<ProxmoxVmInfo>())
+            .Returns<Task<string>>(_ => throw new ProxmoxTaskFailedException("VM quit/powerdown failed - got timeout", "Reboot"));
+
+        var response = await Send("POST", "/actions/reboot", vm.Id);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.StartsWith("Reboot failed: VM quit/powerdown failed - got timeout.", await Title(response));
     }
 
     #endregion

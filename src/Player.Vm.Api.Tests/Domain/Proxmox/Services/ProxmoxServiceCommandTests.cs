@@ -11,6 +11,7 @@ using Corsinvest.ProxmoxVE.Api.Shared.Models.Cluster;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Tests.Support;
+using Player.Vm.Api.Infrastructure.Exceptions;
 
 namespace Player.Vm.Api.Tests.Domain.Proxmox.Services;
 
@@ -239,7 +240,37 @@ public class ProxmoxServiceCommandTests
             $"POST {FakeProxmoxCluster.VmPath(info, "/status/start")}",
             exitStatus: "start failed: QEMU exited with code 1");
 
-        await Assert.ThrowsAnyAsync<Exception>(() => cluster.Service().PowerOnVm(info));
+        var ex = await Assert.ThrowsAsync<ProxmoxTaskFailedException>(() => cluster.Service().PowerOnVm(info));
+        Assert.Equal("PowerOn failed: start failed: QEMU exited with code 1", ex.Message);
+    }
+
+    // PVE's graceful reboot gives up with this status when nothing in the guest answers ACPI. That is
+    // the guest refusing, not a server fault, so it is a 400 carrying the reason and a way out.
+    [Fact]
+    public async Task Reboot_WhenTheGuestIgnoresTheRequest_ExplainsItAndSuggestsPowerOff()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.SubmitsTask(
+            $"POST {FakeProxmoxCluster.VmPath(info, "/status/reboot")}",
+            exitStatus: "VM quit/powerdown failed - got timeout");
+
+        var ex = await Assert.ThrowsAsync<ProxmoxTaskFailedException>(() => cluster.Service().RebootVm(info));
+
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, ex.GetStatusCode());
+        Assert.StartsWith("Reboot failed: VM quit/powerdown failed - got timeout.", ex.Message);
+        Assert.Contains("use Power Off instead", ex.Message);
+    }
+
+    // "WARNINGS: n" is PVE's exit status for a task that succeeded with warnings.
+    [Fact]
+    public async Task PowerOn_WhenTheQueuedTaskFinishesWithWarnings_Succeeds()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.SubmitsTask($"POST {FakeProxmoxCluster.VmPath(info, "/status/start")}", exitStatus: "WARNINGS: 1");
+
+        Assert.Equal($"vmid {Vmid} started", await cluster.Service().PowerOnVm(info));
     }
 
     #endregion

@@ -10,6 +10,8 @@ using Corsinvest.ProxmoxVE.Api;
 using Corsinvest.ProxmoxVE.Api.Shared.Models.Cluster;
 using Player.Vm.Api.Domain.Models;
 
+using Player.Vm.Api.Infrastructure.Exceptions;
+
 namespace Player.Vm.Api.Domain.Proxmox.Extensions
 {
     public static class ProxmoxExtensions
@@ -90,11 +92,23 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             if (!result.IsSuccessStatusCode)
                 throw new Exception($"{operation} failed: {result.GetErrorMessage()}");
 
-            var finished = await WaitForTaskToFinish(client, result, cancellationToken: cancellationToken);
+            bool finished;
+            try
+            {
+                finished = await WaitForTaskToFinish(client, result, cancellationToken: cancellationToken);
+            }
+            catch (ProxmoxTaskFailedException ex) when (ex.Operation == null)
+            {
+                throw new ProxmoxTaskFailedException(ex.Status, OperationName(operation));
+            }
 
             if (!finished)
                 throw new TimeoutException($"{operation} timed out waiting for the Proxmox task to finish.");
         }
+
+        // The operations are logged as e.g. "Reboot vmid=100"; a user sees just "Reboot".
+        private static string OperationName(string operation) =>
+            string.IsNullOrWhiteSpace(operation) ? null : operation.Split(' ', 2)[0];
 
         /// <summary>
         /// Waits for a Proxmox task to finish and checks its final exit status.
@@ -129,8 +143,9 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             {
                 var status = await client.GetExitStatusTaskAsync(data);
 
-                if (status != "OK")
-                    throw new Exception($"Task failed: {status}");
+                // "WARNINGS: n" is how PVE reports a task that succeeded with warnings.
+                if (status != "OK" && !(status?.StartsWith("WARNINGS", StringComparison.Ordinal) ?? false))
+                    throw new ProxmoxTaskFailedException(status);
             }
 
             return finished;
