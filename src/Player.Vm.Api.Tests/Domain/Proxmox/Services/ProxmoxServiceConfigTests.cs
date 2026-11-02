@@ -108,6 +108,40 @@ public class ProxmoxServiceConfigTests
         Assert.Equal("ct-snap", summary.CurrentSnapshot);
     }
 
+    // Copy in the console can only return what QEMU passes out over VNC, and it does that only when the
+    // vga property carries clipboard=vnc. The value is a comma-separated property string, so the option is
+    // found wherever it sits, in any case, and a display type alone - including a serial console - is not it.
+    [Theory]
+    [InlineData("""{"vga":"std,clipboard=vnc"}""", true)]
+    [InlineData("""{"vga":"virtio,memory=32,Clipboard=VNC"}""", true)]
+    [InlineData("""{"vga":"virtio"}""", false)]
+    [InlineData("""{"vga":"serial0"}""", false)]
+    [InlineData("{}", false)]
+    public async Task GetVmConfigSummary_ReportsWhetherTheVgaConfigEnablesTheVncClipboard(
+        string configJson, bool vncClipboardEnabled)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", configJson);
+
+        var summary = await cluster.Service().GetVmConfigSummary(info, Ct);
+
+        Assert.Equal(vncClipboardEnabled, summary.VncClipboardEnabled);
+    }
+
+    // A container has no VGA device, so whatever its config holds the VNC clipboard is never on.
+    [Fact]
+    public async Task GetVmConfigSummary_OnAContainer_NeverReportsTheVncClipboard()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, ProxmoxVmType.LXC);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"vga":"std,clipboard=vnc"}""");
+
+        var summary = await cluster.Service().GetVmConfigSummary(info, Ct);
+
+        Assert.False(summary.VncClipboardEnabled);
+    }
+
     // Every adapter the Vm has, keyed by the adapter the caller then changes - so a multi-homed Vm shows
     // one entry per NIC rather than whichever one happened to be parsed first.
     [Fact]

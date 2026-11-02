@@ -276,6 +276,7 @@ public partial class ProxmoxService : IProxmoxService
         IEnumerable<VmNetwork> networks;
         var hasCdromDrive = false;
         var agentEnabled = false;
+        var vncClipboardEnabled = false;
         string parent;
 
         if (info.Type == ProxmoxVmType.QEMU)
@@ -287,11 +288,13 @@ public partial class ProxmoxService : IProxmoxService
             // cannot disagree.
             hasCdromDrive = GetCdromDrives(config).Count > 0;
             agentEnabled = IsAgentEnabled(config.Agent);
+            vncClipboardEnabled = IsVncClipboardEnabled(config.Vga);
             parent = config.Parent;
         }
         else
         {
-            // An LXC container has no optical drive and no guest agent, so both stay false.
+            // An LXC container has no optical drive, no guest agent and no VGA device, so all three stay
+            // false.
             var containerConfig = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.GetAsync(true);
             networks = containerConfig.Networks ?? [];
             parent = containerConfig.Parent;
@@ -307,6 +310,7 @@ public partial class ProxmoxService : IProxmoxService
         {
             CurrentSnapshot = string.IsNullOrWhiteSpace(parent) ? null : parent,
             AgentEnabled = agentEnabled,
+            VncClipboardEnabled = vncClipboardEnabled,
         };
     }
 
@@ -480,6 +484,32 @@ public partial class ProxmoxService : IProxmoxService
 
             if (string.Equals(pair[0], "enabled", StringComparison.OrdinalIgnoreCase))
                 return pair[1] == "1";
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether a QEMU config's <c>vga</c> property turns on the VNC clipboard. It is a property string -
+    /// <c>std</c>, <c>virtio,memory=32</c>, <c>std,clipboard=vnc</c> and the like - and only the
+    /// <c>clipboard=vnc</c> option makes QEMU pass the guest's clipboard out over VNC, which is the only
+    /// way Copy in noVNC can return anything.
+    /// </summary>
+    internal static bool IsVncClipboardEnabled(object vga)
+    {
+        var text = vga?.ToString();
+
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        foreach (var part in text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
+
+            if (pair.Length == 2
+                && string.Equals(pair[0], "clipboard", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(pair[1], "vnc", StringComparison.OrdinalIgnoreCase))
+                return true;
         }
 
         return false;

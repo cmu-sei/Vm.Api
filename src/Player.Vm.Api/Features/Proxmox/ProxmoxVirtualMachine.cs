@@ -33,4 +33,9 @@ public class ProxmoxVirtualMachine
 
     // The snapshot the Vm is running from - what actions/revert reverts to - or null when it has none.
     public string CurrentSnapshot { get; set; }
+
+    // Whether the Vm's vga config sets clipboard=vnc, so the guest's clipboard can reach the console's
+    // Copy. Copy also needs spice-vdagent running in the guest, which the config cannot tell us. Always
+    // false for LXC.
+    public bool VncClipboardEnabled { get; set; }
 }

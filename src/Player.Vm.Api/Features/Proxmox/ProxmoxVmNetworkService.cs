@@ -125,6 +125,7 @@ namespace Player.Vm.Api.Features.Proxmox
                     && await _proxmoxService.IsGuestAgentRunning(vm.ProxmoxVmInfo),
                 HasSnapshot = config.CurrentSnapshot != null,
                 CurrentSnapshot = config.CurrentSnapshot,
+                VncClipboardEnabled = config.VncClipboardEnabled,
             };
         }
     }

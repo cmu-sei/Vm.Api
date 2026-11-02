@@ -839,6 +839,23 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal("before-patching", body.RootElement.GetProperty("currentSnapshot").GetString());
     }
 
+    /// <summary>
+    /// The VNC clipboard flag reaches the wire as <c>vncClipboardEnabled</c>, which the console reads to
+    /// decide whether Copy can work at all.
+    /// </summary>
+    [Fact]
+    public async Task Get_ReportsTheVncClipboardFlagUnderItsWireName()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.GetVmConfigSummary(Arg.Any<ProxmoxVmInfo>(), Arg.Any<CancellationToken>())
+            .Returns(new ProxmoxVmConfigSummary(new() { ["net0"] = "vmbr0" }, true) { VncClipboardEnabled = true });
+
+        var response = await RootClient.GetAsync(Route(vm.Id), Ct);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
+
+        Assert.True(body.RootElement.GetProperty("vncClipboardEnabled").GetBoolean());
+    }
+
     [Fact]
     public async Task Get_WithNoNetworksRegistered_ReportsTheNicConfigurationAsUnavailable()
     {

@@ -161,4 +161,15 @@ public class ProxmoxVmNetworkServiceTests
         Assert.Equal(hasSnapshot, response.HasSnapshot);
         Assert.Equal(parent, response.CurrentSnapshot);
     }
+
+    // The VNC clipboard flag is passed through from the same live config read.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task VncClipboardEnabled_ComesFromTheConfigSummary(bool enabled)
+    {
+        var (response, _) = await Respond(new ProxmoxVmConfigSummary([], false) { VncClipboardEnabled = enabled });
+
+        Assert.Equal(enabled, response.VncClipboardEnabled);
+    }
 }
