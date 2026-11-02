@@ -806,6 +806,20 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.False(body.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.String);
     }
 
+    // A task this API gave up waiting for is Proxmox not answering in time: a 504 that says so, not a 500.
+    [Fact]
+    public async Task Reboot_WhenTheProxmoxTaskTimesOut_Is504()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.RebootVm(Arg.Any<ProxmoxVmInfo>())
+            .Returns<Task<string>>(_ => throw new ProxmoxTaskTimeoutException("Reboot", TimeSpan.FromHours(1)));
+
+        var response = await Send("POST", "/actions/reboot", vm.Id);
+
+        Assert.Equal(HttpStatusCode.GatewayTimeout, response.StatusCode);
+        Assert.StartsWith("Reboot did not finish within 60 minutes.", await Title(response));
+    }
+
     #endregion
 
     #region Reading a Vm

@@ -1,7 +1,13 @@
 // Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
+using System;
+using System.Net;
+using System.Threading.Tasks;
+using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Proxmox.Extensions;
+using Player.Vm.Api.Infrastructure.Exceptions;
+using Player.Vm.Api.Tests.Support;
 
 namespace Player.Vm.Api.Tests.Domain.Proxmox;
 
@@ -41,5 +47,38 @@ public class ProxmoxExtensionsTests
     public void OperationName_ForNoOperation_IsNull(string operation)
     {
         Assert.Null(ProxmoxExtensions.OperationName(operation));
+    }
+
+    // A task still running when the wait runs out is a 504: Proxmox took the request and has not
+    // answered, which is neither the caller's mistake nor a fault here. The message names the action
+    // and says the task may yet finish, because it is not cancelled.
+    [Fact]
+    public async Task WaitAndThrow_WhenTheTaskOutlastsTheTimeout_IsAGatewayTimeoutNamingTheAction()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var path = FakeProxmoxCluster.VmPath("pve1", ProxmoxVmType.QEMU, 100, "/status/start");
+        cluster.SubmitsTaskThatNeverFinishes($"POST {path}");
+        var client = cluster.Client();
+        var result = await client.Nodes["pve1"].Qemu[100].Status.Start.VmStart();
+
+        var ex = await Assert.ThrowsAsync<ProxmoxTaskTimeoutException>(
+            () => client.WaitAndThrow(result, "PowerOn vmid=100", TestContext.Current.CancellationToken, wait: 10, timeout: 60));
+
+        Assert.Equal(HttpStatusCode.GatewayTimeout, ex.GetStatusCode());
+        Assert.IsAssignableFrom<TimeoutException>(ex);
+        Assert.StartsWith("Power On did not finish within ", ex.Message);
+        Assert.Contains("may still be running", ex.Message);
+        Assert.Contains(cluster.Http.Paths, x => x.Contains("/tasks/") && x.EndsWith("/status"));
+    }
+
+    [Theory]
+    [InlineData(3600 * 1000, "within 60 minutes.")]
+    [InlineData(60 * 1000, "within 1 minute.")]
+    [InlineData(90 * 1000, "within 90 seconds.")]
+    public void TaskTimeout_StatesTheBudgetInWholeUnits(long timeoutMs, string expected)
+    {
+        var ex = new ProxmoxTaskTimeoutException("Reboot", TimeSpan.FromMilliseconds(timeoutMs));
+
+        Assert.Contains(expected, ex.Message);
     }
 }

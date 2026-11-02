@@ -16,6 +16,9 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
 {
     public static class ProxmoxExtensions
     {
+        private const int DefaultTaskPollMs = 2000;
+        private const long DefaultTaskTimeoutMs = 3600 * 1000;
+
         /// <summary>
         /// Gets a generic PowerState from a Proxmox virtual machine
         /// </summary>
@@ -87,7 +90,9 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             this PveClient client,
             Result result,
             string operation,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            int wait = DefaultTaskPollMs,
+            long timeout = DefaultTaskTimeoutMs)
         {
             // A refusal is a 400 with Proxmox's reason, not a 500: PVE answers a locked Vm, an unlockable
             // config file or a missing snapshot with an HTTP 500 of its own, but that is the hypervisor
@@ -99,7 +104,7 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             bool finished;
             try
             {
-                finished = await WaitForTaskToFinish(client, result, cancellationToken: cancellationToken);
+                finished = await WaitForTaskToFinish(client, result, wait, timeout, cancellationToken);
             }
             catch (ProxmoxTaskFailedException ex) when (ex.Operation == null)
             {
@@ -110,8 +115,10 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
                 throw new ProxmoxRequestRefusedException(ex.Reason, OperationName(operation));
             }
 
+            // A 504 rather than a 500: Proxmox took the request and has not finished it, which is an
+            // upstream that did not answer in time, not a fault here.
             if (!finished)
-                throw new TimeoutException($"{operation} timed out waiting for the Proxmox task to finish.");
+                throw new ProxmoxTaskTimeoutException(OperationName(operation), TimeSpan.FromMilliseconds(timeout));
         }
 
         // The callers describe an operation as e.g. "RevertToCurrentSnapshot vmid=100"; a user is told
@@ -149,8 +156,8 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
         public static async Task<bool> WaitForTaskToFinish(
             this PveClient client,
             Result result,
-            int wait = 2000,
-            long timeout = 3600 * 1000,
+            int wait = DefaultTaskPollMs,
+            long timeout = DefaultTaskTimeoutMs,
             CancellationToken cancellationToken = default)
         {
             if (result == null || timeout <= 0)
@@ -183,8 +190,8 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
         public static async Task<bool> WaitForTaskToFinish(
             this PveClient client,
             string task,
-            int wait = 2000,
-            long timeout = 3600 * 1000,
+            int wait = DefaultTaskPollMs,
+            long timeout = DefaultTaskTimeoutMs,
             CancellationToken cancellationToken = default)
         {
             var isRunning = true;
