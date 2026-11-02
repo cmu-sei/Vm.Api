@@ -141,10 +141,33 @@ public class ProxmoxServiceCommandTests
         var path = FakeProxmoxCluster.VmPath(info, "/status/start");
         cluster.Rejects($"POST {path}", "VM is locked (backup)");
 
-        var ex = await Assert.ThrowsAnyAsync<Exception>(() => cluster.Service().PowerOnVm(info));
+        var ex = await Assert.ThrowsAsync<ProxmoxRequestRefusedException>(() => cluster.Service().PowerOnVm(info));
 
-        Assert.Contains("VM is locked (backup)", ex.Message);
+        Assert.Equal(HttpStatusCode.BadRequest, ex.GetStatusCode());
+        Assert.StartsWith("Power On failed: ", ex.Message);
+        Assert.EndsWith("VM is locked (backup)", ex.Message);
         Assert.Equal([path, FakeProxmoxCluster.ClusterResources], cluster.Http.Paths);
+    }
+
+    // The migration retry decides on the Result, before anything is thrown, so a Vm that moved and is
+    // refused on its new node too is still sent there once - and that second refusal, Proxmox's reason
+    // intact, is the 400 the caller gets.
+    [Fact]
+    public async Task PowerOn_AfterAMigration_RefusedOnTheNewNodeToo_RetriesOnceAndReportsThatRefusal()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, node: "pve1");
+        cluster.Migrates(Vmid, "pve2");
+        var stale = FakeProxmoxCluster.VmPath("pve1", ProxmoxVmType.QEMU, Vmid, "/status/start");
+        var live = FakeProxmoxCluster.VmPath("pve2", ProxmoxVmType.QEMU, Vmid, "/status/start");
+        cluster.Rejects($"POST {stale}", "Configuration file 'nodes/pve1/qemu-server/100.conf' does not exist");
+        cluster.Rejects($"POST {live}", "can't lock file '/var/lock/qemu-server/lock-100.conf' - got timeout");
+
+        var ex = await Assert.ThrowsAsync<ProxmoxRequestRefusedException>(() => cluster.Service().PowerOnVm(info));
+
+        Assert.StartsWith("Power On failed: ", ex.Message);
+        Assert.EndsWith("can't lock file '/var/lock/qemu-server/lock-100.conf' - got timeout", ex.Message);
+        Assert.Equal([stale, FakeProxmoxCluster.ClusterResources, live], cluster.Http.Paths);
     }
 
     // A vmid the cluster no longer knows has no node to move to, so the original refusal stands.
@@ -155,9 +178,10 @@ public class ProxmoxServiceCommandTests
         var info = new ProxmoxVmInfo { Id = Vmid, Node = "pve1" };
         cluster.Rejects($"POST {FakeProxmoxCluster.VmPath(info, "/status/start")}", "no such VM");
 
-        var ex = await Assert.ThrowsAnyAsync<Exception>(() => cluster.Service().PowerOnVm(info));
+        var ex = await Assert.ThrowsAsync<ProxmoxRequestRefusedException>(() => cluster.Service().PowerOnVm(info));
 
-        Assert.Contains("no such VM", ex.Message);
+        Assert.StartsWith("Power On failed: ", ex.Message);
+        Assert.EndsWith("no such VM", ex.Message);
         Assert.Equal("pve1", info.Node);
     }
 
@@ -204,7 +228,9 @@ public class ProxmoxServiceCommandTests
         cluster.Http.Answers(
             $"POST {FakeProxmoxCluster.VmPath(info, "/status/start")}", HttpStatusCode.Unauthorized);
 
-        await Assert.ThrowsAnyAsync<Exception>(() => cluster.Service().PowerOnVm(info));
+        var ex = await Assert.ThrowsAsync<ProxmoxRequestRefusedException>(() => cluster.Service().PowerOnVm(info));
+
+        Assert.StartsWith("Power On failed: HTTP 401", ex.Message);
     }
 
     #endregion

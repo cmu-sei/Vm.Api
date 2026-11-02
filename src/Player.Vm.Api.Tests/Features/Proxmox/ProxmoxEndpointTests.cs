@@ -789,6 +789,23 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.StartsWith("Reboot failed: VM quit/powerdown failed - got timeout.", await Title(response));
     }
 
+    // Proxmox declining the request itself - a backup holds the lock - is the hypervisor saying no, not
+    // this API failing: a 400 whose title is Proxmox's reason, and no stack trace in the body.
+    [Fact]
+    public async Task Reboot_WhenProxmoxRefusesTheRequest_Is400WithProxmoxsReason()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.RebootVm(Arg.Any<ProxmoxVmInfo>())
+            .Returns<Task<string>>(_ => throw new ProxmoxRequestRefusedException("VM is locked (backup)", "Reboot"));
+
+        var response = await Send("POST", "/actions/reboot", vm.Id);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct)).RootElement;
+        Assert.Equal("Reboot failed: VM is locked (backup)", body.GetProperty("title").GetString());
+        Assert.False(body.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.String);
+    }
+
     #endregion
 
     #region Reading a Vm

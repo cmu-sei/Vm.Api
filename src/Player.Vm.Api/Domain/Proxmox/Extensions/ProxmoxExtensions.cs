@@ -89,8 +89,12 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             string operation,
             CancellationToken cancellationToken = default)
         {
+            // A refusal is a 400 with Proxmox's reason, not a 500: PVE answers a locked Vm, an unlockable
+            // config file or a missing snapshot with an HTTP 500 of its own, but that is the hypervisor
+            // declining the request, not this API failing. The node-migration retry happens before this,
+            // on the Result, so it is unaffected by what is thrown here.
             if (!result.IsSuccessStatusCode)
-                throw new Exception($"{operation} failed: {result.GetErrorMessage()}");
+                throw new ProxmoxRequestRefusedException(result.GetErrorMessage(), OperationName(operation));
 
             bool finished;
             try
@@ -100,6 +104,10 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             catch (ProxmoxTaskFailedException ex) when (ex.Operation == null)
             {
                 throw new ProxmoxTaskFailedException(ex.Status, OperationName(operation));
+            }
+            catch (ProxmoxRequestRefusedException ex) when (ex.Operation == null)
+            {
+                throw new ProxmoxRequestRefusedException(ex.Reason, OperationName(operation));
             }
 
             if (!finished)
@@ -149,14 +157,7 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
                 return false;
 
             if (result.ResponseInError || !result.IsSuccessStatusCode)
-            {
-                var statusStr = $"\n Status Code: {result.StatusCode}";
-                var reasonStr = string.IsNullOrEmpty(result.ReasonPhrase) ? "" : $"\n Reason: {result.ReasonPhrase}";
-                var error = result.GetError();
-                var errorStr = string.IsNullOrEmpty(error) ? "" : $"\n Error: {error}";
-
-                throw new Exception($"Task failed: {statusStr}{reasonStr}{errorStr}");
-            }
+                throw new ProxmoxRequestRefusedException(result.GetErrorMessage());
 
             var data = result.ToData() as string;
             if (data is null || !data.StartsWith("UPID:"))

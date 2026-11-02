@@ -471,10 +471,10 @@ public class ProxmoxServiceSnapshotTests
         var info = cluster.Has(Vmid);
         cluster.Rejects($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", "no such VM");
 
-        var ex = await Assert.ThrowsAsync<Exception>(() => cluster.Service().RevertToCurrentSnapshot(info));
+        var ex = await Assert.ThrowsAsync<ProxmoxRequestRefusedException>(() => cluster.Service().RevertToCurrentSnapshot(info));
 
-        Assert.StartsWith($"RevertToCurrentSnapshot vmid={Vmid} failed: ", ex.Message);
-        Assert.Contains("no such VM", ex.Message);
+        Assert.StartsWith("Revert failed: ", ex.Message);
+        Assert.EndsWith("no such VM", ex.Message);
     }
 
     #endregion
@@ -596,8 +596,11 @@ public class ProxmoxServiceSnapshotTests
         var info = cluster.Has(Vmid);
         cluster.Rejects($"POST {SnapshotPath(info)}", "snapshot name 'snap1' already used");
 
-        await Assert.ThrowsAnyAsync<Exception>(
+        var ex = await Assert.ThrowsAsync<ProxmoxRequestRefusedException>(
             () => cluster.Service().CreateSnapshot(info, Snap, "again", includeRam: false));
+
+        Assert.StartsWith("Create Snapshot failed: ", ex.Message);
+        Assert.EndsWith("snapshot name 'snap1' already used", ex.Message);
 
         Assert.Single(cluster.Requests(HttpMethod.Post, SnapshotPath(info)));
     }
