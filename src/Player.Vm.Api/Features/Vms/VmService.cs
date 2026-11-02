@@ -323,10 +323,29 @@ namespace Player.Vm.Api.Features.Vms
             if (tasks.Any(x => !x.Result))
                 throw new ForbiddenException();
 
+            await EnsureProxmoxVmIsUnregistered(form.ProxmoxVmInfo, form.Id, ct);
+
             _context.Vms.Add(vmEntity);
             await _context.SaveChangesAsync(ct);
 
             return _mapper.Map<Vm>(vmEntity);
+        }
+
+        /// <summary>
+        /// A Proxmox VM can back only one Player VM: its vmid is the key of the ProxmoxVmInfo table, so a
+        /// second registration would otherwise fail on the insert as a 500. The owning VM isn't named,
+        /// because it may belong to a team the caller can't see.
+        /// </summary>
+        private async Task EnsureProxmoxVmIsUnregistered(ProxmoxVmInfo info, Guid? vmId, CancellationToken ct)
+        {
+            if (info == null)
+                return;
+
+            var registered = await _context.ProxmoxVmInfo
+                .AnyAsync(p => p.Id == info.Id && p.VmId != vmId, ct);
+
+            if (registered)
+                throw new BadRequestException($"Proxmox VM {info.Id} is already registered to another virtual machine.");
         }
 
         public async Task<Vm> UpdateAsync(Guid id, VmUpdateForm form, CancellationToken ct)
@@ -340,6 +359,8 @@ namespace Player.Vm.Api.Features.Vms
 
             if (!await _playerService.CanManageTeams(teams, ct))
                 throw new ForbiddenException();
+
+            await EnsureProxmoxVmIsUnregistered(form.ProxmoxVmInfo, id, ct);
 
             vmEntity = _mapper.Map(form, vmEntity);
 

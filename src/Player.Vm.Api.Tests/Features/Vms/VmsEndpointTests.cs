@@ -312,7 +312,7 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     [Fact]
-    public async Task Create_with_an_existing_Proxmox_id_answers_a_server_error_and_keeps_the_vm()
+    public async Task Create_with_an_existing_Proxmox_id_is_400_and_keeps_the_vm()
     {
         var teamId = Guid.NewGuid();
         TeamVisibility(teamId);
@@ -328,14 +328,44 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         var response = await RootClient.PostAsJsonAsync("/api/vms", form, Ct);
 
-        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
-        Assert.Equal("An error occurred while saving the entity changes. See the inner exception for details.", problem.Detail);
+        var problem = await AssertJsonError(HttpStatusCode.BadRequest, response);
+        Assert.Equal($"Proxmox VM {vm.ProxmoxVmInfo.Id} is already registered to another virtual machine.", problem.Title);
+        Assert.Null(problem.Detail);
         await using var context = NewContext();
         Assert.Equal(vm.Id, Assert.Single(context.Vms).Id);
         var info = Assert.Single(context.ProxmoxVmInfo);
         Assert.Equal(vm.ProxmoxVmInfo.Id, info.Id);
         Assert.Equal(vm.Id, info.VmId);
         Assert.Equal("pve-1", info.Node);
+    }
+
+    [Fact]
+    public async Task Update_pointing_a_vm_at_another_vms_Proxmox_id_is_400_and_changes_nothing()
+    {
+        var teamId = Guid.NewGuid();
+        TeamVisibility(teamId);
+        var first = TestData.ProxmoxVm(teamId, vmid: 100);
+        var second = TestData.ProxmoxVm(teamId, vmid: 101);
+        await Seed(first, second);
+        var form = new VmUpdateForm
+        {
+            Name = "after",
+            ProxmoxVmInfo = new Player.Vm.Api.Features.Vms.ProxmoxVmInfo
+            {
+                Id = 100,
+                Node = "pve-1",
+                Type = ProxmoxVmType.QEMU
+            }
+        };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{second.Id}", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.BadRequest, response);
+        Assert.Equal("Proxmox VM 100 is already registered to another virtual machine.", problem.Title);
+        await using var context = NewContext();
+        Assert.Equal(second.Name, context.Vms.Single(x => x.Id == second.Id).Name);
+        Assert.Equal(first.Id, context.ProxmoxVmInfo.Single(x => x.Id == 100).VmId);
+        Assert.Equal(second.Id, context.ProxmoxVmInfo.Single(x => x.Id == 101).VmId);
     }
 
     [Fact]
