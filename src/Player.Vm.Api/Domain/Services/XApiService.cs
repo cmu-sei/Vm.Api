@@ -221,29 +221,29 @@ public class XApiService : IXApiService
 
             var activity = new Activity
             {
-                id = $"{_options.ApiUrl.TrimEnd('/')}/views/{viewId}/users/{userId}/console",
-                definition = new ActivityDefinition
+                Id = $"{_options.ApiUrl.TrimEnd('/')}/views/{viewId}/users/{userId}/console",
+                Definition = new ActivityDefinition
                 {
-                    type = new Uri("http://activitystrea.ms/schema/1.0/application"),
-                    name = name,
-                    description = description,
-                    extensions = new TinCan.Extensions(extensions)
+                    Type = new Uri("http://activitystrea.ms/schema/1.0/application"),
+                    Name = name,
+                    Description = description,
+                    Extensions = new TinCan.Extensions(extensions)
                 }
             };
 
             var statement = new Statement
             {
-                actor = actor,
-                verb = CreateVerb($"https://crucible.sei.cmu.edu/xapi/verbs/{action}", verbDisplay),
-                target = activity,
-                context = BuildContext(viewId)
+                Actor = actor,
+                Verb = CreateVerb($"https://crucible.sei.cmu.edu/xapi/verbs/{action}", verbDisplay),
+                Target = activity,
+                Context = BuildContext(viewId)
             };
 
             await _queue.EnqueueAsync(new XApiQueuedStatementEntity
             {
-                StatementJson = statement.ToJSON(true),
+                StatementJson = statement.ToJson(true),
                 Verb = action,
-                ActivityId = activity.id,
+                ActivityId = activity.Id,
                 ViewId = viewId
             }, ct);
         }
@@ -294,17 +294,17 @@ public class XApiService : IXApiService
 
         var statement = new Statement
         {
-            actor = actor,
-            verb = CreateVerb(verbId, verbDisplay),
-            target = activity,
-            context = BuildContext(viewId)
+            Actor = actor,
+            Verb = CreateVerb(verbId, verbDisplay),
+            Target = activity,
+            Context = BuildContext(viewId)
         };
 
         await _queue.EnqueueAsync(new XApiQueuedStatementEntity
         {
-            StatementJson = statement.ToJSON(true),
+            StatementJson = statement.ToJson(true),
             Verb = verb,
-            ActivityId = activity.id,
+            ActivityId = activity.Id,
             ViewId = viewId == Guid.Empty ? null : viewId
         }, ct);
     }
@@ -348,17 +348,17 @@ public class XApiService : IXApiService
 
             var statement = new Statement
             {
-                actor = actor,
-                verb = CreateVerb($"https://crucible.sei.cmu.edu/xapi/verbs/{action}", verbDisplay),
-                target = activity,
-                context = BuildContext(viewId)
+                Actor = actor,
+                Verb = CreateVerb($"https://crucible.sei.cmu.edu/xapi/verbs/{action}", verbDisplay),
+                Target = activity,
+                Context = BuildContext(viewId)
             };
 
             await _queue.EnqueueAsync(new XApiQueuedStatementEntity
             {
-                StatementJson = statement.ToJSON(true),
+                StatementJson = statement.ToJson(true),
                 Verb = action,
-                ActivityId = activity.id,
+                ActivityId = activity.Id,
                 ViewId = viewId == Guid.Empty ? null : viewId
             }, ct);
         }
@@ -404,29 +404,29 @@ public class XApiService : IXApiService
             };
             var activity = new Activity
             {
-                id = $"{_options.ApiUrl.TrimEnd('/')}/views/{viewId}/isos/{Uri.EscapeDataString(filename)}",
-                definition = new ActivityDefinition
+                Id = $"{_options.ApiUrl.TrimEnd('/')}/views/{viewId}/isos/{Uri.EscapeDataString(filename)}",
+                Definition = new ActivityDefinition
                 {
-                    type = new Uri("http://id.tincanapi.com/activitytype/file"),
-                    name = name,
-                    description = description,
-                    extensions = new TinCan.Extensions(extensions)
+                    Type = new Uri("http://id.tincanapi.com/activitytype/file"),
+                    Name = name,
+                    Description = description,
+                    Extensions = new TinCan.Extensions(extensions)
                 }
             };
 
             var statement = new Statement
             {
-                actor = actor,
-                verb = CreateVerb($"https://crucible.sei.cmu.edu/xapi/verbs/{action}", verbDisplay),
-                target = activity,
-                context = BuildContext(viewId)
+                Actor = actor,
+                Verb = CreateVerb($"https://crucible.sei.cmu.edu/xapi/verbs/{action}", verbDisplay),
+                Target = activity,
+                Context = BuildContext(viewId)
             };
 
             await _queue.EnqueueAsync(new XApiQueuedStatementEntity
             {
-                StatementJson = statement.ToJSON(true),
+                StatementJson = statement.ToJson(true),
                 Verb = action,
-                ActivityId = activity.id,
+                ActivityId = activity.Id,
                 ViewId = viewId
             }, ct);
         }
@@ -452,11 +452,11 @@ public class XApiService : IXApiService
 
         return new Agent
         {
-            name = _user.FindFirst("name")?.Value ?? _user.Identity?.Name ?? "Unknown User",
-            account = new AgentAccount
+            Name = _user.FindFirst("name")?.Value ?? _user.Identity?.Name ?? "Unknown User",
+            Account = new AgentAccount
             {
-                homePage = issuerUri,
-                name = subject
+                HomePage = issuerUri,
+                Name = subject
             }
         };
     }
@@ -479,13 +479,13 @@ public class XApiService : IXApiService
 
         return new Activity
         {
-            id = $"{_options.ApiUrl.TrimEnd('/')}/vms/{vm.Id}/console",
-            definition = new ActivityDefinition
+            Id = $"{_options.ApiUrl.TrimEnd('/')}/vms/{vm.Id}/console",
+            Definition = new ActivityDefinition
             {
-                type = new Uri("http://activitystrea.ms/schema/1.0/application"),
-                name = name,
-                description = description,
-                extensions = new TinCan.Extensions(extensions)
+                Type = new Uri("http://activitystrea.ms/schema/1.0/application"),
+                Name = name,
+                Description = description,
+                Extensions = new TinCan.Extensions(extensions)
             }
         };
     }
@@ -510,13 +510,13 @@ public class XApiService : IXApiService
 
         return new Activity
         {
-            id = $"{_options.ApiUrl.TrimEnd('/')}/vms/{vm.Id}/actions/{action}",
-            definition = new ActivityDefinition
+            Id = $"{_options.ApiUrl.TrimEnd('/')}/vms/{vm.Id}/actions/{action}",
+            Definition = new ActivityDefinition
             {
-                type = new Uri("http://adlnet.gov/expapi/activities/simulation"),
-                name = name,
-                description = description,
-                extensions = new TinCan.Extensions(extensions)
+                Type = new Uri("http://adlnet.gov/expapi/activities/simulation"),
+                Name = name,
+                Description = description,
+                Extensions = new TinCan.Extensions(extensions)
             }
         };
     }
@@ -549,28 +549,28 @@ public class XApiService : IXApiService
     {
         var context = new Context
         {
-            platform = _options.Platform,
-            language = "en-US",
-            contextActivities = new ContextActivities
+            Platform = _options.Platform,
+            Language = "en-US",
+            ContextActivities = new ContextActivities
             {
-                category =
+                Category =
                 [
-                    new Activity { id = ProfileActivityId }
+                    new Activity { Id = ProfileActivityId }
                 ]
             }
         };
 
         if (viewId != Guid.Empty)
         {
-            context.registration = viewId;
-            context.contextActivities.parent =
+            context.Registration = viewId;
+            context.ContextActivities.Parent =
             [
                 new Activity
                 {
-                    id = $"{_options.PlayerApiUrl.TrimEnd('/')}/views/{viewId}",
-                    definition = new ActivityDefinition
+                    Id = $"{_options.PlayerApiUrl.TrimEnd('/')}/views/{viewId}",
+                    Definition = new ActivityDefinition
                     {
-                        type = new Uri("http://adlnet.gov/expapi/activities/simulation")
+                        Type = new Uri("http://adlnet.gov/expapi/activities/simulation")
                     }
                 }
             ];
@@ -586,8 +586,8 @@ public class XApiService : IXApiService
 
         return new Verb
         {
-            id = new Uri(id),
-            display = languageMap
+            Id = new Uri(id),
+            Display = languageMap
         };
     }
 }
