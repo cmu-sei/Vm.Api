@@ -10,10 +10,10 @@
     <RootNamespace>Player.Vm.Api.Tests</RootNamespace>
 
     <!--
-      Applies coverlet.runsettings to every run, so a coverage run cannot go without its exclusions. The
-      collector in that file is disabled by default, so an ordinary `dotnet test` collects nothing.
+      Microsoft.Testing.Platform (global.json test.runner): the test project runs as its own test app, under
+      `dotnet test` and `dotnet run` alike. xunit.v3 4 and later only run this way on the .NET 10 SDK.
     -->
-    <RunSettingsFilePath>$(MSBuildProjectDirectory)/coverlet.runsettings</RunSettingsFilePath>
+    <UseMicrosoftTestingPlatformRunner>true</UseMicrosoftTestingPlatformRunner>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,16 +28,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.NET.Test.Sdk" />
     <PackageReference Include="xunit.v3" />
-    <PackageReference Include="xunit.runner.visualstudio">
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-      <PrivateAssets>all</PrivateAssets>
-    </PackageReference>
-    <PackageReference Include="coverlet.collector">
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-      <PrivateAssets>all</PrivateAssets>
-    </PackageReference>
+    <PackageReference Include="coverlet.MTP" />
     <PackageReference Include="NSubstitute" />
     <!-- Hosts Player.Vm.Api in process over TestServer, so the tests drive the real Startup. -->
     <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" />
