@@ -3,6 +3,7 @@
 
 using AutoMapper;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Infrastructure.Authorization;
@@ -323,29 +324,94 @@ namespace Player.Vm.Api.Features.Vms
             if (tasks.Any(x => !x.Result))
                 throw new ForbiddenException();
 
-            await EnsureProxmoxVmIsUnregistered(form.ProxmoxVmInfo, form.Id, ct);
+            await EnsureProxmoxVmCanBeRegistered(form.ProxmoxVmInfo, ct);
 
             _context.Vms.Add(vmEntity);
-            await _context.SaveChangesAsync(ct);
+            await SaveRegisteringProxmoxVm(form.ProxmoxVmInfo, ct);
 
             return _mapper.Map<Vm>(vmEntity);
         }
 
+        // Proxmox reserves vmids below 100 for itself and allocates none above 999999999.
+        private const int MinProxmoxVmId = 100;
+        private const int MaxProxmoxVmId = 999_999_999;
+
         /// <summary>
-        /// A Proxmox VM can back only one Player VM: its vmid is the key of the ProxmoxVmInfo table, so a
-        /// second registration would otherwise fail on the insert as a 500. The owning VM isn't named,
+        /// A Proxmox VM can back only one Player VM, because its vmid is the key of the ProxmoxVmInfo
+        /// table. The vmid must also be one Proxmox could have assigned: the key is an identity column, so
+        /// a 0 would otherwise be replaced by a number the database picked. The owning VM isn't named,
         /// because it may belong to a team the caller can't see.
         /// </summary>
-        private async Task EnsureProxmoxVmIsUnregistered(ProxmoxVmInfo info, Guid? vmId, CancellationToken ct)
+        private async Task EnsureProxmoxVmCanBeRegistered(ProxmoxVmInfo info, CancellationToken ct)
         {
             if (info == null)
                 return;
 
-            var registered = await _context.ProxmoxVmInfo
-                .AnyAsync(p => p.Id == info.Id && p.VmId != vmId, ct);
+            if (info.Id < MinProxmoxVmId || info.Id > MaxProxmoxVmId)
+                throw new BadRequestException(
+                    $"Proxmox VM ids range from {MinProxmoxVmId} to {MaxProxmoxVmId}; {info.Id} is outside that range.");
 
-            if (registered)
-                throw new BadRequestException($"Proxmox VM {info.Id} is already registered to another virtual machine.");
+            if (await _context.ProxmoxVmInfo.AnyAsync(p => p.Id == info.Id, ct))
+                throw ProxmoxVmAlreadyRegistered(info.Id);
+        }
+
+        /// <summary>
+        /// Saves, turning a duplicate vmid into the same 409 <see cref="EnsureProxmoxVmCanBeRegistered"/>
+        /// gives. The check can't see a registration that another request commits after it runs.
+        /// </summary>
+        private async Task SaveRegisteringProxmoxVm(ProxmoxVmInfo info, CancellationToken ct)
+        {
+            try
+            {
+                await _context.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex) when (info != null && ex.GetBaseException() is PostgresException
+            {
+                SqlState: PostgresErrorCodes.UniqueViolation,
+                ConstraintName: "PK_proxmox_vm_info"
+            })
+            {
+                throw ProxmoxVmAlreadyRegistered(info.Id);
+            }
+        }
+
+        private static ConflictException ProxmoxVmAlreadyRegistered(int vmid) =>
+            new($"Proxmox VM {vmid} is already registered to another virtual machine.");
+
+        /// <summary>
+        /// The vmid is the key of the VM's ProxmoxVmInfo row, so EF can't change it in place. Pointing the
+        /// VM at another vmid replaces the row instead, and keeping the vmid edits the existing one.
+        /// </summary>
+        private void UpdateProxmoxVmInfo(Domain.Models.Vm vmEntity, ProxmoxVmInfo info)
+        {
+            var current = vmEntity.ProxmoxVmInfo;
+
+            if (info != null && current?.Id == info.Id)
+            {
+                current.Node = info.Node;
+                current.Type = info.Type;
+                return;
+            }
+
+            if (current != null)
+                _context.ProxmoxVmInfo.Remove(current);
+
+            vmEntity.ProxmoxVmInfo = null;
+
+            if (info == null)
+                return;
+
+            // Added explicitly: EF would track a new row whose key is already set as Modified, and the
+            // save would then update a row that doesn't exist.
+            var replacement = new Domain.Models.ProxmoxVmInfo
+            {
+                Id = info.Id,
+                VmId = vmEntity.Id,
+                Node = info.Node,
+                Type = info.Type
+            };
+            _context.ProxmoxVmInfo.Add(replacement);
+            vmEntity.ProxmoxVmInfo = replacement;
         }
 
         public async Task<Vm> UpdateAsync(Guid id, VmUpdateForm form, CancellationToken ct)
@@ -360,12 +426,18 @@ namespace Player.Vm.Api.Features.Vms
             if (!await _playerService.CanManageTeams(teams, ct))
                 throw new ForbiddenException();
 
-            await EnsureProxmoxVmIsUnregistered(form.ProxmoxVmInfo, id, ct);
+            // Only a vmid the VM doesn't already have needs checking: resending its own is the usual edit.
+            var registering = form.ProxmoxVmInfo != null && form.ProxmoxVmInfo.Id != vmEntity.ProxmoxVmInfo?.Id
+                ? form.ProxmoxVmInfo
+                : null;
+
+            await EnsureProxmoxVmCanBeRegistered(registering, ct);
 
             vmEntity = _mapper.Map(form, vmEntity);
 
             _context.Vms.Update(vmEntity);
-            await _context.SaveChangesAsync(ct);
+            UpdateProxmoxVmInfo(vmEntity, form.ProxmoxVmInfo);
+            await SaveRegisteringProxmoxVm(registering, ct);
 
             return _mapper.Map<Vm>(vmEntity);
         }

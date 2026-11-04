@@ -312,23 +312,18 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     [Fact]
-    public async Task Create_with_an_existing_Proxmox_id_is_400_and_keeps_the_vm()
+    public async Task Create_with_an_existing_Proxmox_id_is_409_and_keeps_the_vm()
     {
         var teamId = Guid.NewGuid();
         TeamVisibility(teamId);
         var vm = TestData.ProxmoxVm(teamId);
         await Seed(vm);
         var form = CreateForm(teamId, "another-vm");
-        form.ProxmoxVmInfo = new Player.Vm.Api.Features.Vms.ProxmoxVmInfo
-        {
-            Id = vm.ProxmoxVmInfo.Id,
-            Node = "another-node",
-            Type = ProxmoxVmType.QEMU
-        };
+        form.ProxmoxVmInfo = ProxmoxInfo(vm.ProxmoxVmInfo.Id, "another-node");
 
         var response = await RootClient.PostAsJsonAsync("/api/vms", form, Ct);
 
-        var problem = await AssertJsonError(HttpStatusCode.BadRequest, response);
+        var problem = await AssertJsonError(HttpStatusCode.Conflict, response);
         Assert.Equal($"Proxmox VM {vm.ProxmoxVmInfo.Id} is already registered to another virtual machine.", problem.Title);
         Assert.Null(problem.Detail);
         await using var context = NewContext();
@@ -339,59 +334,151 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal("pve-1", info.Node);
     }
 
+    /// <summary>
+    /// The vmid is an identity column, so a 0 used to be replaced by a number the database picked, and the
+    /// VM was registered against a Proxmox VM nobody named. Proxmox itself assigns 100 to 999999999.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(99)]
+    [InlineData(1_000_000_000)]
+    public async Task Create_with_a_Proxmox_id_outside_the_Proxmox_range_is_400_and_stores_nothing(int vmid)
+    {
+        var teamId = Guid.NewGuid();
+        TeamVisibility(teamId);
+        var form = CreateForm(teamId, "out-of-range-vm");
+        form.ProxmoxVmInfo = ProxmoxInfo(vmid);
+
+        var response = await RootClient.PostAsJsonAsync("/api/vms", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.BadRequest, response);
+        Assert.Equal($"Proxmox VM ids range from 100 to 999999999; {vmid} is outside that range.", problem.Title);
+        await using var context = NewContext();
+        Assert.Empty(context.Vms);
+        Assert.Empty(context.ProxmoxVmInfo);
+    }
+
     [Fact]
-    public async Task Update_pointing_a_vm_at_another_vms_Proxmox_id_is_400_and_changes_nothing()
+    public async Task Update_with_a_Proxmox_id_outside_the_Proxmox_range_is_400_and_changes_nothing()
+    {
+        var vm = TestData.ProxmoxVm(vmid: 101);
+        await Seed(vm);
+        var form = new VmUpdateForm { Name = "after", ProxmoxVmInfo = ProxmoxInfo(0) };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.BadRequest, response);
+        Assert.Equal("Proxmox VM ids range from 100 to 999999999; 0 is outside that range.", problem.Title);
+        await using var context = NewContext();
+        Assert.Equal(vm.Name, context.Vms.Single(x => x.Id == vm.Id).Name);
+        Assert.Equal(vm.Id, Assert.Single(context.ProxmoxVmInfo).VmId);
+    }
+
+    [Fact]
+    public async Task Update_pointing_a_vm_at_another_vms_Proxmox_id_is_409_and_changes_nothing()
     {
         var teamId = Guid.NewGuid();
         TeamVisibility(teamId);
         var first = TestData.ProxmoxVm(teamId, vmid: 100);
         var second = TestData.ProxmoxVm(teamId, vmid: 101);
         await Seed(first, second);
-        var form = new VmUpdateForm
-        {
-            Name = "after",
-            ProxmoxVmInfo = new Player.Vm.Api.Features.Vms.ProxmoxVmInfo
-            {
-                Id = 100,
-                Node = "pve-1",
-                Type = ProxmoxVmType.QEMU
-            }
-        };
+        var form = new VmUpdateForm { Name = "after", ProxmoxVmInfo = ProxmoxInfo(100, "pve-2", ProxmoxVmType.LXC) };
 
         var response = await RootClient.PutAsJsonAsync($"/api/vms/{second.Id}", form, Ct);
 
-        var problem = await AssertJsonError(HttpStatusCode.BadRequest, response);
+        var problem = await AssertJsonError(HttpStatusCode.Conflict, response);
         Assert.Equal("Proxmox VM 100 is already registered to another virtual machine.", problem.Title);
+        Assert.Null(problem.Detail);
         await using var context = NewContext();
+        Assert.Equal(first.Name, context.Vms.Single(x => x.Id == first.Id).Name);
         Assert.Equal(second.Name, context.Vms.Single(x => x.Id == second.Id).Name);
-        Assert.Equal(first.Id, context.ProxmoxVmInfo.Single(x => x.Id == 100).VmId);
-        Assert.Equal(second.Id, context.ProxmoxVmInfo.Single(x => x.Id == 101).VmId);
+        foreach (var (vm, vmid) in new[] { (first, 100), (second, 101) })
+        {
+            var info = context.ProxmoxVmInfo.Single(x => x.Id == vmid);
+            Assert.Equal(vm.Id, info.VmId);
+            Assert.Equal("pve-1", info.Node);
+            Assert.Equal(ProxmoxVmType.QEMU, info.Type);
+        }
     }
 
     [Fact]
-    public async Task Update_adding_Proxmox_info_to_a_vm_answers_a_server_error_and_keeps_the_vm()
+    public async Task Update_pointing_a_vm_at_an_unregistered_Proxmox_id_moves_it()
     {
-        var vm = Vm([Guid.NewGuid()], name: "before");
+        var vm = TestData.ProxmoxVm(vmid: 101);
         await Seed(vm);
-        var form = new VmUpdateForm
-        {
-            Name = "after",
-            ProxmoxVmInfo = new Player.Vm.Api.Features.Vms.ProxmoxVmInfo
-            {
-                Id = 100,
-                Node = "node-1",
-                Type = ProxmoxVmType.QEMU
-            }
-        };
+        var form = new VmUpdateForm { Name = "after", ProxmoxVmInfo = ProxmoxInfo(102, "pve-2", ProxmoxVmType.LXC) };
 
         var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", form, Ct);
 
-        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
-        Assert.StartsWith("The database operation was expected to affect 1 row(s), but actually affected 0 row(s)", problem.Detail);
+        await AssertStatus(HttpStatusCode.OK, response);
+        var body = await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct);
+        Assert.Equal(102, body.ProxmoxVmInfo.Id);
+        await using var context = NewContext();
+        Assert.Equal("after", context.Vms.Single(x => x.Id == vm.Id).Name);
+        var info = Assert.Single(context.ProxmoxVmInfo);
+        Assert.Equal(102, info.Id);
+        Assert.Equal(vm.Id, info.VmId);
+        Assert.Equal("pve-2", info.Node);
+        Assert.Equal(ProxmoxVmType.LXC, info.Type);
+    }
+
+    /// <summary>
+    /// The usual edit: a Proxmox VM's form carries its own vmid back. That vmid is registered, to this VM,
+    /// so it must not count as taken.
+    /// </summary>
+    [Fact]
+    public async Task Update_keeping_the_vms_own_Proxmox_id_edits_its_node_and_type()
+    {
+        var vm = TestData.ProxmoxVm(vmid: 101);
+        await Seed(vm);
+        var form = new VmUpdateForm { Name = "after", ProxmoxVmInfo = ProxmoxInfo(101, "pve-2", ProxmoxVmType.LXC) };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", form, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        await using var context = NewContext();
+        Assert.Equal("after", context.Vms.Single(x => x.Id == vm.Id).Name);
+        var info = Assert.Single(context.ProxmoxVmInfo);
+        Assert.Equal(101, info.Id);
+        Assert.Equal(vm.Id, info.VmId);
+        Assert.Equal("pve-2", info.Node);
+        Assert.Equal(ProxmoxVmType.LXC, info.Type);
+    }
+
+    [Fact]
+    public async Task Update_adding_Proxmox_info_to_a_vm_registers_it()
+    {
+        var vm = Vm([Guid.NewGuid()], name: "before");
+        await Seed(vm);
+        var form = new VmUpdateForm { Name = "after", ProxmoxVmInfo = ProxmoxInfo(100) };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", form, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
         await using var context = NewContext();
         var stored = context.Vms.Single(x => x.Id == vm.Id);
-        Assert.Equal("before", stored.Name);
-        Assert.Equal(VmType.Vsphere, stored.Type);
+        Assert.Equal("after", stored.Name);
+        Assert.Equal(VmType.Proxmox, stored.Type);
+        var info = Assert.Single(context.ProxmoxVmInfo);
+        Assert.Equal(100, info.Id);
+        Assert.Equal(vm.Id, info.VmId);
+        Assert.Equal("node-1", info.Node);
+    }
+
+    [Fact]
+    public async Task Update_without_Proxmox_info_unregisters_the_vm()
+    {
+        var vm = TestData.ProxmoxVm(vmid: 101);
+        await Seed(vm);
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        await using var context = NewContext();
+        var stored = context.Vms.Single(x => x.Id == vm.Id);
+        Assert.Equal("after", stored.Name);
+        Assert.Equal(VmType.Unknown, stored.Type);
         Assert.Empty(context.ProxmoxVmInfo);
     }
 
@@ -2886,6 +2973,10 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
     private static VmCreateForm CreateForm(Guid teamId, string name) =>
         new() { Id = Guid.NewGuid(), Name = name, TeamIds = [teamId] };
+
+    private static Player.Vm.Api.Features.Vms.ProxmoxVmInfo ProxmoxInfo(
+        int vmid, string node = "node-1", ProxmoxVmType type = ProxmoxVmType.QEMU) =>
+        new() { Id = vmid, Node = node, Type = type };
 
     private static VmMapCreateForm MapCreateForm(Guid teamId) =>
         new() { Name = "floor-1", ImageUrl = "https://images/floor-1.png", TeamIds = [teamId], Coordinates = [] };
