@@ -89,6 +89,14 @@ namespace Player.Vm.Api.Features.Proxmox
             var config = await _proxmoxService.GetVmConfigSummary(vm.ProxmoxVmInfo, ct);
             var currentNetworks = config.CurrentNetworks;
 
+            // The one field the config cannot answer, and the slow one: an agent the config turns on but
+            // the guest is not running costs GuestAgentTimeoutMilliseconds. Pinged only where the config
+            // turns the agent on, since PVE refuses the ping otherwise and the answer could only be false,
+            // and started now so the wait overlaps the network-name lookup below. Never throws.
+            var guestAgentRunning = config.AgentEnabled
+                ? _proxmoxService.IsGuestAgentRunning(vm.ProxmoxVmInfo)
+                : Task.FromResult(false);
+
             // A Vm can already sit on a network the caller is not allowed to select. Those are still
             // shown, by name where one is registered, but as read-only options.
             var unauthorizedCurrentNetworks = currentNetworks.Values
@@ -119,10 +127,7 @@ namespace Player.Vm.Api.Features.Proxmox
                 CanMountIso = _isoProviderEnabled
                     && vm.ProxmoxVmInfo.Type == ProxmoxVmType.QEMU
                     && config.HasCdromDrive,
-                // Pinged only where the config turns the agent on: PVE refuses the ping otherwise, and
-                // the answer could only be false.
-                GuestAgentRunning = config.AgentEnabled
-                    && await _proxmoxService.IsGuestAgentRunning(vm.ProxmoxVmInfo),
+                GuestAgentRunning = await guestAgentRunning,
                 HasSnapshot = config.CurrentSnapshot != null,
                 CurrentSnapshot = config.CurrentSnapshot,
                 VncClipboardEnabled = config.VncClipboardEnabled,
