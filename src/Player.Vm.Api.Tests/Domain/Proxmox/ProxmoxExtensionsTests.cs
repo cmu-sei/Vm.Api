@@ -3,6 +3,7 @@
 
 using System;
 using System.Net;
+using System.Threading;
 using System.Threading.Tasks;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Proxmox.Extensions;
@@ -69,6 +70,27 @@ public class ProxmoxExtensionsTests
         Assert.StartsWith("Power On did not finish within ", ex.Message);
         Assert.Contains("may still be running", ex.Message);
         Assert.Contains(cluster.Http.Paths, x => x.Contains("/tasks/") && x.EndsWith("/status"));
+    }
+
+    // A status poll that answers after the deadline but reports the task done is a finished task:
+    // reporting it as a 504 that "may still be running" would tell the user something false.
+    [Fact]
+    public async Task WaitAndThrow_WhenTheTaskFinishesOnAPollPastTheDeadline_Succeeds()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var path = FakeProxmoxCluster.VmPath("pve1", ProxmoxVmType.QEMU, 100, "/status/start");
+        var upid = $"UPID:pve1:0000ABCD:0011:0022:qmstart:100:{FakeProxmoxCluster.ApiToken}:";
+        cluster.Http.AnswersJson($"POST {path}", FakeProxmoxCluster.Data($"\"{upid}\""));
+        cluster.Http.AnswersJson($"GET api2/json/nodes/pve1/tasks/{upid}/status", () =>
+        {
+            // Outlasts the whole 60 ms budget, then reports the task stopped.
+            Thread.Sleep(150);
+            return FakeProxmoxCluster.Data("{\"status\":\"stopped\",\"exitstatus\":\"OK\"}");
+        });
+        var client = cluster.Client();
+        var result = await client.Nodes["pve1"].Qemu[100].Status.Start.VmStart();
+
+        await client.WaitAndThrow(result, "PowerOn vmid=100", TestContext.Current.CancellationToken, wait: 10, timeout: 60);
     }
 
     [Theory]

@@ -211,7 +211,9 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
 
             stopwatch.Stop();
 
-            return stopwatch.ElapsedMilliseconds < timeout;
+            // The last poll can land past the deadline and still find the task done; that is a
+            // finished task, not a timeout.
+            return !isRunning;
         }
     }
 }
