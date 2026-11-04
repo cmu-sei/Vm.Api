@@ -963,6 +963,37 @@ public class ProxmoxStateServiceTests(DatabaseFixture fixture) : DatabaseTestBas
         await h.Proxmox.DidNotReceive().GetGuestState(Arg.Any<ProxmoxVmInfo>(), Arg.Any<bool>(), Arg.Any<CancellationToken>());
     }
 
+    /// <summary>
+    /// The path a snapshot create or delete takes to record its effect at once, rather than waiting for
+    /// the next guest-state read: bulk Revert decides from this column.
+    /// </summary>
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    public async Task SetHasSnapshot_WritesTheColumnWithNoPass(bool before, bool after)
+    {
+        var h = Build();
+        await SeedVm(VmA, Vmid, PowerState.On, hasSnapshot: before);
+
+        await h.Service.SetHasSnapshot(VmA, after);
+
+        var row = await Reread(VmA);
+        Assert.Equal(after, row.HasSnapshot);
+        Assert.Equal(PowerState.On, row.PowerState);
+        await h.Proxmox.DidNotReceive().GetVms();
+    }
+
+    /// <summary>The row can be deleted between the snapshot call and this write; that is not an error.</summary>
+    [Fact]
+    public async Task SetHasSnapshot_ForAVmPlayerNoLongerHas_DoesNothing()
+    {
+        var h = Build();
+
+        await h.Service.SetHasSnapshot(Guid.NewGuid(), true);
+
+        Assert.Empty(Failures(h));
+    }
+
     #endregion
 
     /// <summary>

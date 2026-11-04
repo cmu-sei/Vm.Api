@@ -28,6 +28,12 @@ public interface IProxmoxStateService
 {
     void CheckState();
     Task UpdateVm(IClusterResourceVm vm);
+
+    /// <summary>
+    /// Stores whether a Vm has a snapshot to revert to, for a caller that has just changed it and
+    /// cannot wait for the next guest-state read.
+    /// </summary>
+    Task SetHasSnapshot(Guid vmId, bool hasSnapshot);
 }
 
 public class ProxmoxStateService : BackgroundService, IProxmoxStateService
@@ -86,6 +92,19 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
     public async Task UpdateVm(IClusterResourceVm vm)
     {
         await _jobQueue.SendAsync(vm);
+    }
+
+    public async Task SetHasSnapshot(Guid vmId, bool hasSnapshot)
+    {
+        using var scope = _serviceProvider.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
+        var dbVm = await dbContext.Vms.FirstOrDefaultAsync(x => x.Id == vmId);
+
+        if (dbVm == null || dbVm.HasSnapshot == hasSnapshot)
+            return;
+
+        dbVm.HasSnapshot = hasSnapshot;
+        await dbContext.SaveChangesAsync();
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)

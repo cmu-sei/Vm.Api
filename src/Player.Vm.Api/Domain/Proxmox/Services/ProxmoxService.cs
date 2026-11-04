@@ -1110,7 +1110,37 @@ public partial class ProxmoxService : IProxmoxService
             : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot.Snapshot(snapshotName, description, includeRam));
 
         await _pveClient.WaitAndThrow(result, $"CreateSnapshot vmid={info.Id} name={snapshotName}");
+        await RecordHasSnapshot(info);
         return $"snapshot {snapshotName} created on vmid {info.Id}";
+    }
+
+    /// <summary>
+    /// Records whether the Vm now has a snapshot to revert to. Creating or deleting one changes it, and
+    /// bulk Revert decides from the stored HasSnapshot, which the poller only re-reads every
+    /// GuestStateRefreshIntervalSeconds: without this, a revert right after the first snapshot was
+    /// taken is refused, and one right after the last was deleted is accepted and then fails. One config
+    /// read, the same the poller makes. The snapshot operation has already succeeded, so a failure here
+    /// is logged and left to the poller rather than reported.
+    /// </summary>
+    private async Task RecordHasSnapshot(ProxmoxVmInfo info)
+    {
+        try
+        {
+            var config = await ReadConfig(info);
+
+            if (!config.IsSuccessStatusCode)
+            {
+                _logger.LogDebug($"Could not read the config of vmid={info.Id} on {info.Node} after a snapshot change: {config.GetErrorMessage()}");
+                return;
+            }
+
+            var hasSnapshot = ReadParent(ProxmoxExtensions.GetField(config.Response, "data")) != null;
+            await _proxmoxStateService.SetHasSnapshot(info.VmId, hasSnapshot);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, $"Could not record the snapshot state of vmid={info.Id}; the state poller will pick it up");
+        }
     }
 
     public async Task<string> RevertSnapshot(ProxmoxVmInfo info, string snapshotName)
@@ -1165,6 +1195,7 @@ public partial class ProxmoxService : IProxmoxService
             : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshotName].Delsnapshot());
 
         await _pveClient.WaitAndThrow(result, $"DeleteSnapshot vmid={info.Id} name={snapshotName}");
+        await RecordHasSnapshot(info);
         return $"snapshot {snapshotName} deleted on vmid {info.Id}";
     }
 
