@@ -7,7 +7,7 @@
   </PropertyGroup>
   <!-- Versions live in Directory.Packages.props. -->
   <ItemGroup>
-    <PackageReference Include="AutoMapper" />
+    <PackageReference Include="Riok.Mapperly" ExcludeAssets="runtime" PrivateAssets="all" />
     <PackageReference Include="Player.Api.Client" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>

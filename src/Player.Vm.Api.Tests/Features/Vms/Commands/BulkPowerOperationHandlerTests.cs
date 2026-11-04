@@ -64,8 +64,8 @@ public class BulkPowerOperationHandlerTests(DatabaseFixture fixture) : DatabaseT
         await using var context = NewContext();
         var players = _player.Service;
         var vmService = new VmService(
-            context, players, _player.Views, _player.User, TestMapper.Mapper,
-            new NetworkService(context, players, TestMapper.Mapper));
+            context, players, _player.Views, _player.User, TestConsoleUrls.Options,
+            new NetworkService(context, players));
 
         var handler = new BulkPowerOperation.Handler(
             _vsphere, Substitute.For<IProxmoxService>(), players, context, vmService, Substitute.For<IXApiService>());

@@ -41,9 +41,9 @@ public class VmSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBase(f
     private readonly IViewService _views = Substitute.For<IViewService>();
     private readonly HubRecorder<VmHub> _hub = new();
 
-    private VmCreatedSignalRHandler Created => new(Db, TestMapper.Mapper, _views, _hub);
-    private VmUpdatedSignalRHandler Updated => new(Db, TestMapper.Mapper, _views, _hub);
-    private VmDeletedSignalRHandler Deleted => new(Db, TestMapper.Mapper, _views, _hub);
+    private VmCreatedSignalRHandler Created => new(Db, TestConsoleUrls.Options, _views, _hub);
+    private VmUpdatedSignalRHandler Updated => new(Db, TestConsoleUrls.Options, _views, _hub);
+    private VmDeletedSignalRHandler Deleted => new(Db, TestConsoleUrls.Options, _views, _hub);
 
     #region Which groups an announcement reaches
 

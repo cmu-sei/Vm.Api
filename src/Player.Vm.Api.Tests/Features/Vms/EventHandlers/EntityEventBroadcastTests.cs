@@ -66,7 +66,7 @@ public class EntityEventBroadcastTests(DatabaseFixture fixture) : DatabaseTestBa
         services.AddSingleton(_views);
         services.AddSingleton(_connections);
         services.AddSingleton<IHubContext<VmHub>>(_hub);
-        services.AddSingleton(TestMapper.Mapper);
+        services.AddSingleton(TestConsoleUrls.Options);
 
         // Resolved lazily: the context needs the provider it will publish through, so one of the two has
         // to be built first. Production has the same cycle and breaks it the same way, with a request

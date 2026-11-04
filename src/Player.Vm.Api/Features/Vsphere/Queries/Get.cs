@@ -8,7 +8,6 @@ using MediatR;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
 using Player.Vm.Api.Infrastructure.Exceptions;
-using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vms;
 using Microsoft.Extensions.Logging;
@@ -36,24 +35,21 @@ namespace Player.Vm.Api.Features.Vsphere
         public class Handler : BaseHandler, IRequestHandler<Query, VsphereVirtualMachine>
         {
             private readonly IVmService _vmService;
-            private readonly IMapper _mapper;
             private readonly IVsphereService _vsphereService;
             private readonly ILogger<Get> _logger;
             private readonly VsphereOptions _vsphereOptions;
             private readonly ClaimsPrincipal _user;
             public Handler(
                 IVmService vmService,
-                IMapper mapper,
                 IVsphereService vsphereService,
                 ILogger<Get> logger,
                 VsphereOptions vsphereOptions,
                 IPrincipal user,
                 IPlayerService playerService,
                 IViewService viewService) :
-                base(mapper, vsphereService, playerService, user, vmService, viewService)
+                base(vsphereService, playerService, user, vmService, viewService)
             {
                 _vmService = vmService;
-                _mapper = mapper;
                 _vsphereService = vsphereService;
                 _logger = logger;
                 _vsphereOptions = vsphereOptions;

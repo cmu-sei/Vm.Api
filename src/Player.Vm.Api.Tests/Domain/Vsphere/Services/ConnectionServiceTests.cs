@@ -212,7 +212,7 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
 
             var player = new PlayerHarness(Guid.NewGuid(), Ct);
             player.Grant(b => b.Holding(Player.Vm.Api.Infrastructure.Authorization.AppSystemPermission.ManageViews));
-            var vms = new VmService(Db, player.Service, player.Views, player.User, TestMapper.Mapper, Substitute.For<INetworkService>());
+            var vms = new VmService(Db, player.Service, player.Views, player.User, TestConsoleUrls.Options, Substitute.For<INetworkService>());
 
             var created = await vms.CreateAsync(new VmCreateForm { Id = A, Name = "new", TeamIds = [Guid.NewGuid()] }, Ct);
             Assert.Equal(PowerState.Unknown, created.PowerState);

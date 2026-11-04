@@ -10,7 +10,6 @@ using System.Net;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
-using AutoMapper;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -99,7 +98,7 @@ public class VsphereIsoStorageGroupTests
             Service = new VsphereService(
                 Microsoft.Extensions.Options.Options.Create(new RewriteHostOptions()),
                 NullLogger<VsphereService>.Instance, Options, Substitute.For<IConfiguration>(),
-                Connections, Substitute.For<IMapper>(), factory);
+                Connections, factory);
         }
 
         public void Disconnect(string address) =>

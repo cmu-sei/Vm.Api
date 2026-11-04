@@ -31,7 +31,7 @@ rest do not.
 
 Thirteen classes host the application in process and send real HTTP requests through it. Everything between
 the request and the hypervisor client is production wiring - routing, model binding, the authorization
-policy, the MediatR pipeline behaviors, the handlers, AutoMapper and EF Core against real PostgreSQL -
+policy, the MediatR pipeline behaviors, the handlers, the mappings and EF Core against real PostgreSQL -
 and only the edges are replaced.
 
 - `VmsEndpointTests` and `BulkPowerOperationEndpointTests` cover `VmController`, the largest surface in
@@ -390,9 +390,8 @@ file-scoped ones, and encoding one of them would turn every file into a diff wit
 more correct.
 
 Restore-time warnings stay warnings, through `WarningsNotAsErrors`. NU1901 to NU1904 are the NuGet
-audit, and it has two findings here. `AutoMapper` 13 is the only direct one, and it is pinned on
-purpose because the fix is in 15.1.1 and version 15+ requires a commercial license; `MediatR` 12 is
-pinned for the same reason. `Microsoft.NETCore.App` 2.1.0 arrives through `VimClient` and is the
+audit. `MediatR` 12 is pinned on purpose because version 13+ requires a commercial license.
+`Microsoft.NETCore.App` 2.1.0 arrives through `VimClient` and is the
 .NET Core 2.1 framework package, which cannot be raised to a fixed version on net10.0. The other
 transitive hits are raised by the security pins at the bottom of `Directory.Packages.props`, each
 commented with the dependency it comes through, and the test project names the
@@ -429,7 +428,7 @@ production types are written in full, `Player.Vm.Api.Domain.Models.Vm`, or throu
   reports any difference.
 - `Support/` - the files built from the standard's templates: `DatabaseFixture`, `VmContextFactory`,
   `VmAppFactory`, `TestConfiguration`, `DatabaseTestBase`, `ApiTestBase`, `TestActor`, `TestData`,
-  `ClaimsPrincipalBuilder`, `AuthorizationHarness`, `TestMapper`, and the harness self-tests
+  `ClaimsPrincipalBuilder`, `AuthorizationHarness`, `TestConsoleUrls`, and the harness self-tests
   `DatabaseHarnessTests`, `HttpHarnessTests` and `TestActorTests`.
 - `Support/` also holds vm.api's own extras, each named for what it fakes: `FakeProxmoxCluster` (a PVE
   cluster at the socket), `FakeChangeFeed` (vCenter's property collector), `PollLoop` (a counted turn of a
@@ -664,8 +663,8 @@ player.api, route by route.
   "announced twice", with `HubAudience.All` among the audiences), `Recipients` and `FailsFor`. vm.api's own
   `HubContextHarness` went once the shared recorder kept the ordered log. The host itself keeps the real
   hub contexts.
-- `Support/TestMapper.cs` is the application's real AutoMapper configuration, built through DI as
-  `Startup` builds it (`ConsoleUrlResolver` needs `ConsoleUrlOptions`, registered with recognizable urls).
+- `Support/TestConsoleUrls.cs` is the `ConsoleUrlOptions`, with recognizable urls, for a service or
+  handler a test builds itself: mapping a Vm to its view model needs it for the console url.
 
 ## The harness self-tests
 
@@ -715,7 +714,7 @@ reviewer judges against; what follows is how they land in this repository.
 6. Do not add Arrange, Act and Assert comments. A blank line already shows the shape of a test.
    Comments should explain what a test pins and why it matters, not what the next line does.
 7. For an authorization test of a service, construct the service with `PlayerHarness.Service` (the real
-   `PlayerService`) and `TestMapper.Mapper`, and arrange the caller as player.api data with
+   `PlayerService`) and `TestConsoleUrls.Options`, and arrange the caller as player.api data with
    `_player.Grant(...)`. Never substitute `IPlayerService`: it is the code that decides. Whether the test
    is a service or an endpoint test, every authorization call site it touches needs, for each permission
    value the site reads (directly, through a `PlayerService` helper such as `CanViewVms`, `CanViewMaps` or
@@ -1107,7 +1106,7 @@ currently tell you.
   themselves to each other - each asserts the same names independently, and a renamed group would have to be
   renamed in both suites - which is a gap a test cannot close without one of them stopping being a test of
   what the code does.
-- **The projections.** The AutoMapper profiles run in every endpoint test, but only the projections those
+- **The projections.** The mappings run in every endpoint test, but only the projections those
   tests happen to read are asserted.
 - **What the out-of-process clients assume.** `ViewService`, `AuthenticationService`,
   `AuthenticatingHandler` and `CallbackBackgroundService` are now covered down to the socket, which is as

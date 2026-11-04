@@ -37,7 +37,7 @@ using VmUsageLoggingSession = Player.Vm.Api.Domain.Models.VmUsageLoggingSession;
 /// <remarks>
 /// <para>
 /// Real here: the routes and their precedence, model binding, the <c>[AllowAnonymous]</c> decision, the
-/// MediatR pipeline, the handlers, AutoMapper, the CSV and report projections, and EF Core against a
+/// MediatR pipeline, the handlers, the mappings, the CSV and report projections, and EF Core against a
 /// real PostgreSQL usage log database of this test's own. The usage log is a second database with its own
 /// migration history - see <see cref="DatabaseFixture"/> - reachable from a test through
 /// <see cref="DatabaseTestBase.NewLoggingContext"/>.

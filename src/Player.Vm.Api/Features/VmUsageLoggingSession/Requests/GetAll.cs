@@ -15,10 +15,8 @@ using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
-using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
-using AutoMapper.QueryableExtensions;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Domain.Services;
@@ -44,18 +42,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         public class Handler : IRequestHandler<Query, VmUsageLoggingSession[]>
         {
             private readonly VmLoggingContext _db;
-            private readonly IMapper _mapper;
             private readonly IAuthorizationService _authorizationService;
             private readonly IPlayerService _playerService;
 
             public Handler(
                 VmLoggingContext db,
-                IMapper mapper,
                 IAuthorizationService authorizationService,
                 IPlayerService playerService)
             {
                 _db = db;
-                _mapper = mapper;
                 _authorizationService = authorizationService;
                 _playerService = playerService;
             }
@@ -70,7 +65,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                     if (request.ViewId == null)
                     {
                         return await _db.VmUsageLoggingSessions
-                            .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                            .ProjectToVmUsageLoggingSession()
                             .Where(s => s.SessionEnd <= DateTimeOffset.MinValue || s.SessionEnd > DateTimeOffset.UtcNow)
                             .OrderByDescending(s => s.CreatedDt)
                             .ToArrayAsync();
@@ -78,7 +73,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                     else
                     {
                         return await _db.VmUsageLoggingSessions
-                            .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                            .ProjectToVmUsageLoggingSession()
                             .Where(s => s.ViewId == request.ViewId &&
                                         (s.SessionEnd <= DateTimeOffset.MinValue || s.SessionEnd > DateTimeOffset.UtcNow))
                             .OrderByDescending(s => s.CreatedDt)
@@ -91,14 +86,14 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                     if (request.ViewId == null)
                     {
                         return await _db.VmUsageLoggingSessions
-                            .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                            .ProjectToVmUsageLoggingSession()
                             .OrderByDescending(s => s.CreatedDt)
                             .ToArrayAsync();
                     }
                     else
                     {
                         return await _db.VmUsageLoggingSessions
-                            .ProjectTo<VmUsageLoggingSession>(_mapper.ConfigurationProvider)
+                            .ProjectToVmUsageLoggingSession()
                             .Where(s => s.ViewId == request.ViewId)
                             .OrderByDescending(s => s.CreatedDt)
                             .ToArrayAsync();

@@ -14,14 +14,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
 using Player.Vm.Api.Data;
-using AutoMapper;
 using System.Runtime.Serialization;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using System.Security.Claims;
 using System.Security.Principal;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
-using AutoMapper.QueryableExtensions;
 using System.Text.Json.Serialization;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Infrastructure.Authorization;
@@ -43,18 +41,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         public class Handler : IRequestHandler<Command, VmUsageLoggingSession>
         {
             private readonly VmLoggingContext _db;
-            private readonly IMapper _mapper;
             private readonly IAuthorizationService _authorizationService;
             private readonly IPlayerService _playerService;
 
             public Handler(
                 VmLoggingContext db,
-                IMapper mapper,
                 IAuthorizationService authorizationService,
                 IPlayerService playerService)
             {
                 _db = db;
-                _mapper = mapper;
                 _authorizationService = authorizationService;
                 _playerService = playerService;
             }
@@ -72,7 +67,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 entry.SessionEnd = DateTimeOffset.UtcNow;
 
                 await _db.SaveChangesAsync();
-                return _mapper.Map<VmUsageLoggingSession>(entry);
+                return entry.ToVmUsageLoggingSession();
             }
         }
     }

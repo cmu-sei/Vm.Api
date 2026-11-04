@@ -2,12 +2,11 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
+using Player.Vm.Api.Infrastructure.Options;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using AutoMapper;
-using AutoMapper.QueryableExtensions;
 using MediatR;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
@@ -22,9 +21,9 @@ namespace Player.Vm.Api.Features.Vms.EventHandlers
     {
         public VmTeamCreatedSignalRHandler(
             VmContext db,
-            IMapper mapper,
+            ConsoleUrlOptions consoleUrls,
             IViewService viewService,
-            IHubContext<VmHub> vmHub) : base(db, mapper, viewService, vmHub) { }
+            IHubContext<VmHub> vmHub) : base(db, consoleUrls, viewService, vmHub) { }
 
         public async Task Handle(EntityCreated<Domain.Models.VmTeam> notification, CancellationToken cancellationToken)
         {
@@ -48,7 +47,7 @@ namespace Player.Vm.Api.Features.Vms.EventHandlers
                 return;
             }
 
-            var vm = _mapper.Map<Vm>(notification.Entity.Vm);
+            var vm = notification.Entity.Vm.ToVm(_consoleUrls);
             var viewId = await _viewService.GetViewIdForTeam(notification.Entity.TeamId, cancellationToken);
 
             if (viewId.HasValue)
@@ -83,9 +82,9 @@ namespace Player.Vm.Api.Features.Vms.EventHandlers
     {
         public VmTeamDeletedSignalRHandler(
             VmContext db,
-            IMapper mapper,
+            ConsoleUrlOptions consoleUrls,
             IViewService viewService,
-            IHubContext<VmHub> vmHub) : base(db, mapper, viewService, vmHub) { }
+            IHubContext<VmHub> vmHub) : base(db, consoleUrls, viewService, vmHub) { }
 
         public async Task Handle(EntityDeleted<Domain.Models.VmTeam> notification, CancellationToken cancellationToken)
         {
@@ -106,7 +105,7 @@ namespace Player.Vm.Api.Features.Vms.EventHandlers
 
             if (notification.Entity.Vm != null)
             {
-                var vm = _mapper.Map<Vm>(notification.Entity.Vm);
+                var vm = notification.Entity.Vm.ToVm(_consoleUrls);
                 var viewId = await _viewService.GetViewIdForTeam(notification.Entity.TeamId, cancellationToken);
 
                 if (viewId.HasValue)

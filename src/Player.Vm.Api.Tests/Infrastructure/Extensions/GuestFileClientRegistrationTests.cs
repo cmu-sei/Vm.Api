@@ -7,7 +7,7 @@ using System.Threading;
 using Microsoft.Extensions.DependencyInjection;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Infrastructure.Options;
-// Aliased: both AutoMapper and HealthChecks.UI also export a ServiceCollectionExtensions.
+// Aliased: HealthChecks.UI also exports a ServiceCollectionExtensions.
 using ApiExtensions = Player.Vm.Api.Infrastructure.Extensions.ServiceCollectionExtensions;
 
 namespace Player.Vm.Api.Tests.Infrastructure.Extensions;

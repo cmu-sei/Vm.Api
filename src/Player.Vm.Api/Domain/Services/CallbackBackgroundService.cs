@@ -9,7 +9,6 @@ using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -32,20 +31,17 @@ public class CallbackBackgroundService : BackgroundService, ICallbackBackgroundS
 {
     private ActionBlock<WebhookEventWrapper> _eventQueue;
     private readonly IServiceScopeFactory _scopeFactory;
-    private readonly IMapper _mapper;
     private readonly ILogger<CallbackBackgroundService> _logger;
     private readonly IHttpClientFactory _clientFactory;
     private readonly IOptionsMonitor<ClientOptions> _clientOptions;
 
     public CallbackBackgroundService(
         IServiceScopeFactory scopeFactory,
-        IMapper mapper,
         ILogger<CallbackBackgroundService> logger,
         IHttpClientFactory clientFactory,
         IOptionsMonitor<ClientOptions> clientOptions)
     {
         _scopeFactory = scopeFactory;
-        _mapper = mapper;
         _logger = logger;
         _clientFactory = clientFactory;
         _clientOptions = clientOptions;

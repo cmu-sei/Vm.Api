@@ -266,10 +266,9 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         var response = await RootClient.PostAsJsonAsync("/api/vms", form, Ct);
 
+        // The team list is built from the id, which is not there.
         var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
-        Assert.Contains("Error mapping types.", problem.Detail);
-        Assert.Contains("Destination Member:", problem.Detail);
-        Assert.Contains("VmTeams", problem.Detail);
+        Assert.Equal("Nullable object must have a value.", problem.Detail);
         await using var context = NewContext();
         Assert.Empty(context.Vms);
         Assert.Empty(context.VmTeams);

@@ -11,7 +11,6 @@ using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Proxmox.Services;
 using Player.Vm.Api.Domain.Services;
-using AutoMapper;
 
 namespace Player.Vm.Api.Features.Proxmox
 {
@@ -38,25 +37,21 @@ namespace Player.Vm.Api.Features.Proxmox
 
         public class Handler : BaseHandler, IRequestHandler<Query, ProxmoxConsole>
         {
-            private readonly IMapper _mapper;
             private readonly IProxmoxService _proxmoxService;
             public Handler(
                 VmContext db,
                 IPlayerService playerService,
                 IVmService vmService,
-                IMapper mapper,
                 IProxmoxService proxmoxService)
                 : base(db, playerService, vmService)
             {
-                _mapper = mapper;
                 _proxmoxService = proxmoxService;
             }
 
             public async Task<ProxmoxConsole> Handle(Query request, CancellationToken cancellationToken)
             {
                 var vm = await GetVm(request.Id, [], [], [], cancellationToken);
-                var console = _mapper.Map<ProxmoxConsole>(
-                    await _proxmoxService.GetConsole(vm.ProxmoxVmInfo));
+                var console = (await _proxmoxService.GetConsole(vm.ProxmoxVmInfo)).ToProxmoxConsole();
 
                 return console;
             }

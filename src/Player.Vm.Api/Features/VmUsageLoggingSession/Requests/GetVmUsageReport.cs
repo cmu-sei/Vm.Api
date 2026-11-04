@@ -16,7 +16,6 @@ using System.Security.Claims;
 using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
-using AutoMapper;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
@@ -44,20 +43,17 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         public class Handler : IRequestHandler<Query, List<VmUsageReport>>
         {
             private readonly VmLoggingContext _db;
-            private readonly IMapper _mapper;
             private readonly IAuthorizationService _authorizationService;
             private readonly IPlayerService _playerService;
             private readonly Guid _userId;
 
             public Handler(
                 VmLoggingContext db,
-                IMapper mapper,
                 IAuthorizationService authorizationService,
                 IPrincipal principal,
                 IPlayerService playerService)
             {
                 _db = db;
-                _mapper = mapper;
                 _authorizationService = authorizationService;
                 _userId = (principal as ClaimsPrincipal).GetId();
                 _playerService = playerService;

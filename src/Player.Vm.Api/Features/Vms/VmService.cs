@@ -1,7 +1,6 @@
 // Copyright 2022 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Player.Vm.Api.Data;
@@ -10,6 +9,7 @@ using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Infrastructure.Extensions;
 using System;
+using Player.Vm.Api.Infrastructure.Options;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Claims;
@@ -55,7 +55,7 @@ namespace Player.Vm.Api.Features.Vms
         private readonly IPlayerService _playerService;
         private readonly IViewService _viewService;
         private readonly ClaimsPrincipal _user;
-        private readonly IMapper _mapper;
+        private readonly ConsoleUrlOptions _consoleUrls;
         private readonly INetworkService _networkService;
 
         public VmService(
@@ -63,14 +63,14 @@ namespace Player.Vm.Api.Features.Vms
             IPlayerService playerService,
             IViewService viewService,
             IPrincipal user,
-            IMapper mapper,
+            ConsoleUrlOptions consoleUrls,
             INetworkService networkService)
         {
             _context = context;
             _playerService = playerService;
             _viewService = viewService;
             _user = user as ClaimsPrincipal;
-            _mapper = mapper;
+            _consoleUrls = consoleUrls;
             _networkService = networkService;
         }
 
@@ -84,7 +84,7 @@ namespace Player.Vm.Api.Features.Vms
                 .Include(x => x.VmTeams)
                 .ToArrayAsync(ct);
 
-            return _mapper.Map<Vm[]>(vms);
+            return vms.Select(x => x.ToVm(_consoleUrls)).ToArray();
         }
 
         public async Task<Vm> GetAsync(Guid id, CancellationToken ct)
@@ -95,7 +95,7 @@ namespace Player.Vm.Api.Features.Vms
                 .SingleOrDefaultAsync(ct);
 
             await CanAccessVm(vmEntity, ct);
-            var model = _mapper.Map<Vm>(vmEntity);
+            var model = vmEntity.ToVm(_consoleUrls);
             return model;
         }
 
@@ -287,7 +287,7 @@ namespace Player.Vm.Api.Features.Vms
             IEnumerable<Domain.Models.Vm> vmEntities,
             IReadOnlySet<Guid> visibleTeamIds)
         {
-            var models = _mapper.Map<IEnumerable<Vm>>(vmEntities).ToArray();
+            var models = vmEntities.Select(x => x.ToVm(_consoleUrls)).ToArray();
 
             foreach (var model in models)
             {
@@ -306,7 +306,7 @@ namespace Player.Vm.Api.Features.Vms
                 throw new ForbiddenException("Vm already exists");
             }
 
-            var vmEntity = _mapper.Map<Domain.Models.Vm>(form);
+            var vmEntity = form.ToEntity();
             var formTeams = vmEntity.VmTeams.Select(v => v.TeamId).Distinct();
 
             if (!formTeams.Any())
@@ -329,7 +329,7 @@ namespace Player.Vm.Api.Features.Vms
             _context.Vms.Add(vmEntity);
             await SaveRegisteringProxmoxVm(form.ProxmoxVmInfo, ct);
 
-            return _mapper.Map<Vm>(vmEntity);
+            return vmEntity.ToVm(_consoleUrls);
         }
 
         // Proxmox reserves vmids below 100 for itself and allocates none above 999999999.
@@ -433,13 +433,13 @@ namespace Player.Vm.Api.Features.Vms
 
             await EnsureProxmoxVmCanBeRegistered(registering, ct);
 
-            vmEntity = _mapper.Map(form, vmEntity);
+            form.ApplyTo(vmEntity);
 
             _context.Vms.Update(vmEntity);
             UpdateProxmoxVmInfo(vmEntity, form.ProxmoxVmInfo);
             await SaveRegisteringProxmoxVm(registering, ct);
 
-            return _mapper.Map<Vm>(vmEntity);
+            return vmEntity.ToVm(_consoleUrls);
         }
 
         public async Task<bool> DeleteAsync(Guid id, CancellationToken ct)
@@ -521,15 +521,13 @@ namespace Player.Vm.Api.Features.Vms
             var existing = await _context.Maps
                 .ToListAsync(ct);
 
-            var mapIntermediate = _mapper.Map<VmMap>(form);
-            mapIntermediate.ViewId = viewId;
-
-            var mapEntity = _mapper.Map<Domain.Models.VmMap>(mapIntermediate);
+            var mapEntity = form.ToEntity();
+            mapEntity.ViewId = viewId;
 
             _context.Maps.Add(mapEntity);
             await _context.SaveChangesAsync(ct);
 
-            return _mapper.Map<VmMap>(mapEntity);
+            return mapEntity.ToVmMap();
         }
 
         public async Task<VmMap[]> GetAllMapsAsync(CancellationToken ct)
@@ -542,7 +540,7 @@ namespace Player.Vm.Api.Features.Vms
                 .Include(x => x.Coordinates)
                 .ToArrayAsync(ct);
 
-            return _mapper.Map<VmMap[]>(maps);
+            return maps.Select(x => x.ToVmMap()).ToArray();
         }
 
         public async Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct)
@@ -579,7 +577,7 @@ namespace Player.Vm.Api.Features.Vms
                 ? canViewTeamlessMaps
                 : m.TeamIds.Any(mapVisibleTeamIds.Contains));
 
-            return _mapper.Map<VmMap[]>(visibleMaps);
+            return visibleMaps.Select(x => x.ToVmMap()).ToArray();
         }
 
         /// <summary>
@@ -601,7 +599,7 @@ namespace Player.Vm.Api.Features.Vms
                 .Where(m => m.ViewId == viewId)
                 .ToArrayAsync(ct);
 
-            return _mapper.Map<VmMap[]>(maps);
+            return maps.Select(x => x.ToVmMap()).ToArray();
         }
 
         public async Task<VmMap> GetMapAsync(Guid mapId, CancellationToken ct)
@@ -617,7 +615,7 @@ namespace Player.Vm.Api.Features.Vms
             if (!await CanViewMapAsync(vmMap, ct))
                 throw new ForbiddenException("You do not have access to this map");
 
-            return _mapper.Map<VmMap>(vmMap);
+            return vmMap.ToVmMap();
         }
 
         /// <summary>
@@ -640,7 +638,7 @@ namespace Player.Vm.Api.Features.Vms
             foreach (Domain.Models.VmMap m in maps)
             {
                 if (m.TeamIds.Contains(teamId))
-                    return _mapper.Map<VmMap>(m);
+                    return m.ToVmMap();
             }
             return null;
         }
@@ -672,17 +670,17 @@ namespace Player.Vm.Api.Features.Vms
             vmMapEntity.Coordinates.Clear();
             foreach (var coord in form.Coordinates)
             {
-                var tempCoord = _mapper.Map<Domain.Models.Coordinate>(coord);
+                var tempCoord = coord.ToEntity();
                 tempCoord.Id = Guid.Empty;
 
                 vmMapEntity.Coordinates.Add(tempCoord);
             }
 
-            vmMapEntity = _mapper.Map(form, vmMapEntity);
+            form.ApplyTo(vmMapEntity);
 
             await _context.SaveChangesAsync(ct);
 
-            return _mapper.Map<VmMap>(vmMapEntity);
+            return vmMapEntity.ToVmMap();
         }
 
         public async Task<bool> DeleteMapAsync(Guid mapId, CancellationToken ct)
