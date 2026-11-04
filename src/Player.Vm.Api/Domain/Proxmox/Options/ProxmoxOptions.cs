@@ -13,9 +13,10 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
 
         public int StateRefreshIntervalSeconds { get; set; }
 
-        // How often the state poller also reads per-Vm state (snapshot, IP addresses), which costs a
-        // request or two per tracked Vm rather than one for the whole cluster. A CheckState nudge (after a
-        // revert or power operation) reads it on the next pass regardless. Zero or less: every pass.
+        // How often the state poller reads per-Vm state (snapshot, IP addresses), which costs a request or
+        // two per tracked Vm rather than one for the whole cluster. The read runs beside the power-state
+        // passes, one at a time, so a slow guest agent never delays power state. A CheckState nudge does
+        // not force one. Zero or less: whenever the last read has finished.
         public int GuestStateRefreshIntervalSeconds { get; set; } = 30;
 
         // How many Vms the state poller reads per-Vm state for (config, guest agent) at once. Each pass

@@ -59,10 +59,17 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
     private readonly System.Diagnostics.Stopwatch _sinceGuestStateRead = new();
 
     /// <summary>
-    /// Set by <see cref="CheckState"/>: a caller that asks for a pass has just changed something - a
-    /// revert, a power operation - and should see its effect on the guest-derived columns too.
+    /// The guest-state read in progress, if any. It runs beside the power-state passes rather than
+    /// inside one: it costs up to GuestAgentTimeoutMilliseconds per machine whose agent does not answer,
+    /// and power state must not wait on that. At most one runs at a time.
     /// </summary>
-    private int _guestStateRequested = 1;
+    private Task _guestStateRead = Task.CompletedTask;
+
+    /// <summary>
+    /// Cancels a guest-state read only when stopping has run out of time. Not the loop's token: a
+    /// graceful stop lets the read in progress finish and save rather than throwing its work away.
+    /// </summary>
+    private readonly CancellationTokenSource _guestStateCancellation = new();
 
     public ProxmoxStateService(
             ILogger<ProxmoxStateService> logger,
@@ -83,9 +90,14 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
            );
     }
 
+    /// <summary>
+    /// Brings the next power-state pass forward. Does not force a guest-state read: a power operation
+    /// or revert changes neither HasSnapshot nor, until the guest has booted, its addresses, and forcing
+    /// one would read every tracked machine to update one. Snapshot changes record HasSnapshot through
+    /// <see cref="SetHasSnapshot"/> instead.
+    /// </summary>
     public void CheckState()
     {
-        Interlocked.Exchange(ref _guestStateRequested, 1);
         _resetEvent.Set();
     }
 
@@ -114,6 +126,16 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
 
         try
         {
+            await _guestStateRead.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            await _guestStateCancellation.CancelAsync();
+            _logger.LogWarning("Stopped before the guest-state read finished; it will be read again on next start.");
+        }
+
+        try
+        {
             await _jobQueue.Completion.WaitAsync(cancellationToken);
         }
         catch (OperationCanceledException)
@@ -134,11 +156,23 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
 
                 if (_proxmoxOptionsMonitor.CurrentValue.Enabled)
                 {
-                    using var scope = _serviceProvider.CreateScope();
-                    await ProcessVms(
-                        scope.ServiceProvider.GetRequiredService<VmContext>(),
-                        scope.ServiceProvider.GetRequiredService<IProxmoxService>(),
-                        cancellationToken);
+                    var scope = _serviceProvider.CreateScope();
+                    var handedOff = false;
+
+                    try
+                    {
+                        handedOff = await ProcessVms(
+                            scope,
+                            scope.ServiceProvider.GetRequiredService<VmContext>(),
+                            scope.ServiceProvider.GetRequiredService<IProxmoxService>(),
+                            cancellationToken);
+                    }
+                    finally
+                    {
+                        // A pass that started a guest-state read gave it the scope, which it disposes.
+                        if (!handedOff)
+                            scope.Dispose();
+                    }
                 }
                 else
                 {
@@ -183,7 +217,12 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
         return configured;
     }
 
-    private async Task ProcessVms(VmContext dbContext, IProxmoxService proxmoxService, CancellationToken cancellationToken)
+    /// <summary>
+    /// One power-state pass, saved before anything slower runs. Returns whether it handed its scope to a
+    /// guest-state read, which then owns and disposes it.
+    /// </summary>
+    private async Task<bool> ProcessVms(
+        IServiceScope scope, VmContext dbContext, IProxmoxService proxmoxService, CancellationToken cancellationToken)
     {
         var pveVms = (await proxmoxService.GetVms())
             .DistinctBy(x => x.VmId)
@@ -195,21 +234,67 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
 
         _logger.LogDebug($"Found {pveVms.Count} {"machine".Pluralize(pveVms.Count)} in PVE and {dbVms.Count} {"machine".Pluralize(dbVms.Count)} in database.");
 
-        var guestStates = ShouldReadGuestState()
-            ? await GetGuestStates(dbVms, pveVms, proxmoxService, cancellationToken)
-            : new Dictionary<Guid, ProxmoxGuestState>();
-
         foreach (var dbVm in dbVms)
         {
             pveVms.TryGetValue(dbVm.ProxmoxVmInfo.Id, out var pveVm);
-            guestStates.TryGetValue(dbVm.Id, out var guestState);
-            this.UpdateVm(dbVm, pveVm, guestState);
+            this.UpdateVm(dbVm, pveVm);
         }
 
-        var count = await dbContext.SaveChangesAsync(cancellationToken);
+        LogUpdated(await dbContext.SaveChangesAsync(cancellationToken));
 
-        // Only an actual change is worth an Information entry. EF produces no Modified entry for a row
-        // whose values did not change, so an idle cluster stays silent instead of logging every pass.
+        if (!_guestStateRead.IsCompleted || !ShouldReadGuestState())
+            return false;
+
+        _guestStateRead = ReadGuestStates(scope, dbContext, dbVms, pveVms, proxmoxService, _guestStateCancellation.Token);
+        return true;
+    }
+
+    /// <summary>
+    /// Reads and saves the guest-derived columns of the machines a pass loaded, on that pass's scope and
+    /// change tracker, while later passes carry on with power state. Only HasSnapshot and IpAddresses are
+    /// set here, and EF writes only the columns that changed, so this save cannot put back a power state
+    /// or node a later pass has written since.
+    /// </summary>
+    private async Task ReadGuestStates(
+        IServiceScope scope,
+        VmContext dbContext,
+        IReadOnlyList<Domain.Models.Vm> dbVms,
+        IDictionary<long, IClusterResourceVm> pveVms,
+        IProxmoxService proxmoxService,
+        CancellationToken cancellationToken)
+    {
+        // Off the pass's own thread, so the pass returns as soon as it has handed over.
+        await Task.Yield();
+
+        try
+        {
+            var guestStates = await GetGuestStates(dbVms, pveVms, proxmoxService, cancellationToken);
+
+            foreach (var dbVm in dbVms)
+            {
+                if (guestStates.TryGetValue(dbVm.Id, out var guestState))
+                    UpdateGuestState(dbVm, guestState);
+            }
+
+            LogUpdated(await dbContext.SaveChangesAsync(cancellationToken));
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, $"Exception reading Proxmox guest state in {nameof(ProxmoxStateService)}");
+        }
+        finally
+        {
+            scope.Dispose();
+        }
+    }
+
+    // Only an actual change is worth an Information entry. EF produces no Modified entry for a row whose
+    // values did not change, so an idle cluster stays silent instead of logging every pass.
+    private void LogUpdated(int count)
+    {
         if (count > 0)
         {
             _logger.LogInformation($"Updated {count} {"machine".Pluralize(count)}");
@@ -221,15 +306,15 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
     }
 
     /// <summary>
-    /// Whether this pass also reads guest state: when asked to through <see cref="CheckState"/>, or once
-    /// GuestStateRefreshIntervalSeconds has passed since the last read. Zero or less reads it every pass.
+    /// Whether to start a guest-state read after this pass: on the first pass, then once
+    /// GuestStateRefreshIntervalSeconds has passed since the last one started. Zero or less starts one
+    /// after every pass whose predecessor has finished.
     /// </summary>
     private bool ShouldReadGuestState()
     {
-        var requested = Interlocked.Exchange(ref _guestStateRequested, 0) == 1;
         var interval = TimeSpan.FromSeconds(Math.Max(0, _proxmoxOptionsMonitor.CurrentValue.GuestStateRefreshIntervalSeconds));
 
-        if (!requested && _sinceGuestStateRead.IsRunning && _sinceGuestStateRead.Elapsed < interval)
+        if (_sinceGuestStateRead.IsRunning && _sinceGuestStateRead.Elapsed < interval)
             return false;
 
         _sinceGuestStateRead.Restart();
@@ -322,34 +407,31 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
     }
 
     /// <remarks>
-    /// A null <paramref name="guestState"/> leaves the guest-derived columns as they are: the single-Vm
-    /// path does not read them, and a pass whose read failed has nothing to say about them.
+    /// Power state, type and node only. The guest-derived columns are left to
+    /// <see cref="UpdateGuestState"/>: the single-Vm path does not read them, and a machine whose
+    /// guest-state read failed keeps what it had.
     /// </remarks>
-    private Domain.Models.Vm UpdateVm(
-        Domain.Models.Vm vm,
-        IClusterResourceVm pveVm,
-        ProxmoxGuestState guestState = null)
+    private Domain.Models.Vm UpdateVm(Domain.Models.Vm vm, IClusterResourceVm pveVm)
     {
         if (pveVm != null)
         {
             vm.Type = Domain.Models.VmType.Proxmox;
             vm.PowerState = pveVm.GetPowerState();
             vm.ProxmoxVmInfo.Node = pveVm.Node;
-
-            if (guestState != null)
-            {
-                vm.HasSnapshot = guestState.HasSnapshot;
-
-                // Only on a change, so an unchanged list is not a Modified entry and an idle cluster
-                // stays silent.
-                if (guestState.IpAddresses != null &&
-                    !(vm.IpAddresses ?? []).SequenceEqual(guestState.IpAddresses))
-                {
-                    vm.IpAddresses = guestState.IpAddresses;
-                }
-            }
         }
 
         return vm;
+    }
+
+    private static void UpdateGuestState(Domain.Models.Vm vm, ProxmoxGuestState guestState)
+    {
+        vm.HasSnapshot = guestState.HasSnapshot;
+
+        // Only on a change, so an unchanged list is not a Modified entry and an idle cluster stays silent.
+        if (guestState.IpAddresses != null &&
+            !(vm.IpAddresses ?? []).SequenceEqual(guestState.IpAddresses))
+        {
+            vm.IpAddresses = guestState.IpAddresses;
+        }
     }
 }

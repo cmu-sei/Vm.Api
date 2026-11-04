@@ -914,31 +914,65 @@ public class ProxmoxStateServiceTests(DatabaseFixture fixture) : DatabaseTestBas
     }
 
     /// <summary>
-    /// A <c>CheckState</c> nudge reads it on the next pass whatever the interval says, so a revert's effect
-    /// on <c>HasSnapshot</c> shows at once rather than up to an interval later.
+    /// A <c>CheckState</c> nudge brings a power-state pass forward and nothing more. Power operations and
+    /// reverts nudge, and a guest-state read on each would read every tracked machine to update one; a
+    /// snapshot change records HasSnapshot itself through <c>SetHasSnapshot</c>.
     /// </summary>
     [Fact]
-    public async Task ANudgedPass_ReadsGuestStateWhateverTheInterval()
+    public async Task ANudgedPass_DoesNotForceAGuestStateRead()
     {
         var h = Build();
         h.Options.GuestStateRefreshIntervalSeconds = 3600;
-        h.Loop.AllowedPasses = 3;
         await SeedVm(VmA, Vmid);
         h.Returns(await Reporting(Vmid));
+
+        await h.Loop.Run(h.Service, h.Service.CheckState, passes: 3);
+
+        Assert.Equal(1, GuestStateReads(h));
+    }
+
+    /// <summary>
+    /// A slow guest-state read does not hold up power state. The read runs beside the passes, so with
+    /// one stuck on an unresponsive guest agent the next pass still writes the power state it saw, and the
+    /// read's own save, when it lands, leaves that power state alone.
+    /// </summary>
+    [Fact]
+    public async Task ASlowGuestStateRead_DoesNotHoldUpOrOverwriteThePowerState()
+    {
+        var h = Build();
+        h.Loop.AllowedPasses = 3;
+        await SeedVm(VmA, Vmid, PowerState.Off);
+        h.Returns(await Reporting(Vmid, "running"));
+        var agent = new TaskCompletionSource<ProxmoxGuestState>(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Proxmox.GetGuestState(Arg.Any<ProxmoxVmInfo>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(agent.Task);
 
         await h.Service.StartAsync(Ct);
 
         try
         {
-            // The first pass runs at start, unasked, and reads; the second only comes from the nudge.
-            await PollLoop.Until(() => GuestStateReads(h) == 1, "the first pass to read guest state");
+            await PollLoop.Until(() => GuestStateReads(h) == 1, "the first pass to start a guest-state read");
+            Assert.Equal(PowerState.On, (await Reread(VmA)).PowerState);
+
+            // Stopped outside Player while the read is still waiting on the agent.
+            h.Returns(await Reporting(Vmid, "stopped"));
             h.Service.CheckState();
-            await PollLoop.Until(() => GuestStateReads(h) == 2, "the nudged pass to read guest state");
+            await PollLoop.Until(() => h.Loop.Passes >= 2, "the second pass to start");
+            await PollLoop.Until(
+                () => Reread(VmA).GetAwaiter().GetResult().PowerState == PowerState.Off,
+                "the second pass to write the new power state while the read is stuck");
+
+            agent.SetResult(new ProxmoxGuestState { CurrentSnapshot = "snap1" });
         }
         finally
         {
             await h.Service.StopAsync(Ct);
         }
+
+        var row = await Reread(VmA);
+        Assert.True(row.HasSnapshot);
+        Assert.Equal(PowerState.Off, row.PowerState);
+        Assert.Equal(1, GuestStateReads(h));
     }
 
     private static int GuestStateReads(Harness h) =>
