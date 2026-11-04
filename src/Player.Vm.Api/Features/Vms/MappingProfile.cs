@@ -26,7 +26,10 @@ namespace Player.Vm.Api.Features.Vms
                         ? Domain.Models.VmType.Proxmox
                         : dest.Type == Domain.Models.VmType.Proxmox
                             ? Domain.Models.VmType.Unknown
-                            : dest.Type));
+                            : dest.Type))
+                // VmService.UpdateAsync applies it: mapping it here would write a new vmid into the
+                // tracked row's key, which EF refuses.
+                .ForMember(dest => dest.ProxmoxVmInfo, opt => opt.Ignore());
 
             CreateMap<VmCreateForm, Domain.Models.Vm>()
                 .ForMember(dest => dest.Type, opt => opt.MapFrom(src => src.ProxmoxVmInfo != null ? Domain.Models.VmType.Proxmox : Domain.Models.VmType.Unknown))
