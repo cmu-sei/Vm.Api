@@ -3040,4 +3040,163 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     #endregion
+
+    #region What the mappings preserve
+
+    /// <summary>A Vm stored without ip addresses is returned with an empty list, not null.</summary>
+    [Fact]
+    public async Task Get_returns_a_vm_stored_without_ip_addresses_with_an_empty_list()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = Vm([teamId]);
+        vm.IpAddresses = null;
+        await Seed(vm);
+        TeamVisibility(teamId);
+
+        var body = await Get<VmModel>($"/api/vms/{vm.Id}");
+
+        Assert.Empty(body.IpAddresses);
+    }
+
+    /// <summary>The ip addresses are returned as stored.</summary>
+    [Fact]
+    public async Task Get_returns_the_stored_ip_addresses()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = Vm([teamId]);
+        vm.IpAddresses = ["10.0.0.1", "10.0.0.2"];
+        await Seed(vm);
+        TeamVisibility(teamId);
+
+        var body = await Get<VmModel>($"/api/vms/{vm.Id}");
+
+        Assert.Equal(["10.0.0.1", "10.0.0.2"], body.IpAddresses);
+    }
+
+    /// <summary>
+    /// A Vm with no url of its own is opened through the console app; one with a url and console
+    /// connection details through Guacamole; one with only a url at that url.
+    /// </summary>
+    [Fact]
+    public async Task Get_returns_the_console_url_the_vm_is_opened_at()
+    {
+        var teamId = Guid.NewGuid();
+        var consoleApp = Vm([teamId]);
+        var guacamole = Vm([teamId]);
+        guacamole.Url = "https://guacamole.test";
+        guacamole.ConsoleConnectionInfo = new Player.Vm.Api.Domain.Models.ConsoleConnectionInfo { Hostname = "host", Port = "22", Protocol = "ssh" };
+        var direct = Vm([teamId]);
+        direct.Url = "https://direct.test/console";
+        await Seed(consoleApp, guacamole, direct);
+        TeamVisibility(teamId);
+
+        var consoleAppBody = await Get<VmModel>($"/api/vms/{consoleApp.Id}");
+        var guacamoleBody = await Get<VmModel>($"/api/vms/{guacamole.Id}");
+        var directBody = await Get<VmModel>($"/api/vms/{direct.Id}");
+
+        Assert.EndsWith($"/vm/{consoleApp.Id}/console", consoleAppBody.Url);
+        Assert.True(consoleAppBody.DefaultUrl);
+        Assert.StartsWith("https://guacamole.test/#/client/", guacamoleBody.Url);
+        Assert.False(guacamoleBody.DefaultUrl);
+        Assert.Equal("ssh", guacamoleBody.ConsoleConnectionInfo.Protocol);
+        Assert.Equal("https://direct.test/console", directBody.Url);
+    }
+
+    /// <summary>An update without Proxmox details turns a Proxmox Vm into one of unknown type and drops the details.</summary>
+    [Fact]
+    public async Task Update_without_Proxmox_info_makes_a_Proxmox_vm_unknown_and_removes_its_info()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = TestData.ProxmoxVm(teamId);
+        await Seed(vm);
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        var body = await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct);
+        Assert.Equal(VmType.Unknown, body.Type);
+        Assert.Null(body.ProxmoxVmInfo);
+        await using var context = NewContext();
+        Assert.Equal(VmType.Unknown, context.Vms.Single(x => x.Id == vm.Id).Type);
+        Assert.Empty(context.ProxmoxVmInfo);
+    }
+
+    /// <summary>An update keeps the type of a Vm from another provider; its own poller sets it.</summary>
+    [Fact]
+    public async Task Update_without_Proxmox_info_keeps_a_vSphere_vms_type()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        await using var context = NewContext();
+        Assert.Equal(VmType.Vsphere, context.Vms.Single(x => x.Id == vm.Id).Type);
+    }
+
+    /// <summary>An update with Proxmox details changes the stored details in place.</summary>
+    [Fact]
+    public async Task Update_with_Proxmox_info_changes_the_stored_info_in_place()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = TestData.ProxmoxVm(teamId);
+        await Seed(vm);
+        var form = new VmUpdateForm
+        {
+            Name = "after",
+            ProxmoxVmInfo = new Player.Vm.Api.Features.Vms.ProxmoxVmInfo { Id = vm.ProxmoxVmInfo.Id, Node = "pve-2", Type = ProxmoxVmType.LXC }
+        };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", form, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        await using var context = NewContext();
+        var info = Assert.Single(context.ProxmoxVmInfo);
+        Assert.Equal((vm.Id, "pve-2", ProxmoxVmType.LXC), (info.VmId, info.Node, info.Type));
+    }
+
+    /// <summary>A Map created without coordinates, or with a coordinate without urls, stores and returns empty lists.</summary>
+    [Fact]
+    public async Task CreateMap_without_coordinates_or_urls_stores_and_returns_empty_lists()
+    {
+        var teamId = Guid.NewGuid();
+        var viewId = Guid.NewGuid();
+        View(viewId, teamId);
+        var withoutCoordinates = MapCreateForm(teamId);
+        withoutCoordinates.Coordinates = null;
+        var withoutUrls = MapCreateForm(teamId);
+        var coordinate = Coordinate("no-urls", 1, 2);
+        coordinate.Urls = null;
+        withoutUrls.Coordinates = [coordinate];
+
+        var first = await RootClient.PostAsJsonAsync($"/api/views/{viewId}/map", withoutCoordinates, Ct);
+        var second = await RootClient.PostAsJsonAsync($"/api/views/{viewId}/map", withoutUrls, Ct);
+
+        await AssertStatus(HttpStatusCode.Created, first);
+        await AssertStatus(HttpStatusCode.Created, second);
+        var firstBody = await first.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct);
+        var secondBody = await second.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct);
+        Assert.Empty(firstBody.Coordinates);
+        Assert.Empty(Assert.Single(secondBody.Coordinates).Urls);
+        await using var context = NewContext();
+        var stored = await context.Maps.Include(x => x.Coordinates).SingleAsync(x => x.Id == secondBody.Id, Ct);
+        Assert.Empty(Assert.Single(stored.Coordinates).Urls);
+        Assert.Equal(viewId, stored.ViewId);
+    }
+
+    /// <summary>A Map stored without teams is returned with an empty team list.</summary>
+    [Fact]
+    public async Task GetAllMaps_returns_a_map_stored_without_team_ids_with_an_empty_list()
+    {
+        var map = Map([]);
+        map.TeamIds = null;
+        await Seed(map);
+
+        var maps = await Get<VmMapModel[]>("/api/views/maps");
+
+        Assert.Empty(Assert.Single(maps).TeamIds);
+    }
+
+    #endregion
 }

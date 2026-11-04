@@ -2063,4 +2063,57 @@ public class VmUsageLoggingSessionEndpointTests(
     }
 
     #endregion
+
+    #region What the mappings preserve
+
+    /// <summary>A session created without team ids stores and returns an empty list, not null.</summary>
+    [Fact]
+    public async Task Create_without_team_ids_stores_and_returns_an_empty_list()
+    {
+        var result = await Get<SessionView>(await RootClient.PostAsync(BaseRoute, Body(new { viewId = _viewId, sessionName = "no teams" }), Ct));
+
+        Assert.Empty(result.TeamIds);
+        await using var context = NewLoggingContext();
+        Assert.Empty((await context.VmUsageLoggingSessions.SingleAsync(Ct)).TeamIds);
+    }
+
+    /// <summary>
+    /// An edit without a view id writes an empty view id over the stored one: the session leaves its
+    /// view. The same edit without team ids clears them.
+    /// </summary>
+    [Fact]
+    public async Task Edit_without_a_view_id_or_team_ids_clears_both()
+    {
+        var session = await SeedSession(name: "before");
+
+        var result = await Get<SessionView>(await RootClient.PutAsync(
+            $"{BaseRoute}/{session.Id}", Body(new { sessionName = "after" }), Ct));
+
+        Assert.Equal((Guid.Empty, "after"), (result.ViewId, result.SessionName));
+        Assert.Empty(result.TeamIds);
+        await using var context = NewLoggingContext();
+        var stored = await context.VmUsageLoggingSessions.SingleAsync(Ct);
+        Assert.Equal(Guid.Empty, stored.ViewId);
+        Assert.Empty(stored.TeamIds);
+    }
+
+    /// <summary>
+    /// A session stored without team ids: the single read returns an empty list, while the list,
+    /// which is projected in the database, returns null.
+    /// </summary>
+    [Fact]
+    public async Task Reads_of_a_session_stored_without_team_ids()
+    {
+        var session = await SeedSession();
+        session.TeamIds = null;
+        await LoggingDb.SaveChangesAsync(Ct);
+
+        var single = await Get<SessionView>(await RootClient.GetAsync($"{BaseRoute}/{session.Id}", Ct));
+        var all = await Get<SessionView[]>(await RootClient.GetAsync(BaseRoute, Ct));
+
+        Assert.Empty(single.TeamIds);
+        Assert.Null(Assert.Single(all).TeamIds);
+    }
+
+    #endregion
 }
