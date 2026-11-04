@@ -736,10 +736,15 @@ public partial class ProxmoxService : IProxmoxService
     /// name in use) is returned as it was, after the one resolve, rather than sent twice.
     /// </para>
     /// </remarks>
-    private async Task<Result> OnCurrentNode(ProxmoxVmInfo info, Func<Task<Result>> call)
-    {
-        var result = await call();
+    private async Task<Result> OnCurrentNode(ProxmoxVmInfo info, Func<Task<Result>> call) =>
+        await RetryOnCurrentNode(info, call, await call());
 
+    /// <summary>
+    /// <see cref="OnCurrentNode"/> for a caller that has already made the first call and looked at its
+    /// result: resolves the node and sends <paramref name="call"/> again only if the Vm has moved.
+    /// </summary>
+    private async Task<Result> RetryOnCurrentNode(ProxmoxVmInfo info, Func<Task<Result>> call, Result result)
+    {
         if (result.IsSuccessStatusCode)
             return result;
 
@@ -979,7 +984,14 @@ public partial class ProxmoxService : IProxmoxService
             throw new BadRequestException("Downloading a file is only supported on QEMU virtual machines.");
 
         // decode=0 has PVE forward the agent's base64 as is, so binary content survives the JSON response.
-        var result = await OnCurrentNode(info, () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath, decode: false));
+        Task<Result> ReadBase64() => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath, decode: false);
+        Task<Result> ReadDecoded() => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath);
+
+        // Sent once before any node re-resolve: a PVE without the parameter refuses it in schema
+        // validation, which says nothing about whether the Vm is still on this node. Sending it through
+        // OnCurrentNode would cost every download on such a PVE a /cluster/resources read and a queued
+        // state update before the fallback.
+        var result = await ReadBase64();
         var base64 = true;
 
         if (!result.IsSuccessStatusCode && RejectsParameter(result, "decode"))
@@ -987,8 +999,13 @@ public partial class ProxmoxService : IProxmoxService
             // PVE before 9 has no decode parameter and rejects the request outright. It always decodes,
             // and its JSON encoder writes each byte of the decoded content as the character of the same
             // code point, so Latin-1 recovers the bytes.
-            result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath);
+            result = await OnCurrentNode(info, ReadDecoded);
             base64 = false;
+        }
+        else
+        {
+            // Any other refusal may be a node the Vm has left.
+            result = await RetryOnCurrentNode(info, ReadBase64, result);
         }
 
         if (!result.IsSuccessStatusCode)

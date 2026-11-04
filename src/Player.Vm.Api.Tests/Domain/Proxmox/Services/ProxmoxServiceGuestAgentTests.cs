@@ -744,6 +744,9 @@ public class ProxmoxServiceGuestAgentTests
 
         var queries = cluster.Requests(HttpMethod.Get, path).Select(x => x.Query).ToArray();
         Assert.Equal(["?file=%2ftmp%2ff.txt&decode=0", "?file=%2ftmp%2ff.txt"], queries);
+
+        // The refusal is schema validation, not a sign the Vm has moved, so no node re-resolve.
+        Assert.DoesNotContain(cluster.Http.Paths, x => x.EndsWith("cluster/resources"));
     }
 
     // Any other refusal - no such file, no agent - is the caller's to act on, so a 400 carrying what PVE said.
