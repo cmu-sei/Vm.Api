@@ -55,6 +55,18 @@ public interface IProxmoxService
     Task<IEnumerable<IClusterResourceVm>> GetVms();
     Task<IEnumerable<NodeTask>> GetTasks();
 
+    /// <summary>
+    /// Reads the per-Vm state the state poller keeps in the database beyond power state: the snapshot
+    /// the Vm is running from, and its IP addresses (QEMU through the guest agent, LXC through the
+    /// container's interfaces). Returns null when the Vm's config could not be read, so the
+    /// caller keeps what it had rather than clearing it.
+    /// </summary>
+    /// <remarks>
+    /// <paramref name="info"/> is addressed as given: the poller passes the node /cluster/resources has
+    /// just reported. <paramref name="running"/> is the power state from the same listing.
+    /// </remarks>
+    Task<ProxmoxGuestState> GetGuestState(ProxmoxVmInfo info, bool running, CancellationToken cancellationToken);
+
     Task<string> PowerOnVm(ProxmoxVmInfo info);
     Task<string> PowerOffVm(ProxmoxVmInfo info);
     Task<string> RebootVm(ProxmoxVmInfo info);
@@ -70,7 +82,21 @@ public interface IProxmoxService
     Task<GuestProcessResult> RunGuestProcess(ProxmoxVmInfo info, string command, string arguments, TimeSpan timeout);
     Task<long> RunGuestProcessFast(ProxmoxVmInfo info, string command, string arguments);
     Task<string> ReadGuestFile(ProxmoxVmInfo info, string guestFilePath);
+
+    /// <summary>
+    /// Reads a file out of a QEMU guest as raw bytes, through agent/file-read. Throws a
+    /// <see cref="BadRequestException"/> for an LXC container, a file the agent cannot read, or a file
+    /// over PVE's 16 MiB read limit.
+    /// </summary>
+    Task<byte[]> DownloadGuestFile(ProxmoxVmInfo info, string guestFilePath);
     Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content);
+
+    /// <summary>
+    /// Whether a QEMU guest agent answers a ping, within
+    /// <see cref="ProxmoxOptions.GuestAgentTimeoutMilliseconds"/>. False on any failure, and always
+    /// false for LXC, which has no guest agent. Never throws.
+    /// </summary>
+    Task<bool> IsGuestAgentRunning(ProxmoxVmInfo info);
 
     /// <summary>
     /// The Proxmox node the given Vm currently runs on, or null if it is not a Proxmox Vm. Also
@@ -86,6 +112,13 @@ public interface IProxmoxService
     Task<List<ProxmoxSnapshot>> GetSnapshots(ProxmoxVmInfo info);
     Task<string> CreateSnapshot(ProxmoxVmInfo info, string snapshotName, string description, bool includeRam);
     Task<string> RevertSnapshot(ProxmoxVmInfo info, string snapshotName);
+
+    /// <summary>
+    /// Reverts the Vm to the snapshot it is currently running from (its config's <c>parent</c>), the
+    /// Proxmox counterpart of vSphere's revert to current snapshot. Throws a
+    /// <see cref="BadRequestException"/> when the Vm has no snapshot.
+    /// </summary>
+    Task<string> RevertToCurrentSnapshot(ProxmoxVmInfo info);
     Task<string> DeleteSnapshot(ProxmoxVmInfo info, string snapshotName);
 }
 
@@ -242,6 +275,9 @@ public partial class ProxmoxService : IProxmoxService
 
         IEnumerable<VmNetwork> networks;
         var hasCdromDrive = false;
+        var agentEnabled = false;
+        var vncClipboardEnabled = false;
+        string parent;
 
         if (info.Type == ProxmoxVmType.QEMU)
         {
@@ -251,12 +287,17 @@ public partial class ProxmoxService : IProxmoxService
             // The same helper MountIso selects from, so what this reports and what a mount can find
             // cannot disagree.
             hasCdromDrive = GetCdromDrives(config).Count > 0;
+            agentEnabled = IsAgentEnabled(config.Agent);
+            vncClipboardEnabled = IsVncClipboardEnabled(config.Vga);
+            parent = config.Parent;
         }
         else
         {
-            // An LXC container has no optical drive, so hasCdromDrive stays false.
+            // An LXC container has no optical drive, no guest agent and no VGA device, so all three stay
+            // false.
             var containerConfig = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.GetAsync(true);
             networks = containerConfig.Networks ?? [];
+            parent = containerConfig.Parent;
         }
 
         return new ProxmoxVmConfigSummary(
@@ -265,7 +306,12 @@ public partial class ProxmoxService : IProxmoxService
                     !string.IsNullOrWhiteSpace(network.Id) &&
                     !string.IsNullOrWhiteSpace(network.Bridge))
                 .ToDictionary(network => network.Id, network => network.Bridge),
-            hasCdromDrive);
+            hasCdromDrive)
+        {
+            CurrentSnapshot = string.IsNullOrWhiteSpace(parent) ? null : parent,
+            AgentEnabled = agentEnabled,
+            VncClipboardEnabled = vncClipboardEnabled,
+        };
     }
 
     public async Task ChangeNetwork(
@@ -379,6 +425,270 @@ public partial class ProxmoxService : IProxmoxService
         return await _pveClient.Cluster.Tasks.GetAsync();
     }
 
+    public async Task<ProxmoxGuestState> GetGuestState(
+        ProxmoxVmInfo info,
+        bool running,
+        CancellationToken cancellationToken)
+    {
+        var config = await ReadConfig(info);
+
+        if (!config.IsSuccessStatusCode)
+        {
+            // Debug, not Error: this runs for every tracked Vm on every pass, and a Vm that is being
+            // deleted or migrated mid-pass answers like this without anything being wrong.
+            _logger.LogDebug($"Could not read the config of vmid={info.Id} on {info.Node}: {config.GetErrorMessage()}");
+            return null;
+        }
+
+        var data = ProxmoxExtensions.GetField(config.Response, "data");
+
+        string[] ipAddresses = [];
+
+        if (running)
+        {
+            if (info.Type == ProxmoxVmType.LXC)
+            {
+                ipAddresses = await ReadContainerAddresses(info);
+            }
+            else if (IsAgentEnabled(ProxmoxExtensions.GetField(data, "agent")))
+            {
+                ipAddresses = await ReadAgentAddresses(info);
+            }
+        }
+
+        return new ProxmoxGuestState
+        {
+            CurrentSnapshot = ReadParent(data),
+            IpAddresses = ipAddresses,
+        };
+    }
+
+    /// <summary>
+    /// Whether a QEMU config's <c>agent</c> property turns the guest agent on. It is a property string -
+    /// <c>1</c>, <c>0</c>, or <c>enabled=1,fstrim_cloned_disks=1</c> and the like - whose enabled flag is
+    /// either the positional first value or the <c>enabled</c> key.
+    /// </summary>
+    internal static bool IsAgentEnabled(object agent)
+    {
+        var text = agent?.ToString();
+
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        foreach (var part in text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
+
+            if (pair.Length == 1)
+                return pair[0] == "1";
+
+            if (string.Equals(pair[0], "enabled", StringComparison.OrdinalIgnoreCase))
+                return pair[1] == "1";
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// Whether a QEMU config's <c>vga</c> property turns on the VNC clipboard. It is a property string -
+    /// <c>std</c>, <c>virtio,memory=32</c>, <c>std,clipboard=vnc</c> and the like - and only the
+    /// <c>clipboard=vnc</c> option makes QEMU pass the guest's clipboard out over VNC, which is the only
+    /// way Copy in noVNC can return anything.
+    /// </summary>
+    internal static bool IsVncClipboardEnabled(object vga)
+    {
+        var text = vga?.ToString();
+
+        if (string.IsNullOrWhiteSpace(text))
+            return false;
+
+        foreach (var part in text.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
+
+            if (pair.Length == 2
+                && string.Equals(pair[0], "clipboard", StringComparison.OrdinalIgnoreCase)
+                && string.Equals(pair[1], "vnc", StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// The guest's addresses from the QEMU guest agent's network-get-interfaces. Empty when the agent
+    /// refuses (not running in the guest); null when it does not answer in time, so a slow agent does not
+    /// blank addresses that were good a moment ago.
+    /// </summary>
+    private async Task<string[]> ReadAgentAddresses(ProxmoxVmInfo info)
+    {
+        var result = await WithAgentTimeout(
+            () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.NetworkGetInterfaces.NetworkGetInterfaces(),
+            info,
+            "network-get-interfaces");
+
+        if (result == null)
+            return null;
+
+        if (!result.IsSuccessStatusCode)
+        {
+            // What PVE answers for an agent that is configured but not running in the guest. Normal for a
+            // guest still booting, so not worth more than Debug.
+            _logger.LogDebug($"QGA network-get-interfaces refused for vmid={info.Id}: {result.GetErrorMessage()}");
+            return [];
+        }
+
+        var interfaces = ProxmoxExtensions.GetField(ProxmoxExtensions.GetField(result.Response, "data"), "result");
+
+        return CollectAddresses(
+            (interfaces as IEnumerable<object> ?? [])
+                .SelectMany(nic => ProxmoxExtensions.GetField(nic, "ip-addresses") as IEnumerable<object> ?? [])
+                .Select(ip => ProxmoxExtensions.GetField(ip, "ip-address")?.ToString()));
+    }
+
+    /// <summary>
+    /// A container's addresses from <c>/nodes/{node}/lxc/{vmid}/interfaces</c>, which needs no agent.
+    /// Newer PVE sends an <c>ip-addresses</c> list per interface; older PVE only <c>inet</c> and
+    /// <c>inet6</c> in CIDR form, so both are read.
+    /// </summary>
+    private async Task<string[]> ReadContainerAddresses(ProxmoxVmInfo info)
+    {
+        var result = await WithAgentTimeout(
+            () => _pveClient.Nodes[info.Node].Lxc[info.Id].Interfaces.Ip(),
+            info,
+            "lxc interfaces");
+
+        if (result == null)
+            return null;
+
+        if (!result.IsSuccessStatusCode)
+        {
+            _logger.LogDebug($"LXC interfaces refused for vmid={info.Id}: {result.GetErrorMessage()}");
+            return [];
+        }
+
+        var interfaces = ProxmoxExtensions.GetField(result.Response, "data") as IEnumerable<object> ?? [];
+        var addresses = new List<string>();
+
+        foreach (var nic in interfaces)
+        {
+            if (ProxmoxExtensions.GetField(nic, "ip-addresses") is IEnumerable<object> listed)
+            {
+                addresses.AddRange(listed.Select(ip => ProxmoxExtensions.GetField(ip, "ip-address")?.ToString()));
+                continue;
+            }
+
+            foreach (var key in new[] { "inet", "inet6" })
+            {
+                var value = ProxmoxExtensions.GetField(nic, key)?.ToString();
+
+                if (!string.IsNullOrWhiteSpace(value))
+                    addresses.AddRange(value.Split([' ', ','], StringSplitOptions.RemoveEmptyEntries));
+            }
+        }
+
+        return CollectAddresses(addresses);
+    }
+
+    /// <summary>
+    /// Bare addresses, in the order the guest listed them, without duplicates, loopback or link-local -
+    /// a CIDR suffix or an IPv6 zone index is dropped, and anything that does not parse is skipped.
+    /// </summary>
+    internal static string[] CollectAddresses(IEnumerable<string> candidates)
+    {
+        var addresses = new List<string>();
+
+        foreach (var candidate in candidates)
+        {
+            var text = candidate?.Trim();
+
+            if (string.IsNullOrEmpty(text))
+                continue;
+
+            var slash = text.IndexOf('/');
+            if (slash >= 0)
+                text = text[..slash];
+
+            var percent = text.IndexOf('%');
+            if (percent >= 0)
+                text = text[..percent];
+
+            if (!IPAddress.TryParse(text, out var address) || IPAddress.IsLoopback(address))
+                continue;
+
+            if (address.IsIPv6LinkLocal ||
+                (address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork &&
+                 address.GetAddressBytes() is [169, 254, _, _]))
+                continue;
+
+            var formatted = address.ToString();
+
+            if (!addresses.Contains(formatted))
+                addresses.Add(formatted);
+        }
+
+        return [.. addresses];
+    }
+
+    /// <summary>
+    /// A status-only guest query, given <see cref="ProxmoxOptions.GuestAgentTimeoutMilliseconds"/> to
+    /// answer. Null when it did not, or failed in transport; the abandoned call is left to finish on its
+    /// own, with its outcome observed so it cannot surface as an unobserved task exception.
+    /// </summary>
+    private async Task<Result> WithAgentTimeout(Func<Task<Result>> query, ProxmoxVmInfo info, string what)
+    {
+        Task<Result> call;
+
+        try
+        {
+            call = query();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, $"{what} failed for vmid={info.Id}");
+            return null;
+        }
+
+        var finished = await Task.WhenAny(call, Task.Delay(Math.Max(1, _options.GuestAgentTimeoutMilliseconds)));
+
+        if (finished != call)
+        {
+            _ = call.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            _logger.LogDebug($"{what} for vmid={info.Id} did not answer within {_options.GuestAgentTimeoutMilliseconds}ms");
+            return null;
+        }
+
+        try
+        {
+            return await call;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, $"{what} failed for vmid={info.Id}");
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The Vm's current config as Proxmox sends it, unparsed, so that fields the typed model does not
+    /// carry (and a failed read) are both visible to the caller.
+    /// </summary>
+    private async Task<Result> ReadConfig(ProxmoxVmInfo info) =>
+        info.Type == ProxmoxVmType.LXC
+            ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.VmConfig(current: true)
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Config.VmConfig(current: true);
+
+    /// <summary>
+    /// The config's <c>parent</c> - the snapshot the running state derives from - or null when there is
+    /// none. PVE leaves the key out entirely for a Vm with no snapshot.
+    /// </summary>
+    private static string ReadParent(object configData)
+    {
+        var parent = ProxmoxExtensions.GetField(configData, "parent")?.ToString();
+
+        return string.IsNullOrWhiteSpace(parent) ? null : parent;
+    }
+
     /// <summary>
     /// Re-resolves the node a Vm currently lives on. ProxmoxVmInfo.Node is only refreshed by the
     /// state poller, so it goes stale as soon as a Vm migrates and every Nodes[Node] call against
@@ -409,9 +719,60 @@ public partial class ProxmoxService : IProxmoxService
         return vm;
     }
 
+    /// <summary>
+    /// Sends a call addressed to <c>info.Node</c>; if Proxmox refuses it, re-resolves the node and, only
+    /// when the Vm now lives on a different one, sends the call once more there.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The fix for a migration the state poller has not caught up with yet: PVE refuses a
+    /// call addressed to a node the Vm has left, and with PVE 9.2 CRS auto-rebalancing that window is
+    /// routine rather than rare. <paramref name="call"/> must read <c>info.Node</c> when invoked, which a
+    /// lambda over <c>info</c> does, so the retry goes to the corrected node.
+    /// </para>
+    /// <para>
+    /// Retry-on-failure rather than resolving up front, so a call against the right node - nearly every
+    /// call - costs no /cluster/resources read. A refusal on an unchanged node (no such file, a snapshot
+    /// name in use) is returned as it was, after the one resolve, rather than sent twice.
+    /// </para>
+    /// </remarks>
+    private async Task<Result> OnCurrentNode(ProxmoxVmInfo info, Func<Task<Result>> call) =>
+        await RetryOnCurrentNode(info, call, await call());
+
+    /// <summary>
+    /// <see cref="OnCurrentNode"/> for a caller that has already made the first call and looked at its
+    /// result: resolves the node and sends <paramref name="call"/> again only if the Vm has moved.
+    /// </summary>
+    private async Task<Result> RetryOnCurrentNode(ProxmoxVmInfo info, Func<Task<Result>> call, Result result)
+    {
+        if (result.IsSuccessStatusCode)
+            return result;
+
+        var node = info.Node;
+        IClusterResourceVm vm;
+
+        try
+        {
+            vm = await ResolveNode(info);
+        }
+        catch (Exception ex)
+        {
+            // The original refusal is the more useful answer than a failure to look the Vm up.
+            _logger.LogDebug(ex, $"Could not re-resolve the node of vmid={info.Id} after a refused call");
+            return result;
+        }
+
+        if (vm == null || string.Equals(vm.Node, node, StringComparison.Ordinal))
+            return result;
+
+        _logger.LogInformation($"vmid={info.Id} has moved from {node} to {vm.Node}; retrying there");
+
+        return await call();
+    }
+
     public async Task<string> PowerOnVm(ProxmoxVmInfo info)
     {
-        var result = await SubmitPowerOperation(info, PowerOperation.PowerOn);
+        var result = await OnCurrentNode(info, () => SubmitPowerOperation(info, PowerOperation.PowerOn));
         await _pveClient.WaitAndThrow(result, $"PowerOn vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} started";
@@ -419,7 +780,7 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<string> PowerOffVm(ProxmoxVmInfo info)
     {
-        var result = await SubmitPowerOperation(info, PowerOperation.PowerOff);
+        var result = await OnCurrentNode(info, () => SubmitPowerOperation(info, PowerOperation.PowerOff));
         await _pveClient.WaitAndThrow(result, $"PowerOff vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} stopped";
@@ -427,7 +788,7 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<string> RebootVm(ProxmoxVmInfo info)
     {
-        var result = await SubmitPowerOperation(info, PowerOperation.Reboot);
+        var result = await OnCurrentNode(info, () => SubmitPowerOperation(info, PowerOperation.Reboot));
         await _pveClient.WaitAndThrow(result, $"Reboot vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} rebooted";
@@ -435,7 +796,7 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<string> ShutdownVm(ProxmoxVmInfo info)
     {
-        var result = await SubmitPowerOperation(info, PowerOperation.Shutdown);
+        var result = await OnCurrentNode(info, () => SubmitPowerOperation(info, PowerOperation.Shutdown));
         await _pveClient.WaitAndThrow(result, $"Shutdown vmid={info.Id}");
         _proxmoxStateService.CheckState();
         return $"vmid {info.Id} shutdown";
@@ -494,9 +855,16 @@ public partial class ProxmoxService : IProxmoxService
     /// Submits a power operation and returns as soon as Proxmox accepts it, without waiting for the
     /// resulting task to finish. Callers that need the outcome pass the Result to WaitAndThrow.
     /// </summary>
+    /// <remarks>
+    /// Revert is here, rather than only beside the snapshot methods, so the single-Vm route and the bulk
+    /// path share one implementation of "revert to current".
+    /// </remarks>
     private async Task<Result> SubmitPowerOperation(ProxmoxVmInfo info, PowerOperation operation)
     {
         var lxc = info.Type == ProxmoxVmType.LXC;
+
+        if (operation == PowerOperation.Revert)
+            return await SubmitRevertToCurrentSnapshot(info);
 
         return operation switch
         {
@@ -521,7 +889,7 @@ public partial class ProxmoxService : IProxmoxService
         EnsureQemu(info, nameof(RunGuestProcess));
 
         var commandList = BuildAgentCommand(command, arguments);
-        var execResult = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList);
+        var execResult = await OnCurrentNode(info, () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList));
         if (!execResult.IsSuccessStatusCode)
             throw new Exception($"QGA exec failed for vmid={info.Id}: {execResult.GetErrorMessage()}");
 
@@ -575,7 +943,7 @@ public partial class ProxmoxService : IProxmoxService
         EnsureQemu(info, nameof(RunGuestProcessFast));
 
         var commandList = BuildAgentCommand(command, arguments);
-        var execResult = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList);
+        var execResult = await OnCurrentNode(info, () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Exec.Exec(commandList));
         if (!execResult.IsSuccessStatusCode)
             throw new Exception($"QGA exec failed for vmid={info.Id}: {execResult.GetErrorMessage()}");
 
@@ -586,7 +954,7 @@ public partial class ProxmoxService : IProxmoxService
     {
         EnsureQemu(info, nameof(ReadGuestFile));
 
-        var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath);
+        var result = await OnCurrentNode(info, () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath));
         if (!result.IsSuccessStatusCode)
             throw new Exception($"QGA file-read failed for vmid={info.Id} path={guestFilePath}: {result.GetErrorMessage()}");
 
@@ -594,20 +962,127 @@ public partial class ProxmoxService : IProxmoxService
             ?? string.Empty;
     }
 
+    public async Task<bool> IsGuestAgentRunning(ProxmoxVmInfo info)
+    {
+        if (info.Type != ProxmoxVmType.QEMU)
+            return false;
+
+        var result = await WithAgentTimeout(
+            () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.Ping.Ping(),
+            info,
+            "QGA ping");
+
+        return result?.IsSuccessStatusCode == true;
+    }
+
+    /// <summary>The most agent/file-read returns in one call; a larger file comes back truncated.</summary>
+    internal const string PveFileReadLimit = "16 MiB";
+
+    public async Task<byte[]> DownloadGuestFile(ProxmoxVmInfo info, string guestFilePath)
+    {
+        if (info.Type != ProxmoxVmType.QEMU)
+            throw new BadRequestException("Downloading a file is only supported on QEMU virtual machines.");
+
+        // decode=0 has PVE forward the agent's base64 as is, so binary content survives the JSON response.
+        Task<Result> ReadBase64() => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath, decode: false);
+        Task<Result> ReadDecoded() => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileRead.FileRead(guestFilePath);
+
+        // Sent once before any node re-resolve: a PVE without the parameter refuses it in schema
+        // validation, which says nothing about whether the Vm is still on this node. Sending it through
+        // OnCurrentNode would cost every download on such a PVE a /cluster/resources read and a queued
+        // state update before the fallback.
+        var result = await ReadBase64();
+        var base64 = true;
+
+        if (!result.IsSuccessStatusCode && RejectsParameter(result, "decode"))
+        {
+            // PVE before 9 has no decode parameter and rejects the request outright. It always decodes,
+            // and its JSON encoder writes each byte of the decoded content as the character of the same
+            // code point, so Latin-1 recovers the bytes.
+            result = await OnCurrentNode(info, ReadDecoded);
+            base64 = false;
+        }
+        else
+        {
+            // Any other refusal may be a node the Vm has left.
+            result = await RetryOnCurrentNode(info, ReadBase64, result);
+        }
+
+        if (!result.IsSuccessStatusCode)
+            throw new BadRequestException($"Could not read {guestFilePath} from the virtual machine: {result.GetErrorMessage()}");
+
+        var data = ProxmoxExtensions.GetField(result.Response, "data");
+
+        if (IsTrue(ProxmoxExtensions.GetField(data, "truncated")))
+            throw new BadRequestException($"{guestFilePath} exceeds the Proxmox read limit ({PveFileReadLimit}).");
+
+        var content = ProxmoxExtensions.GetField(data, "content")?.ToString() ?? string.Empty;
+
+        if (!base64)
+            return System.Text.Encoding.Latin1.GetBytes(content);
+
+        try
+        {
+            return Convert.FromBase64String(content);
+        }
+        catch (FormatException)
+        {
+            throw new Exception($"QGA file-read for vmid={info.Id} path={guestFilePath} returned content that is not base64");
+        }
+    }
+
+    /// <summary>Whether PVE refused a call because of the named parameter (its schema validation).</summary>
+    private static bool RejectsParameter(Result result, string parameter) =>
+        result.StatusCode == HttpStatusCode.BadRequest &&
+        ProxmoxExtensions.GetField(result.Response, "errors") is IDictionary<string, object> errors &&
+        errors.ContainsKey(parameter);
+
+    /// <summary>A PVE boolean, which arrives as 1/0, true/false or their strings.</summary>
+    private static bool IsTrue(object value) =>
+        value?.ToString() is { } text &&
+        (text == "1" || string.Equals(text, "true", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The longest <c>content</c> PVE's agent/file-write accepts (its schema's maxLength, 60 KiB).
+    /// </summary>
+    internal const int PveFileWriteMaxContentLength = 61440;
+
+    /// <summary>
+    /// The largest file UploadFileToGuest takes: FileUploadMaxBytes, capped at what fits in
+    /// <see cref="PveFileWriteMaxContentLength"/> once base64-encoded (3 bytes per 4 characters), 45 KB.
+    /// </summary>
+    internal int UploadLimitBytes =>
+        Math.Min(_options.FileUploadMaxBytes, PveFileWriteMaxContentLength / 4 * 3);
+
+    /// <summary>
+    /// A size in KB to two places, rounded so that a file one byte over a limit never reads as equal to it.
+    /// </summary>
+    private static string Kilobytes(long bytes, bool roundUp)
+    {
+        var hundredths = bytes * 100 / 1024.0;
+        var rounded = (roundUp ? Math.Ceiling(hundredths) : Math.Floor(hundredths)) / 100;
+
+        return rounded.ToString("0.##", CultureInfo.InvariantCulture);
+    }
+
     public async Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content)
     {
         EnsureQemu(info, nameof(UploadFileToGuest));
 
-        var maxBytes = _options.FileUploadMaxBytes;
+        var maxBytes = UploadLimitBytes;
         using var ms = new MemoryStream();
         await content.CopyToAsync(ms);
         var buffer = ms.ToArray();
         if (buffer.Length > maxBytes)
-            throw new InvalidOperationException(
-                $"QGA file-write payload {buffer.Length} bytes exceeds {maxBytes}-byte limit. Use vSphere upload or chunk uploads via guest exec.");
+            throw new BadRequestException(
+                $"{Path.GetFileName(guestFilePath)} is {Kilobytes(buffer.Length, roundUp: true)} KB, which exceeds the " +
+                $"{Kilobytes(maxBytes, roundUp: false)} KB limit for uploading a file to a Proxmox virtual machine.");
 
-        var text = System.Text.Encoding.UTF8.GetString(buffer);
-        var result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileWrite.FileWrite(text, guestFilePath);
+        // Sent as base64 with encode=0, so PVE hands the agent our encoding rather than base64-encoding a
+        // string of its own: any bytes survive, where decoding them as text first corrupted binary files.
+        var encoded = Convert.ToBase64String(buffer);
+        var result = await OnCurrentNode(info, () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.FileWrite.FileWrite(
+            encoded, guestFilePath, encode: false));
         if (!result.IsSuccessStatusCode)
             throw new Exception($"QGA file-write failed for vmid={info.Id} path={guestFilePath}: {result.GetErrorMessage()}");
 
@@ -616,9 +1091,9 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<List<ProxmoxSnapshot>> GetSnapshots(ProxmoxVmInfo info)
     {
-        var result = info.Type == ProxmoxVmType.LXC
+        var result = await OnCurrentNode(info, async () => info.Type == ProxmoxVmType.LXC
             ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot.List()
-            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot.SnapshotList();
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot.SnapshotList());
 
         if (!result.IsSuccessStatusCode)
             throw new Exception($"SnapshotList failed for vmid={info.Id}: {result.GetErrorMessage()}");
@@ -646,39 +1121,98 @@ public partial class ProxmoxService : IProxmoxService
 
     public async Task<string> CreateSnapshot(ProxmoxVmInfo info, string snapshotName, string description, bool includeRam)
     {
-        Result result;
-        if (info.Type == ProxmoxVmType.LXC)
-        {
-            // LXC snapshots don't capture VM RAM; the includeRam flag is ignored.
-            result = await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot.Snapshot(snapshotName, description);
-        }
-        else
-        {
-            result = await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot.Snapshot(snapshotName, description, includeRam);
-        }
+        // LXC snapshots don't capture VM RAM; the includeRam flag is ignored.
+        var result = await OnCurrentNode(info, async () => info.Type == ProxmoxVmType.LXC
+            ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot.Snapshot(snapshotName, description)
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot.Snapshot(snapshotName, description, includeRam));
 
         await _pveClient.WaitAndThrow(result, $"CreateSnapshot vmid={info.Id} name={snapshotName}");
+        await RecordHasSnapshot(info);
         return $"snapshot {snapshotName} created on vmid {info.Id}";
+    }
+
+    /// <summary>
+    /// Records whether the Vm now has a snapshot to revert to. Creating or deleting one changes it, and
+    /// bulk Revert decides from the stored HasSnapshot, which the poller only re-reads every
+    /// GuestStateRefreshIntervalSeconds: without this, a revert right after the first snapshot was
+    /// taken is refused, and one right after the last was deleted is accepted and then fails. One config
+    /// read, the same the poller makes. The snapshot operation has already succeeded, so a failure here
+    /// is logged and left to the poller rather than reported.
+    /// </summary>
+    private async Task RecordHasSnapshot(ProxmoxVmInfo info)
+    {
+        try
+        {
+            var config = await ReadConfig(info);
+
+            if (!config.IsSuccessStatusCode)
+            {
+                _logger.LogDebug($"Could not read the config of vmid={info.Id} on {info.Node} after a snapshot change: {config.GetErrorMessage()}");
+                return;
+            }
+
+            var hasSnapshot = ReadParent(ProxmoxExtensions.GetField(config.Response, "data")) != null;
+            await _proxmoxStateService.SetHasSnapshot(info.VmId, hasSnapshot);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, $"Could not record the snapshot state of vmid={info.Id}; the state poller will pick it up");
+        }
     }
 
     public async Task<string> RevertSnapshot(ProxmoxVmInfo info, string snapshotName)
     {
-        var result = info.Type == ProxmoxVmType.LXC
+        var result = await OnCurrentNode(info, async () => info.Type == ProxmoxVmType.LXC
             ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot[snapshotName].Rollback.Rollback()
-            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshotName].Rollback.Rollback();
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshotName].Rollback.Rollback());
 
         await _pveClient.WaitAndThrow(result, $"RevertSnapshot vmid={info.Id} name={snapshotName}");
         _proxmoxStateService.CheckState();
         return $"snapshot {snapshotName} restored on vmid {info.Id}";
     }
 
+    public async Task<string> RevertToCurrentSnapshot(ProxmoxVmInfo info)
+    {
+        var result = await OnCurrentNode(info, () => SubmitPowerOperation(info, PowerOperation.Revert));
+
+        await _pveClient.WaitAndThrow(result, $"RevertToCurrentSnapshot vmid={info.Id}");
+        _proxmoxStateService.CheckState();
+        return $"vmid {info.Id} reverted to its current snapshot";
+    }
+
+    /// <summary>
+    /// Reads the snapshot the Vm is running from and submits a rollback to it, without waiting for the
+    /// rollback task.
+    /// </summary>
+    /// <remarks>
+    /// A refused config read is returned as the Result rather than thrown, so a caller handling a failed
+    /// submit - the bulk path's stale-node retry - treats it like any other refusal.
+    /// </remarks>
+    private async Task<Result> SubmitRevertToCurrentSnapshot(ProxmoxVmInfo info)
+    {
+        var config = await ReadConfig(info);
+
+        if (!config.IsSuccessStatusCode)
+            return config;
+
+        var snapshot = ReadParent(ProxmoxExtensions.GetField(config.Response, "data"));
+
+        if (snapshot == null)
+            throw new BadRequestException("This virtual machine has no snapshot to revert to.");
+
+        return info.Type == ProxmoxVmType.LXC
+            ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot[snapshot].Rollback.Rollback()
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshot].Rollback.Rollback();
+    }
+
     public async Task<string> DeleteSnapshot(ProxmoxVmInfo info, string snapshotName)
     {
-        var result = info.Type == ProxmoxVmType.LXC
+        var result = await OnCurrentNode(info, async () => info.Type == ProxmoxVmType.LXC
             ? await _pveClient.Nodes[info.Node].Lxc[info.Id].Snapshot[snapshotName].Delsnapshot()
-            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshotName].Delsnapshot();
+            : await _pveClient.Nodes[info.Node].Qemu[info.Id].Snapshot[snapshotName].Delsnapshot());
 
         await _pveClient.WaitAndThrow(result, $"DeleteSnapshot vmid={info.Id} name={snapshotName}");
+        await RecordHasSnapshot(info);
         return $"snapshot {snapshotName} deleted on vmid {info.Id}";
     }
 

@@ -174,6 +174,29 @@ public sealed class FakeProxmoxCluster
     }
 
     /// <summary>
+    /// A mutating call that queues a task Proxmox reports as running however often it is asked - the
+    /// shape of a task this API gives up waiting for. Only useful with a short wait and timeout passed
+    /// straight to <c>WaitAndThrow</c>; the service's own one-hour budget would never run out.
+    /// </summary>
+    public FakeProxmoxCluster SubmitsTaskThatNeverFinishes(string pattern, string node = DefaultNode)
+    {
+        var upid = $"UPID:{node}:0000ABCD:0011:0022:qmstart:100:{ApiToken}:";
+
+        Http.AnswersJson(pattern, Data($"\"{upid}\""));
+        Http.AnswersJson(
+            $"GET api2/json/nodes/{node}/tasks/{upid}/status",
+            Data("{\"status\":\"running\"}"));
+
+        return this;
+    }
+
+    /// <summary>
+    /// A PveClient over this cluster's transport, for exercising the client extensions directly.
+    /// </summary>
+    public Corsinvest.ProxmoxVE.Api.PveClient Client() =>
+        new(Host, Options.Port, new HttpClient(Http, disposeHandler: false)) { ApiToken = ApiToken };
+
+    /// <summary>
     /// A refusal carrying a Proxmox error. The <c>errors</c> object is the load-bearing part: a bare
     /// 500 is reported by its status line alone, so a test asserting on a message has to supply one.
     /// </summary>

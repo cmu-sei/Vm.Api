@@ -10,10 +10,15 @@ using Corsinvest.ProxmoxVE.Api;
 using Corsinvest.ProxmoxVE.Api.Shared.Models.Cluster;
 using Player.Vm.Api.Domain.Models;
 
+using Player.Vm.Api.Infrastructure.Exceptions;
+
 namespace Player.Vm.Api.Domain.Proxmox.Extensions
 {
     public static class ProxmoxExtensions
     {
+        private const int DefaultTaskPollMs = 2000;
+        private const long DefaultTaskTimeoutMs = 3600 * 1000;
+
         /// <summary>
         /// Gets a generic PowerState from a Proxmox virtual machine
         /// </summary>
@@ -85,15 +90,64 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             this PveClient client,
             Result result,
             string operation,
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            int wait = DefaultTaskPollMs,
+            long timeout = DefaultTaskTimeoutMs)
         {
+            // A refusal is a 400 with Proxmox's reason, not a 500: PVE answers a locked Vm, an unlockable
+            // config file or a missing snapshot with an HTTP 500 of its own, but that is the hypervisor
+            // declining the request, not this API failing. The node-migration retry happens before this,
+            // on the Result, so it is unaffected by what is thrown here.
             if (!result.IsSuccessStatusCode)
-                throw new Exception($"{operation} failed: {result.GetErrorMessage()}");
+                throw new ProxmoxRequestRefusedException(result.GetErrorMessage(), OperationName(operation));
 
-            var finished = await WaitForTaskToFinish(client, result, cancellationToken: cancellationToken);
+            bool finished;
+            try
+            {
+                finished = await WaitForTaskToFinish(client, result, wait, timeout, cancellationToken);
+            }
+            catch (ProxmoxTaskFailedException ex) when (ex.Operation == null)
+            {
+                throw new ProxmoxTaskFailedException(ex.Status, OperationName(operation));
+            }
+            catch (ProxmoxRequestRefusedException ex) when (ex.Operation == null)
+            {
+                throw new ProxmoxRequestRefusedException(ex.Reason, OperationName(operation));
+            }
 
+            // A 504 rather than a 500: Proxmox took the request and has not finished it, which is an
+            // upstream that did not answer in time, not a fault here.
             if (!finished)
-                throw new TimeoutException($"{operation} timed out waiting for the Proxmox task to finish.");
+                throw new ProxmoxTaskTimeoutException(OperationName(operation), TimeSpan.FromMilliseconds(timeout));
+        }
+
+        // The callers describe an operation as e.g. "RevertToCurrentSnapshot vmid=100"; a user is told
+        // about it by the name the UI gives the action, without the identifiers.
+        private static readonly IReadOnlyDictionary<string, string> OperationNames =
+            new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["PowerOn"] = "Power On",
+                ["PowerOff"] = "Power Off",
+                ["Reboot"] = "Reboot",
+                ["Shutdown"] = "Shutdown",
+                ["CreateSnapshot"] = "Create Snapshot",
+                ["RevertSnapshot"] = "Revert to Snapshot",
+                ["RevertToCurrentSnapshot"] = "Revert",
+                ["DeleteSnapshot"] = "Delete Snapshot",
+                ["MountIso"] = "Mount ISO",
+                ["ChangeNetwork"] = "Change Network",
+                ["UploadIso"] = "Upload ISO",
+                ["DeleteIso"] = "Delete ISO",
+            };
+
+        internal static string OperationName(string operation)
+        {
+            if (string.IsNullOrWhiteSpace(operation))
+                return null;
+
+            var verb = operation.Split(' ', 2)[0];
+
+            return OperationNames.TryGetValue(verb, out var name) ? name : verb;
         }
 
         /// <summary>
@@ -102,22 +156,15 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
         public static async Task<bool> WaitForTaskToFinish(
             this PveClient client,
             Result result,
-            int wait = 2000,
-            long timeout = 3600 * 1000,
+            int wait = DefaultTaskPollMs,
+            long timeout = DefaultTaskTimeoutMs,
             CancellationToken cancellationToken = default)
         {
             if (result == null || timeout <= 0)
                 return false;
 
             if (result.ResponseInError || !result.IsSuccessStatusCode)
-            {
-                var statusStr = $"\n Status Code: {result.StatusCode}";
-                var reasonStr = string.IsNullOrEmpty(result.ReasonPhrase) ? "" : $"\n Reason: {result.ReasonPhrase}";
-                var error = result.GetError();
-                var errorStr = string.IsNullOrEmpty(error) ? "" : $"\n Error: {error}";
-
-                throw new Exception($"Task failed: {statusStr}{reasonStr}{errorStr}");
-            }
+                throw new ProxmoxRequestRefusedException(result.GetErrorMessage());
 
             var data = result.ToData() as string;
             if (data is null || !data.StartsWith("UPID:"))
@@ -129,8 +176,9 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             {
                 var status = await client.GetExitStatusTaskAsync(data);
 
-                if (status != "OK")
-                    throw new Exception($"Task failed: {status}");
+                // "WARNINGS: n" is how PVE reports a task that succeeded with warnings.
+                if (status != "OK" && !(status?.StartsWith("WARNINGS", StringComparison.Ordinal) ?? false))
+                    throw new ProxmoxTaskFailedException(status);
             }
 
             return finished;
@@ -142,8 +190,8 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
         public static async Task<bool> WaitForTaskToFinish(
             this PveClient client,
             string task,
-            int wait = 2000,
-            long timeout = 3600 * 1000,
+            int wait = DefaultTaskPollMs,
+            long timeout = DefaultTaskTimeoutMs,
             CancellationToken cancellationToken = default)
         {
             var isRunning = true;
@@ -163,7 +211,9 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
 
             stopwatch.Stop();
 
-            return stopwatch.ElapsedMilliseconds < timeout;
+            // The last poll can land past the deadline and still find the task done; that is a
+            // finished task, not a timeout.
+            return !isRunning;
         }
     }
 }

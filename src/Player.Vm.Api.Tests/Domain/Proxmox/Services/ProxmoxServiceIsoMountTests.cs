@@ -129,7 +129,10 @@ public class ProxmoxServiceIsoMountTests
         var (cluster, info, path) = Vm(@"{""ide2"":""none,media=cdrom""}");
         cluster.Rejects($"POST {path}", "unable to parse directory volume name 'thing.iso'");
 
-        await Assert.ThrowsAnyAsync<Exception>(() => cluster.Service().MountIso(info, Iso, Ct));
+        var ex = await Assert.ThrowsAsync<ProxmoxRequestRefusedException>(() => cluster.Service().MountIso(info, Iso, Ct));
+
+        Assert.StartsWith("Mount ISO failed: ", ex.Message);
+        Assert.EndsWith("unable to parse directory volume name 'thing.iso'", ex.Message);
     }
 
     #endregion

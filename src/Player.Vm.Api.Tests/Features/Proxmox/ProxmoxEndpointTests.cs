@@ -33,6 +33,7 @@ using Player.Vm.Api.Tests.Support;
 using ConsoleResponse = Player.Vm.Api.Features.Proxmox.GetConsole.ProxmoxConsole;
 using PlayerTeam = Player.Api.Client.Team;
 using VmEntity = Player.Vm.Api.Domain.Models.Vm;
+using Player.Vm.Api.Infrastructure.Exceptions;
 
 namespace Player.Vm.Api.Tests.Features.Proxmox;
 
@@ -99,6 +100,9 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Factory.Player.Caller(Root.Id).System.ExceptWith(NetworkPermissions);
         Factory.Proxmox.GetVmConfigSummary(Arg.Any<ProxmoxVmInfo>(), Arg.Any<CancellationToken>())
             .Returns(new ProxmoxVmConfigSummary(new() { ["net0"] = "vmbr0" }, true));
+
+        // A FileContentResult refuses null contents, which is what an unstubbed byte[] answers.
+        Factory.Proxmox.DownloadGuestFile(Arg.Any<ProxmoxVmInfo>(), Arg.Any<string>()).Returns([]);
     }
 
     #region The route table
@@ -124,9 +128,11 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         { "POST", "/actions/run-guest-process" },
         { "POST", "/actions/run-guest-process-fast" },
         { "POST", "/actions/read-guest-file" },
+        { "GET", "/actions/download-file?path=/tmp/f.bin" },
         { "POST", "/actions/upload-file" },
         { "POST", "/actions/snapshots" },
         { "POST", "/actions/snapshots/snap-1/revert" },
+        { "POST", "/actions/revert" },
         { "DELETE", "/actions/snapshots/snap-1" },
     };
 
@@ -147,6 +153,39 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     #endregion
+
+    /// <summary>
+    /// console.ui's client is generated from the OpenAPI document, so the operation ids, the download's
+    /// binary response and the Vm's guest-agent and snapshot fields are part of the contract with it.
+    /// </summary>
+    [Fact]
+    public async Task TheOpenApiDocument_DescribesTheConsoleContract()
+    {
+        var response = await Client().GetAsync("/swagger/v1/swagger.json", Ct);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
+        var root = document.RootElement;
+        var paths = root.GetProperty("paths");
+
+        var revert = paths.GetProperty("/api/vms/proxmox/{id}/actions/revert").GetProperty("post");
+        Assert.Equal("revertProxmoxVirtualMachine", revert.GetProperty("operationId").GetString());
+
+        var download = paths.GetProperty("/api/vms/proxmox/{id}/actions/download-file").GetProperty("get");
+        Assert.Equal("downloadFileFromProxmoxVirtualMachine", download.GetProperty("operationId").GetString());
+        Assert.Contains(
+            download.GetProperty("parameters").EnumerateArray(),
+            x => x.GetProperty("name").GetString() == "path" && x.GetProperty("in").GetString() == "query");
+        var ok = download.GetProperty("responses").GetProperty("200").GetProperty("content");
+        Assert.Equal(
+            "binary",
+            ok.GetProperty("application/octet-stream").GetProperty("schema").GetProperty("format").GetString());
+
+        var vm = root.GetProperty("components").GetProperty("schemas")
+            .GetProperty("ProxmoxVirtualMachine").GetProperty("properties");
+        Assert.True(vm.TryGetProperty("guestAgentRunning", out _));
+        Assert.True(vm.TryGetProperty("hasSnapshot", out _));
+        Assert.True(vm.TryGetProperty("currentSnapshot", out _));
+    }
 
     #region The gate every route shares
 
@@ -301,6 +340,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [InlineData("GET", "/snapshots", "You do not have permission to view snapshots for this vm.")]
     [InlineData("POST", "/actions/snapshots", "You do not have permission to manage snapshots for this vm.")]
     [InlineData("POST", "/actions/snapshots/snap-1/revert", "You do not have permission to revert this vm.")]
+    [InlineData("POST", "/actions/revert", "You do not have permission to revert this vm.")]
     [InlineData("DELETE", "/actions/snapshots/snap-1", "You do not have permission to manage snapshots for this vm.")]
     public async Task SnapshotRoutes_WithoutTheRevertPermission_Is403(
         string method, string suffix, string message)
@@ -543,8 +583,10 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [InlineData("GET", "/snapshots", AppSystemPermission.RevertVms)]
     [InlineData("POST", "/actions/snapshots", AppSystemPermission.RevertVms)]
     [InlineData("POST", "/actions/snapshots/snap-1/revert", AppSystemPermission.RevertVms)]
+    [InlineData("POST", "/actions/revert", AppSystemPermission.RevertVms)]
     [InlineData("DELETE", "/actions/snapshots/snap-1", AppSystemPermission.RevertVms)]
     [InlineData("POST", "/actions/read-guest-file", AppSystemPermission.DownloadVmFiles)]
+    [InlineData("GET", "/actions/download-file?path=/tmp/f.bin", AppSystemPermission.DownloadVmFiles)]
     [InlineData("POST", "/actions/upload-file", AppSystemPermission.UploadVmFiles)]
     public async Task SnapshotAndGuestFileRoutes_are_allowed_for_a_caller_holding_exactly_their_system_permission_and_ViewVms(
         string method, string suffix, AppSystemPermission permission)
@@ -567,8 +609,10 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [InlineData("GET", "/snapshots", "You do not have permission to view snapshots for this vm.")]
     [InlineData("POST", "/actions/snapshots", "You do not have permission to manage snapshots for this vm.")]
     [InlineData("POST", "/actions/snapshots/snap-1/revert", "You do not have permission to revert this vm.")]
+    [InlineData("POST", "/actions/revert", "You do not have permission to revert this vm.")]
     [InlineData("DELETE", "/actions/snapshots/snap-1", "You do not have permission to manage snapshots for this vm.")]
     [InlineData("POST", "/actions/read-guest-file", "You do not have permission to download files from this vm.")]
+    [InlineData("GET", "/actions/download-file?path=/tmp/f.bin", "You do not have permission to download files from this vm.")]
     [InlineData("POST", "/actions/upload-file", "You do not have permission to upload files to this vm.")]
     public async Task SnapshotAndGuestFileRoutes_are_forbidden_for_a_caller_holding_only_the_system_ControlVms(
         string method, string suffix, string message)
@@ -710,6 +754,7 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     [InlineData("POST", "/actions/reboot", true)]
     [InlineData("POST", "/actions/shutdown", true)]
     [InlineData("POST", "/actions/snapshots/snap-1/revert", true)]
+    [InlineData("POST", "/actions/revert", true)]
     [InlineData("POST", "/actions/snapshots", false)]
     [InlineData("DELETE", "/actions/snapshots/snap-1", false)]
     [InlineData("POST", "/actions/read-guest-file", false)]
@@ -729,6 +774,50 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         {
             Factory.ProxmoxTasks.DidNotReceive().CheckTasks();
         }
+    }
+
+    [Fact]
+    public async Task Reboot_WhenTheProxmoxTaskFails_Is400WithProxmoxsReason()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.RebootVm(Arg.Any<ProxmoxVmInfo>())
+            .Returns<Task<string>>(_ => throw new ProxmoxTaskFailedException("VM quit/powerdown failed - got timeout", "Reboot"));
+
+        var response = await Send("POST", "/actions/reboot", vm.Id);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.StartsWith("Reboot failed: VM quit/powerdown failed - got timeout.", await Title(response));
+    }
+
+    // Proxmox declining the request itself - a backup holds the lock - is the hypervisor saying no, not
+    // this API failing: a 400 whose title is Proxmox's reason, and no stack trace in the body.
+    [Fact]
+    public async Task Reboot_WhenProxmoxRefusesTheRequest_Is400WithProxmoxsReason()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.RebootVm(Arg.Any<ProxmoxVmInfo>())
+            .Returns<Task<string>>(_ => throw new ProxmoxRequestRefusedException("VM is locked (backup)", "Reboot"));
+
+        var response = await Send("POST", "/actions/reboot", vm.Id);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct)).RootElement;
+        Assert.Equal("Reboot failed: VM is locked (backup)", body.GetProperty("title").GetString());
+        Assert.False(body.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.String);
+    }
+
+    // A task this API gave up waiting for is Proxmox not answering in time: a 504 that says so, not a 500.
+    [Fact]
+    public async Task Reboot_WhenTheProxmoxTaskTimesOut_Is504()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.RebootVm(Arg.Any<ProxmoxVmInfo>())
+            .Returns<Task<string>>(_ => throw new ProxmoxTaskTimeoutException("Reboot", TimeSpan.FromHours(1)));
+
+        var response = await Send("POST", "/actions/reboot", vm.Id);
+
+        Assert.Equal(HttpStatusCode.GatewayTimeout, response.StatusCode);
+        Assert.StartsWith("Reboot did not finish within 60 minutes.", await Title(response));
     }
 
     #endregion
@@ -757,6 +846,47 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     /// With nothing registered there is nothing to choose between, and the UI reads this flag to decide
     /// whether to offer the control at all.
     /// </summary>
+    /// <summary>
+    /// The guest-agent and snapshot fields reach the wire under the camelCase names the console client is
+    /// generated against.
+    /// </summary>
+    [Fact]
+    public async Task Get_ReportsGuestAgentAndSnapshotStateUnderTheirWireNames()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.GetVmConfigSummary(Arg.Any<ProxmoxVmInfo>(), Arg.Any<CancellationToken>())
+            .Returns(new ProxmoxVmConfigSummary(new() { ["net0"] = "vmbr0" }, true)
+            {
+                AgentEnabled = true,
+                CurrentSnapshot = "before-patching",
+            });
+        Factory.Proxmox.IsGuestAgentRunning(TheVm).Returns(true);
+
+        var response = await RootClient.GetAsync(Route(vm.Id), Ct);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
+
+        Assert.True(body.RootElement.GetProperty("guestAgentRunning").GetBoolean());
+        Assert.True(body.RootElement.GetProperty("hasSnapshot").GetBoolean());
+        Assert.Equal("before-patching", body.RootElement.GetProperty("currentSnapshot").GetString());
+    }
+
+    /// <summary>
+    /// The VNC clipboard flag reaches the wire as <c>vncClipboardEnabled</c>, which the console reads to
+    /// decide whether Copy can work at all.
+    /// </summary>
+    [Fact]
+    public async Task Get_ReportsTheVncClipboardFlagUnderItsWireName()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.GetVmConfigSummary(Arg.Any<ProxmoxVmInfo>(), Arg.Any<CancellationToken>())
+            .Returns(new ProxmoxVmConfigSummary(new() { ["net0"] = "vmbr0" }, true) { VncClipboardEnabled = true });
+
+        var response = await RootClient.GetAsync(Route(vm.Id), Ct);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
+
+        Assert.True(body.RootElement.GetProperty("vncClipboardEnabled").GetBoolean());
+    }
+
     [Fact]
     public async Task Get_WithNoNetworksRegistered_ReportsTheNicConfigurationAsUnavailable()
     {
@@ -876,6 +1006,36 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal("before patch", ProxmoxCall(serviceMethod)[1]);
     }
 
+    /// <summary>
+    /// Revert to the current snapshot hands the cluster the Vm that was asked for, and relays what it said.
+    /// </summary>
+    [Fact]
+    public async Task Revert_RevertsTheVmToItsCurrentSnapshot()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.RevertToCurrentSnapshot(TheVm).Returns("vmid 101 reverted to its current snapshot");
+
+        var response = await RootClient.PostAsync($"{Route(vm.Id)}/actions/revert", null, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("\"vmid 101 reverted to its current snapshot\"", await response.Content.ReadAsStringAsync(Ct));
+    }
+
+    /// <summary>A Vm with no snapshot is a 400 carrying the driver's sentence, which the UI shows as is.</summary>
+    [Fact]
+    public async Task Revert_ForAVmWithNoSnapshot_Is400()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.RevertToCurrentSnapshot(TheVm)
+            .ThrowsAsync(new Player.Vm.Api.Infrastructure.Exceptions.BadRequestException(
+                "This virtual machine has no snapshot to revert to."));
+
+        var response = await RootClient.PostAsync($"{Route(vm.Id)}/actions/revert", null, Ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("This virtual machine has no snapshot to revert to.", await Title(response));
+    }
+
     #endregion
 
     #region Guest agent
@@ -976,6 +1136,73 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     /// <summary>
+    /// Downloading a file asks for the same permission reading one does, and not the edit permission.
+    /// </summary>
+    [Fact]
+    public async Task DownloadFile_WithoutTheDownloadPermission_Is403()
+    {
+        var vm = await SeedProxmoxVm();
+        var response = await Send("GET", "/actions/download-file?path=/tmp/f.bin", vm.Id, await AllBut(AppViewPermission.DownloadVmFiles));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        Assert.Equal("You do not have permission to download files from this vm.", await Title(response));
+    }
+
+    /// <summary>
+    /// The file comes back as the raw bytes the driver read, as an octet stream named after the last
+    /// segment of the guest path - whichever separator the guest uses.
+    /// </summary>
+    [Theory]
+    [InlineData("/var/log/app data.bin", "app data.bin")]
+    [InlineData(@"C:\Users\student\notes.txt", "notes.txt")]
+    public async Task DownloadFile_ReturnsTheBytesAsAnAttachmentNamedAfterThePath(string path, string fileName)
+    {
+        var vm = await SeedProxmoxVm();
+        byte[] bytes = [0x00, 0xFF, 0x10, 0x80];
+        Factory.Proxmox.DownloadGuestFile(TheVm, path).Returns(bytes);
+
+        var response = await RootClient.GetAsync(
+            $"{Route(vm.Id)}/actions/download-file?path={Uri.EscapeDataString(path)}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/octet-stream", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal(fileName, response.Content.Headers.ContentDisposition?.FileNameStar);
+        Assert.Equal(bytes, await response.Content.ReadAsByteArrayAsync(Ct));
+    }
+
+    /// <summary>No path is the caller's mistake, refused before the cluster is asked.</summary>
+    [Theory]
+    [InlineData("")]
+    [InlineData("?path=")]
+    [InlineData("?path=%20")]
+    public async Task DownloadFile_WithNoPath_Is400(string query)
+    {
+        var vm = await SeedProxmoxVm();
+
+        var response = await RootClient.GetAsync($"{Route(vm.Id)}/actions/download-file{query}", Ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("A guest file path is required.", await Title(response));
+        await Factory.Proxmox.DidNotReceive().DownloadGuestFile(Arg.Any<ProxmoxVmInfo>(), Arg.Any<string>());
+    }
+
+    /// <summary>The driver's refusals - the read limit among them - reach the caller as a 400 with its message.</summary>
+    [Fact]
+    public async Task DownloadFile_WhenTheFileIsOverTheReadLimit_Is400SayingSo()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.DownloadGuestFile(TheVm, "/tmp/big.iso")
+            .ThrowsAsync(new Player.Vm.Api.Infrastructure.Exceptions.BadRequestException(
+                "/tmp/big.iso exceeds the Proxmox read limit (16 MiB)."));
+
+        var response = await RootClient.GetAsync($"{Route(vm.Id)}/actions/download-file?path=/tmp/big.iso", Ct);
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal("application/json", response.Content.Headers.ContentType?.MediaType);
+        Assert.Equal("/tmp/big.iso exceeds the Proxmox read limit (16 MiB).", await Title(response));
+    }
+
+    /// <summary>
     /// Every file in the form is written, each under the submitted path.
     /// </summary>
     [Fact]
@@ -1029,7 +1256,8 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var vm = await SeedProxmoxVm();
         Factory.Proxmox
             .UploadFileToGuest(Arg.Any<ProxmoxVmInfo>(), Arg.Any<string>(), Arg.Any<Stream>())
-            .ThrowsAsync(new InvalidOperationException("File exceeds the 61440 byte limit"));
+            .ThrowsAsync(new Player.Vm.Api.Infrastructure.Exceptions.BadRequestException(
+                "a.txt is 50 KB, which exceeds the 45 KB limit for uploading a file to a Proxmox virtual machine."));
 
         var form = new MultipartFormDataContent
         {
@@ -1040,7 +1268,9 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         var response = await RootClient.PostAsync($"{Route(vm.Id)}/actions/upload-file", form, Ct);
 
         Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
-        Assert.Equal("File exceeds the 61440 byte limit", await Title(response));
+        Assert.Equal(
+            "a.txt is 50 KB, which exceeds the 45 KB limit for uploading a file to a Proxmox virtual machine.",
+            await Title(response));
     }
 
     #endregion

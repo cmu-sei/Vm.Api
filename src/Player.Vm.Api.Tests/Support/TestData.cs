@@ -51,7 +51,8 @@ public static class TestData
     public static VmEntity ProxmoxVm(
         Guid? teamId = null,
         PowerState powerState = PowerState.Off,
-        int vmid = 100)
+        int vmid = 100,
+        bool hasSnapshot = false)
     {
         var id = Guid.NewGuid();
 
@@ -61,6 +62,7 @@ public static class TestData
             Name = $"vm-{id}",
             Type = VmType.Proxmox,
             PowerState = powerState,
+            HasSnapshot = hasSnapshot,
             VmTeams = [new VmTeam(teamId ?? Guid.NewGuid(), id)],
             ProxmoxVmInfo = new ProxmoxVmInfo { Id = vmid, Node = "pve-1" },
         };
