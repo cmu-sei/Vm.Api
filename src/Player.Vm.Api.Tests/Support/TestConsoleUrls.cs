@@ -9,7 +9,7 @@ namespace Player.Vm.Api.Tests.Support;
 /// Console urls for the services and handlers a test builds itself, which map a Vm to its view model
 /// and so need to know where its console is opened.
 /// </summary>
-/// <remarks>The urls are deliberately recognizable: a test asserting on one reads it from here, not from a config file.</remarks>
+/// <remarks>The urls are deliberately recognizable, and differ per provider; VmMapperTests asserts on them.</remarks>
 public static class TestConsoleUrls
 {
     public const string DefaultUrl = "https://console.test.local/default";

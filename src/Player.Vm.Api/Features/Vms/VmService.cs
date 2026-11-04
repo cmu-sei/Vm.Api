@@ -9,7 +9,6 @@ using Player.Vm.Api.Infrastructure.Authorization;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Infrastructure.Extensions;
 using System;
-using Player.Vm.Api.Infrastructure.Options;
 using System.Collections.Generic;
 using System.Linq;
 using System.Security.Claims;
@@ -17,6 +16,7 @@ using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using Player.Vm.Api.Features.Networks;
+using Player.Vm.Api.Infrastructure.Options;
 
 namespace Player.Vm.Api.Features.Vms
 {

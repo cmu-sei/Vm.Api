@@ -56,9 +56,13 @@ public static partial class VmMapper
     /// Keeps <see cref="Domain.Models.Vm.Type"/> in step with the Proxmox details, but never clobbers the
     /// type of a Vm from another provider (vSphere's poller sets its own). The Proxmox details themselves
     /// are left to <c>VmService.UpdateAsync</c>: their vmid is the row's key, which EF cannot change in place.
+    /// A null form changes nothing.
     /// </remarks>
     public static void ApplyTo(this VmUpdateForm source, Domain.Models.Vm target)
     {
+        if (source == null || target == null)
+            return;
+
         target.Type = source.ProxmoxVmInfo != null
             ? VmType.Proxmox
             : target.Type == VmType.Proxmox

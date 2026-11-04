@@ -3155,6 +3155,69 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal((vm.Id, "pve-2", ProxmoxVmType.LXC), (info.VmId, info.Node, info.Type));
     }
 
+    /// <summary>
+    /// An update writes the url, owner and console details it carries, clearing those it leaves out,
+    /// and keeps what the pollers set.
+    /// </summary>
+    [Fact]
+    public async Task Update_clears_what_it_leaves_out_and_keeps_the_polled_state()
+    {
+        var vm = Vm([Guid.NewGuid()], userId: Guid.NewGuid());
+        vm.Url = "https://console/before";
+        vm.ConsoleConnectionInfo = new Player.Vm.Api.Domain.Models.ConsoleConnectionInfo { Hostname = "host", Protocol = "ssh" };
+        vm.PowerState = PowerState.On;
+        vm.IpAddresses = ["10.0.0.1"];
+        vm.HasSnapshot = true;
+        vm.HasPendingTasks = true;
+        vm.Embeddable = false;
+        await Seed(vm);
+
+        await AssertStatus(HttpStatusCode.OK, await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct));
+
+        await using var context = NewContext();
+        var stored = context.Vms.Single(x => x.Id == vm.Id);
+        Assert.Equal(("after", null, null, null), (stored.Name, stored.Url, stored.UserId, stored.ConsoleConnectionInfo));
+        Assert.Equal((PowerState.On, true, true, true), (stored.PowerState, stored.HasSnapshot, stored.HasPendingTasks, stored.Embeddable));
+        Assert.Equal(["10.0.0.1"], stored.IpAddresses);
+    }
+
+    /// <summary>A Map created without team ids stores an empty list.</summary>
+    [Fact]
+    public async Task CreateMap_without_team_ids_stores_an_empty_list()
+    {
+        var viewId = Guid.NewGuid();
+        View(viewId);
+        var form = MapCreateForm(Guid.NewGuid());
+        form.TeamIds = null;
+
+        var response = await RootClient.PostAsJsonAsync($"/api/views/{viewId}/map", form, Ct);
+
+        await AssertStatus(HttpStatusCode.Created, response);
+        var body = await response.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct);
+        Assert.Empty(body.TeamIds);
+        await using var context = NewContext();
+        Assert.Empty((await context.Maps.SingleAsync(x => x.Id == body.Id, Ct)).TeamIds);
+    }
+
+    /// <summary>A Map update without team ids or an image clears them, and keeps the Map's id and View.</summary>
+    [Fact]
+    public async Task UpdateMap_without_team_ids_or_an_image_clears_them_and_keeps_the_view()
+    {
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId]);
+        await Seed(map);
+        View(map.ViewId, teamId);
+
+        var response = await RootClient.PutAsJsonAsync($"/api/views/maps/{map.Id}",
+            new VmMapUpdateForm { Name = "after", ImageUrl = null, TeamIds = null, Coordinates = [] }, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        await using var context = NewContext();
+        var stored = await context.Maps.SingleAsync(x => x.Id == map.Id, Ct);
+        Assert.Equal(("after", null, map.ViewId), (stored.Name, stored.ImageUrl, stored.ViewId));
+        Assert.Empty(stored.TeamIds);
+    }
+
     /// <summary>A Map created without coordinates, or with a coordinate without urls, stores and returns empty lists.</summary>
     [Fact]
     public async Task CreateMap_without_coordinates_or_urls_stores_and_returns_empty_lists()

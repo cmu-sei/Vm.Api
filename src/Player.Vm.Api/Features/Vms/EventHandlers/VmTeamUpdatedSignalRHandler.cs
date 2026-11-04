@@ -2,7 +2,6 @@
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using System;
-using Player.Vm.Api.Infrastructure.Options;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -14,6 +13,7 @@ using Player.Vm.Api.Data;
 using Crucible.Common.EntityEvents.Events;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms.Hubs;
+using Player.Vm.Api.Infrastructure.Options;
 
 namespace Player.Vm.Api.Features.Vms.EventHandlers
 {

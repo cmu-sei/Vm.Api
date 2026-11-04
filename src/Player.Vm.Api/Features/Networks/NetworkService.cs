@@ -1,5 +1,6 @@
 // Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
+
 using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Models;
@@ -37,7 +38,7 @@ namespace Player.Vm.Api.Features.Networks
     {
         private readonly VmContext _context;
         private readonly IPlayerService _playerService;
-        
+
         public NetworkService(VmContext context, IPlayerService playerService)
         {
             _context = context;
