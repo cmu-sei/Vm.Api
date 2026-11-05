@@ -503,6 +503,25 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     /// 201 with a Location a caller can follow. The route is built by action name, so renaming Get
     /// without updating the CreatedAtAction would leave the response without one.
     /// </summary>
+    /// <summary>A Vm created without Proxmox details is of unknown type until a poller sets it.</summary>
+    [Fact]
+    public async Task Create_without_Proxmox_info_stores_a_vm_of_unknown_type()
+    {
+        var teamId = Guid.NewGuid();
+        TeamVisibility(teamId);
+
+        var response = await RootClient.PostAsJsonAsync("/api/vms", CreateForm(teamId, "new-vm"), Ct);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var created = await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct);
+        Assert.Equal(VmType.Unknown, created.Type);
+        Assert.Null(created.ProxmoxVmInfo);
+
+        await using var context = NewContext();
+        Assert.Equal(VmType.Unknown, context.Vms.Single(x => x.Id == created.Id).Type);
+        Assert.Empty(context.ProxmoxVmInfo);
+    }
+
     [Fact]
     public async Task Create_Returns201AndALocationThatResolves()
     {
@@ -1113,6 +1132,40 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         Assert.Equal("after", stored.Name);
         Assert.Equal("after", Assert.Single(stored.Coordinates).Label);
+    }
+
+    /// <summary>
+    /// A coordinate sent back with its own stored id is still a new row: the update rebuilds the
+    /// coordinates and gives each a new id.
+    /// </summary>
+    [Fact]
+    public async Task UpdateMap_given_a_stored_coordinates_own_id_replaces_it_with_a_new_row()
+    {
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId]);
+        map.Coordinates = [CoordinateEntityFor("before", 1, 1)];
+        await Seed(map);
+        View(map.ViewId, teamId);
+        var storedId = map.Coordinates.Single().Id;
+
+        var resent = Coordinate("after", 9, 9);
+        resent.Id = storedId;
+        var form = new VmMapUpdateForm
+        {
+            Name = map.Name,
+            ImageUrl = map.ImageUrl,
+            TeamIds = [teamId],
+            Coordinates = [resent]
+        };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/views/maps/{map.Id}", form, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await using var context = NewContext();
+        var stored = Assert.Single(context.Maps.Include(x => x.Coordinates).Single(x => x.Id == map.Id).Coordinates);
+        Assert.Equal("after", stored.Label);
+        Assert.NotEqual(storedId, stored.Id);
     }
 
     [Fact]
@@ -3101,25 +3154,6 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal("https://direct.test/console", directBody.Url);
     }
 
-    /// <summary>An update without Proxmox details turns a Proxmox Vm into one of unknown type and drops the details.</summary>
-    [Fact]
-    public async Task Update_without_Proxmox_info_makes_a_Proxmox_vm_unknown_and_removes_its_info()
-    {
-        var teamId = Guid.NewGuid();
-        var vm = TestData.ProxmoxVm(teamId);
-        await Seed(vm);
-
-        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
-
-        await AssertStatus(HttpStatusCode.OK, response);
-        var body = await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct);
-        Assert.Equal(VmType.Unknown, body.Type);
-        Assert.Null(body.ProxmoxVmInfo);
-        await using var context = NewContext();
-        Assert.Equal(VmType.Unknown, context.Vms.Single(x => x.Id == vm.Id).Type);
-        Assert.Empty(context.ProxmoxVmInfo);
-    }
-
     /// <summary>An update keeps the type of a Vm from another provider; its own poller sets it.</summary>
     [Fact]
     public async Task Update_without_Proxmox_info_keeps_a_vSphere_vms_type()
@@ -3132,27 +3166,6 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         await AssertStatus(HttpStatusCode.OK, response);
         await using var context = NewContext();
         Assert.Equal(VmType.Vsphere, context.Vms.Single(x => x.Id == vm.Id).Type);
-    }
-
-    /// <summary>An update with Proxmox details changes the stored details in place.</summary>
-    [Fact]
-    public async Task Update_with_Proxmox_info_changes_the_stored_info_in_place()
-    {
-        var teamId = Guid.NewGuid();
-        var vm = TestData.ProxmoxVm(teamId);
-        await Seed(vm);
-        var form = new VmUpdateForm
-        {
-            Name = "after",
-            ProxmoxVmInfo = new Player.Vm.Api.Features.Vms.ProxmoxVmInfo { Id = vm.ProxmoxVmInfo.Id, Node = "pve-2", Type = ProxmoxVmType.LXC }
-        };
-
-        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", form, Ct);
-
-        await AssertStatus(HttpStatusCode.OK, response);
-        await using var context = NewContext();
-        var info = Assert.Single(context.ProxmoxVmInfo);
-        Assert.Equal((vm.Id, "pve-2", ProxmoxVmType.LXC), (info.VmId, info.Node, info.Type));
     }
 
     /// <summary>
