@@ -552,15 +552,25 @@ public class ConnectionService : BackgroundService, IConnectionService
 
     public List<Network> GetNetworksByHost(string hostReference, string vsphereHost)
     {
-        VsphereConnection connection;
-        List<Network> networks = new List<Network>();
-
-        if (_connections.TryGetValue(vsphereHost, out connection))
+        // TryGetValue sets its out argument to null on a miss, so it can't share the empty default:
+        // a host with no cache entry would otherwise come back as null, and every caller that
+        // filters or sorts the list would throw (the vSphere Get, and with it the console, 500s).
+        // A host is missing when vCenter doesn't list it on any portgroup, for example when the
+        // service account can't read that host.
+        if (hostReference != null
+            && _connections.TryGetValue(vsphereHost, out var connection)
+            && connection.NetworkCache.TryGetValue(hostReference, out var networks)
+            && networks != null)
         {
-            connection.NetworkCache.TryGetValue(hostReference, out networks);
+            return networks;
         }
 
-        return networks;
+        if (hostReference != null && _connections.ContainsKey(vsphereHost))
+        {
+            _logger.LogWarning("No networks cached for host {HostReference} on {VsphereHost}; the vCenter account may not be able to read that host", hostReference, vsphereHost);
+        }
+
+        return new List<Network>();
     }
 
     public Network GetNetworkByReference(string networkReference, string vsphereHost)

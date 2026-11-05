@@ -618,6 +618,55 @@ public class ConnectionServiceTests(DatabaseFixture fixture) : DatabaseTestBase(
         LoadCacheAfterMinutes = 60
     };
 
+    #region Network cache lookups
+
+    /// <summary>
+    /// A host the network cache has no entry for (vCenter listed it on no portgroup) gets an empty list,
+    /// not null: callers filter and sort the result, and a null made the vSphere Get, and the console
+    /// with it, fail with a 500.
+    /// </summary>
+    [Fact]
+    public void GetNetworksByHost_ForAHostWithNoCacheEntry_IsEmptyNotNull()
+    {
+        var service = Service();
+        var connection = Connection(_ => throw new InvalidOperationException());
+        connection.NetworkCache["host-1"] = [new Network { Name = "lan", Reference = "dvportgroup-1" }];
+        service._connections[Address] = connection;
+
+        var networks = service.GetNetworksByHost("host-2", Address);
+
+        Assert.NotNull(networks);
+        Assert.Empty(networks);
+    }
+
+    [Fact]
+    public void GetNetworksByHost_ForACachedHost_ReturnsItsNetworks()
+    {
+        var service = Service();
+        var connection = Connection(_ => throw new InvalidOperationException());
+        connection.NetworkCache["host-1"] = [new Network { Name = "lan", Reference = "dvportgroup-1" }];
+        service._connections[Address] = connection;
+
+        var networks = service.GetNetworksByHost("host-1", Address);
+
+        Assert.Equal("dvportgroup-1", Assert.Single(networks).Reference);
+    }
+
+    [Theory]
+    [InlineData("host-1", "another-vcenter")]
+    [InlineData(null, Address)]
+    public void GetNetworksByHost_ForAnUnknownVcenterOrNoHost_IsEmpty(string hostReference, string vsphereHost)
+    {
+        var service = Service();
+        var connection = Connection(_ => throw new InvalidOperationException());
+        connection.NetworkCache["host-1"] = [new Network { Name = "lan", Reference = "dvportgroup-1" }];
+        service._connections[Address] = connection;
+
+        Assert.Empty(service.GetNetworksByHost(hostReference, vsphereHost));
+    }
+
+    #endregion
+
     private static VsphereHost Host(bool enabled = true) =>
         new() { Address = Address, Username = "user", Password = "password", Enabled = enabled };
 
