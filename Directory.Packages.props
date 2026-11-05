@@ -106,7 +106,7 @@
     <PackageVersion Include="Microsoft.OpenApi" Version="2.7.5" />
     <!-- Through AspNetCore.HealthChecks.UI 9.0.0, which carries 15.0.1. Only the UI's Kubernetes
          service discovery uses it, and this API does not turn that on. -->
-    <PackageVersion Include="KubernetesClient" Version="17.0.14" />
+    <PackageVersion Include="KubernetesClient" Version="19.0.2" />
   </ItemGroup>
 
 </Project>
