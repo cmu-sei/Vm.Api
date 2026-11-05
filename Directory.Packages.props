@@ -20,7 +20,7 @@
 
   <!-- Application and data access. -->
   <ItemGroup>
-    <PackageVersion Include="AutoMapper" Version="13.0.1" /> <!-- DO NOT UPDATE. Version 15+ requires a license. Plan to migrate to something else. The NuGet audit's AutoMapper hit stays until it is replaced. -->
+    <PackageVersion Include="AutoMapper" Version="14.0.0" /> <!-- DO NOT UPDATE. Version 15+ requires a license. Plan to migrate to something else. The NuGet audit's AutoMapper hit stays until it is replaced. -->
     <PackageVersion Include="MediatR" Version="12.4.1" /> <!-- DO NOT UPDATE. Version 13+ requires a license. Plan to migrate to something else. -->
     <PackageVersion Include="Crucible.Common.EntityEvents" Version="0.2.1" />
     <PackageVersion Include="Crucible.Common.ServiceDefaults" Version="0.0.3" />
