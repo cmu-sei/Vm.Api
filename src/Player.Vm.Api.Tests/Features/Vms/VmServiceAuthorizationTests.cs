@@ -149,6 +149,69 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
     #endregion
 
+    #region GetRecordAsync
+
+    // An account that creates Vms with a manage permission, and no Vm permission, reads back what it
+    // wrote: Caster's Terraform provider in a View Alloy copied, where it is on no team.
+    [Fact]
+    public async Task GetRecord_is_allowed_for_a_caller_holding_only_ManageViews()
+    {
+        var vm = Vm(teamIds: [Guid.NewGuid()], userId: OtherUser);
+        await Seed(vm);
+        CanManageTeams(true);
+
+        var record = await Service.GetRecordAsync(vm.Id, Ct);
+
+        Assert.Equal(vm.Id, record.Id);
+    }
+
+    [Fact]
+    public async Task GetRecord_is_allowed_for_a_caller_holding_ManageTeam_on_the_Vms_team()
+    {
+        var vm = await SeedVmOnOneTeam(AppTeamPermission.ManageTeam);
+
+        Assert.Equal(vm.Id, (await Service.GetRecordAsync(vm.Id, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetRecord_is_allowed_for_a_caller_holding_exactly_ViewTeamVms_on_the_Vms_team()
+    {
+        var vm = await SeedVmOnOneTeam(AppTeamPermission.ViewTeamVms);
+
+        Assert.Equal(vm.Id, (await Service.GetRecordAsync(vm.Id, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetRecord_is_forbidden_without_a_manage_or_Vm_permission()
+    {
+        var vm = await SeedVmOnOneTeam(AppTeamPermission.ViewTeamMaps);
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetRecordAsync(vm.Id, Ct));
+    }
+
+    [Fact]
+    public async Task GetRecord_ForAMissingVm_IsNotFound()
+    {
+        CanManageTeams(true);
+
+        await Assert.ThrowsAsync<EntityNotFoundException<Player.Vm.Api.Features.Vms.Vm>>(
+            () => Service.GetRecordAsync(Guid.NewGuid(), Ct));
+    }
+
+    // The manage permission opens the record and nothing else: the Vm operations behind GetAsync,
+    // consoles and power among them, still need a Vm permission.
+    [Fact]
+    public async Task GetAsync_is_still_forbidden_for_a_caller_holding_only_ManageViews()
+    {
+        var vm = Vm(teamIds: [Guid.NewGuid()]);
+        await Seed(vm);
+        CanManageTeams(true);
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetAsync(vm.Id, Ct));
+    }
+
+    #endregion
+
     #region GetByTeamIdAsync
 
     // A team the caller cannot see at all is refused rather than answered with an empty list.
