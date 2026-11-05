@@ -25,6 +25,7 @@ namespace Player.Vm.Api.Features.Vms
 
         Task<Vm[]> GetAllAsync(CancellationToken ct);
         Task<Vm> GetAsync(Guid id, CancellationToken ct);
+        Task<Vm> GetRecordAsync(Guid id, CancellationToken ct);
         Task<IEnumerable<Vm>> GetByTeamIdAsync(Guid teamId, string name, bool includePersonal, bool onlyMine, CancellationToken ct);
         Task<IEnumerable<Vm>> GetByViewIdAsync(Guid viewId, string name, bool includePersonal, bool onlyMine, CancellationToken ct);
         Task<IEnumerable<Vm>> GetAllByViewIdAsync(Guid viewId, CancellationToken ct);
@@ -97,6 +98,30 @@ namespace Player.Vm.Api.Features.Vms
             await CanAccessVm(vmEntity, ct);
             var model = _mapper.Map<Vm>(vmEntity);
             return model;
+        }
+
+        /// <summary>
+        /// The Vm for GET vms/{id}. A caller who may update or delete the Vm may also read it back, so
+        /// an automation account that creates Vms with a manage permission (Caster's Terraform provider)
+        /// can confirm what it wrote. This is only the record: consoles, power and the other Vm
+        /// operations still go through <see cref="GetAsync"/> and need a Vm permission.
+        /// </summary>
+        public async Task<Vm> GetRecordAsync(Guid id, CancellationToken ct)
+        {
+            var vmEntity = await _context.Vms
+                .Include(v => v.VmTeams)
+                .Where(v => v.Id == id)
+                .SingleOrDefaultAsync(ct);
+
+            if (vmEntity == null)
+                throw new EntityNotFoundException<Vm>();
+
+            var teamIds = vmEntity.VmTeams.Select(v => v.TeamId).Distinct();
+
+            if (!await _playerService.CanManageTeams(teamIds, ct))
+                await CanAccessVm(vmEntity, ct);
+
+            return _mapper.Map<Vm>(vmEntity);
         }
 
         public async Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct)
