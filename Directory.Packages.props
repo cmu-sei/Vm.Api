@@ -79,17 +79,17 @@
     <!-- Hosts the application in process for the endpoint tests. Tied to the ASP.NET Core version, so
          it tracks Microsoft.AspNetCore.Authentication.JwtBearer above rather than the test-tool
          versions around it. -->
-    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.14" />
     <!-- The SignalR client, for connecting to the hubs the way the Angular UI does. Tied to the
          ASP.NET Core version for the same reason Mvc.Testing is: it has to speak the protocol the
          hosted server negotiates. -->
-    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.13" />
-    <PackageVersion Include="NSubstitute" Version="6.0.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.14" />
+    <PackageVersion Include="NSubstitute" Version="6.2.0" />
     <!-- Coverage collection, and inert until it is asked for: the Microsoft.Testing.Platform form of
          coverlet only instruments when a run asks for coverage, so a plain `dotnet test` neither
          instruments the assembly nor pays for it. `scripts/coverage.sh` is what turns it on. -->
     <PackageVersion Include="coverlet.MTP" Version="10.0.1" />
-    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.15.0" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.16.0" />
     <PackageVersion Include="xunit.v3" Version="4.0.1" />
   </ItemGroup>
 
