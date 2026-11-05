@@ -103,7 +103,7 @@
     <!-- Through Microsoft.Data.SqlClient, which carries 9.0.11 even under EF Core 10.0.13. -->
     <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
     <!-- Through Swashbuckle.AspNetCore 10.1.0, which carries 2.3.0. -->
-    <PackageVersion Include="Microsoft.OpenApi" Version="2.7.5" />
+    <PackageVersion Include="Microsoft.OpenApi" Version="3.10.2" />
     <!-- Through AspNetCore.HealthChecks.UI 9.0.0, which carries 15.0.1. Only the UI's Kubernetes
          service discovery uses it, and this API does not turn that on. -->
     <PackageVersion Include="KubernetesClient" Version="17.0.14" />
