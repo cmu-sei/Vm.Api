@@ -72,6 +72,13 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
     private readonly CancellationTokenSource _guestStateCancellation = new();
 
     /// <summary>
+    /// How long a stop that has run out of time still waits for the cancelled guest-state read to end.
+    /// The read gives up on its Proxmox calls once cancelled, so it ends almost at once; waiting for it
+    /// is what lets it dispose its scope before the host disposes the container under it.
+    /// </summary>
+    internal static readonly TimeSpan GuestStateCancelGrace = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// Counts <see cref="SetHasSnapshot"/> calls. A guest-state read notes the count when it starts, and
     /// <see cref="_snapshotRecordedAt"/> holds each Vm's count at its last call, so the read can tell
     /// which Vms have had HasSnapshot recorded since its config reads began.
@@ -170,6 +177,18 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
         {
             await _guestStateCancellation.CancelAsync();
             _logger.LogWarning("Stopped before the guest-state read finished; it will be read again on next start.");
+
+            // Cancelled, the read abandons its Proxmox calls rather than waiting them out, so it ends
+            // promptly. Waiting for that keeps it from disposing its scope after the host has disposed
+            // the container the scope came from. ReadGuestStates catches everything, so this only times out.
+            try
+            {
+                await _guestStateRead.WaitAsync(GuestStateCancelGrace);
+            }
+            catch (TimeoutException)
+            {
+                _logger.LogWarning("The cancelled guest-state read did not end in time.");
+            }
         }
 
         try

@@ -1,6 +1,7 @@
 // Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
+using System;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
@@ -273,6 +274,70 @@ public class ProxmoxServiceGuestStateTests
     [InlineData(new[] { "192.168.1.9", "10.0.0.5" }, new[] { "192.168.1.9", "10.0.0.5" })]
     public void CollectAddresses_KeepsRoutableAddressesInOrderWithoutDuplicates(string[] given, string[] expected) =>
         Assert.Equal(expected, ProxmoxService.CollectAddresses(given));
+
+    #endregion
+
+    #region Cancellation
+
+    /// <summary>
+    /// A cancelled read stops waiting on a Proxmox call that has not answered, rather than waiting it
+    /// out. The client takes no cancellation token, so this is what lets the state poller's stop end the
+    /// read - and dispose its scope - before the host disposes the container under it.
+    /// </summary>
+    [Fact]
+    public async Task ACancelledRead_StopsWaitingOnAConfigReadThatHasNotAnswered()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        var stalled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        cluster.Http.Stalls($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", stalled.Task);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+
+        try
+        {
+            var read = cluster.Service().GetGuestState(info, running: false, cancellation.Token);
+            await PollLoop.Until(() => cluster.Http.Paths.Count == 1, "the config read to be sent");
+            Assert.False(read.IsCompleted);
+
+            await cancellation.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read.WaitAsync(TimeSpan.FromSeconds(5), Ct));
+        }
+        finally
+        {
+            stalled.SetResult();
+        }
+    }
+
+    /// <summary>
+    /// The same for a guest-agent query, which would otherwise hold the read for its whole
+    /// GuestAgentTimeoutMilliseconds - here a minute, so only the cancellation can end it in time.
+    /// </summary>
+    [Fact]
+    public async Task ACancelledRead_StopsWaitingOnAnAgentThatHasNotAnswered()
+    {
+        var cluster = new FakeProxmoxCluster();
+        cluster.Options.GuestAgentTimeoutMilliseconds = 60_000;
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"agent":"1"}""");
+        var stalled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        cluster.Http.Stalls($"GET {FakeProxmoxCluster.VmPath(info, Interfaces)}", stalled.Task);
+        using var cancellation = CancellationTokenSource.CreateLinkedTokenSource(Ct);
+
+        try
+        {
+            var read = cluster.Service().GetGuestState(info, running: true, cancellation.Token);
+            await PollLoop.Until(() => cluster.Http.Paths.Count == 2, "the agent query to be sent");
+
+            await cancellation.CancelAsync();
+
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => read.WaitAsync(TimeSpan.FromSeconds(5), Ct));
+        }
+        finally
+        {
+            stalled.SetResult();
+        }
+    }
 
     #endregion
 }

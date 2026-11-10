@@ -182,6 +182,18 @@ public sealed class StubHttpMessageHandler : HttpMessageHandler
     }
 
     /// <summary>
+    /// A route rule that does not answer until <paramref name="until"/> completes, the way a stalled
+    /// upstream holds a request, and then answers with <paramref name="json"/>. It ignores the request's
+    /// cancellation token, as a client that passes none would see it.
+    /// </summary>
+    public StubHttpMessageHandler Stalls(string route, Task until, string json = "{\"data\":null}")
+    {
+        ArgumentNullException.ThrowIfNull(until);
+
+        return AddRule(new Rule(route, HttpStatusCode.OK, () => json, once: false) { Until = until });
+    }
+
+    /// <summary>
     /// A route rule that fails the way a name that does not resolve or a refused connection fails, with an
     /// <see cref="HttpRequestException"/> rather than a status.
     /// </summary>
@@ -250,6 +262,11 @@ public sealed class StubHttpMessageHandler : HttpMessageHandler
             }
 
             return new HttpResponseMessage(HttpStatusCode.NotFound);
+        }
+
+        if (rule.Until is not null)
+        {
+            await rule.Until;
         }
 
         // Read once: a lazily computed body may not answer the same way twice.
@@ -357,6 +374,9 @@ public sealed class StubHttpMessageHandler : HttpMessageHandler
         public HttpMethod Method { get; }
 
         public HttpStatusCode Status { get; }
+
+        /// <summary>What the rule waits for before it answers; null answers at once.</summary>
+        public Task Until { get; init; }
 
         /// <summary>Null means "throw instead of answering". Read once per request that matches.</summary>
         public string Body => _body?.Invoke();

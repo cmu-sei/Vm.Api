@@ -1037,6 +1037,79 @@ public class ProxmoxStateServiceTests(DatabaseFixture fixture) : DatabaseTestBas
         Assert.True((await Reread(VmA)).HasSnapshot);
     }
 
+    /// <summary>
+    /// A stop that runs out of time cancels the guest-state read and waits for it to end before returning,
+    /// so the read is not left running against a container the host is about to dispose.
+    /// </summary>
+    [Fact]
+    public async Task WhenStoppedWhileAGuestStateReadIsStuck_ItCancelsTheReadAndWaitsForItToEnd()
+    {
+        var h = Build();
+        await SeedVm(VmA, Vmid);
+        h.Returns(await Reporting(Vmid));
+        h.Proxmox.GetGuestState(Arg.Any<ProxmoxVmInfo>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(x => Stuck(x.Arg<CancellationToken>()));
+
+        await h.Service.StartAsync(Ct);
+        await PollLoop.Until(() => GuestStateReads(h) == 1, "the first pass to start a guest-state read");
+
+        await h.Service.StopAsync(new CancellationToken(true));
+
+        Assert.Contains(h.Log.At(LogLevel.Warning), x => x.Message.Contains("Stopped before the guest-state read finished"));
+        Assert.DoesNotContain(h.Log.At(LogLevel.Warning), x => x.Message.Contains("did not end in time"));
+        Assert.Throws<ObjectDisposedException>(() => h.Loop.Contexts[0].Vms.Count());
+
+        // Ends only once cancelled, and takes a moment to unwind, as a read abandoning its calls does - long
+        // enough that a stop that did not wait would return before the scope is disposed.
+        static async Task<ProxmoxGuestState> Stuck(CancellationToken token)
+        {
+            try
+            {
+                await Task.Delay(Timeout.Infinite, token);
+            }
+            catch (OperationCanceledException)
+            {
+                await Task.Delay(300, CancellationToken.None);
+                throw;
+            }
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The wait for a cancelled read is bounded: a read that does not end - some call it makes not
+    /// honoring the cancellation - costs the stop the grace period, not the process its shutdown.
+    /// </summary>
+    [Fact]
+    public async Task WhenACancelledGuestStateReadDoesNotEnd_TheStopStillReturns()
+    {
+        var h = Build();
+        await SeedVm(VmA, Vmid);
+        h.Returns(await Reporting(Vmid));
+        var never = new TaskCompletionSource<ProxmoxGuestState>(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Proxmox.GetGuestState(Arg.Any<ProxmoxVmInfo>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(never.Task);
+
+        await h.Service.StartAsync(Ct);
+        await PollLoop.Until(() => GuestStateReads(h) == 1, "the first pass to start a guest-state read");
+
+        try
+        {
+            var clock = Stopwatch.StartNew();
+            await h.Service.StopAsync(new CancellationToken(true));
+
+            Assert.InRange(clock.Elapsed, TimeSpan.Zero, ProxmoxStateService.GuestStateCancelGrace + TimeSpan.FromSeconds(5));
+            Assert.Contains(h.Log.At(LogLevel.Warning), x => x.Message.Contains("did not end in time"));
+        }
+        finally
+        {
+            // Let it end, so nothing is still using this test's database while it is taken down.
+            never.SetResult(null);
+            await h.Service.StopAsync(Ct);
+        }
+    }
+
     private static int GuestStateReads(Harness h) =>
         h.Proxmox.ReceivedCalls().Count(x => x.GetMethodInfo().Name == nameof(IProxmoxService.GetGuestState));
 

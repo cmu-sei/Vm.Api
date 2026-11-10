@@ -430,7 +430,9 @@ public partial class ProxmoxService : IProxmoxService
         bool running,
         CancellationToken cancellationToken)
     {
-        var config = await ReadConfig(info);
+        // The client takes no cancellation token, so a cancelled read gives up waiting on its calls
+        // instead; see AbandonOnCancel.
+        var config = await AbandonOnCancel(ReadConfig(info), cancellationToken);
 
         if (!config.IsSuccessStatusCode)
         {
@@ -448,11 +450,11 @@ public partial class ProxmoxService : IProxmoxService
         {
             if (info.Type == ProxmoxVmType.LXC)
             {
-                ipAddresses = await ReadContainerAddresses(info);
+                ipAddresses = await ReadContainerAddresses(info, cancellationToken);
             }
             else if (IsAgentEnabled(ProxmoxExtensions.GetField(data, "agent")))
             {
-                ipAddresses = await ReadAgentAddresses(info);
+                ipAddresses = await ReadAgentAddresses(info, cancellationToken);
             }
         }
 
@@ -520,12 +522,13 @@ public partial class ProxmoxService : IProxmoxService
     /// refuses (not running in the guest); null when it does not answer in time, so a slow agent does not
     /// blank addresses that were good a moment ago.
     /// </summary>
-    private async Task<string[]> ReadAgentAddresses(ProxmoxVmInfo info)
+    private async Task<string[]> ReadAgentAddresses(ProxmoxVmInfo info, CancellationToken cancellationToken)
     {
         var result = await WithAgentTimeout(
             () => _pveClient.Nodes[info.Node].Qemu[info.Id].Agent.NetworkGetInterfaces.NetworkGetInterfaces(),
             info,
-            "network-get-interfaces");
+            "network-get-interfaces",
+            cancellationToken);
 
         if (result == null)
             return null;
@@ -551,12 +554,13 @@ public partial class ProxmoxService : IProxmoxService
     /// Newer PVE sends an <c>ip-addresses</c> list per interface; older PVE only <c>inet</c> and
     /// <c>inet6</c> in CIDR form, so both are read.
     /// </summary>
-    private async Task<string[]> ReadContainerAddresses(ProxmoxVmInfo info)
+    private async Task<string[]> ReadContainerAddresses(ProxmoxVmInfo info, CancellationToken cancellationToken)
     {
         var result = await WithAgentTimeout(
             () => _pveClient.Nodes[info.Node].Lxc[info.Id].Interfaces.Ip(),
             info,
-            "lxc interfaces");
+            "lxc interfaces",
+            cancellationToken);
 
         if (result == null)
             return null;
@@ -633,9 +637,11 @@ public partial class ProxmoxService : IProxmoxService
     /// <summary>
     /// A status-only guest query, given <see cref="ProxmoxOptions.GuestAgentTimeoutMilliseconds"/> to
     /// answer. Null when it did not, or failed in transport; the abandoned call is left to finish on its
-    /// own, with its outcome observed so it cannot surface as an unobserved task exception.
+    /// own, with its outcome observed so it cannot surface as an unobserved task exception. Cancelling
+    /// abandons the call the same way, and throws.
     /// </summary>
-    private async Task<Result> WithAgentTimeout(Func<Task<Result>> query, ProxmoxVmInfo info, string what)
+    private async Task<Result> WithAgentTimeout(
+        Func<Task<Result>> query, ProxmoxVmInfo info, string what, CancellationToken cancellationToken = default)
     {
         Task<Result> call;
 
@@ -649,11 +655,13 @@ public partial class ProxmoxService : IProxmoxService
             return null;
         }
 
-        var finished = await Task.WhenAny(call, Task.Delay(Math.Max(1, _options.GuestAgentTimeoutMilliseconds)));
+        var finished = await Task.WhenAny(
+            call, Task.Delay(Math.Max(1, _options.GuestAgentTimeoutMilliseconds), cancellationToken));
 
         if (finished != call)
         {
-            _ = call.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
+            ObserveAbandoned(call);
+            cancellationToken.ThrowIfCancellationRequested();
             _logger.LogDebug($"{what} for vmid={info.Id} did not answer within {_options.GuestAgentTimeoutMilliseconds}ms");
             return null;
         }
@@ -668,6 +676,28 @@ public partial class ProxmoxService : IProxmoxService
             return null;
         }
     }
+
+    /// <summary>
+    /// Waits for a Proxmox call until it finishes or <paramref name="cancellationToken"/> is cancelled.
+    /// The Proxmox client takes no cancellation token, so a cancelled caller cannot stop the request; it
+    /// stops waiting for it instead, and leaves it to finish on its own, observed so its failure cannot
+    /// surface as an unobserved task exception.
+    /// </summary>
+    private static async Task<T> AbandonOnCancel<T>(Task<T> call, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await call.WaitAsync(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested && !call.IsCompleted)
+        {
+            ObserveAbandoned(call);
+            throw;
+        }
+    }
+
+    private static void ObserveAbandoned(Task call) =>
+        _ = call.ContinueWith(t => _ = t.Exception, TaskContinuationOptions.OnlyOnFaulted);
 
     /// <summary>
     /// The Vm's current config as Proxmox sends it, unparsed, so that fields the typed model does not
