@@ -71,6 +71,28 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
     /// </summary>
     private readonly CancellationTokenSource _guestStateCancellation = new();
 
+    /// <summary>
+    /// Counts <see cref="SetHasSnapshot"/> calls. A guest-state read notes the count when it starts, and
+    /// <see cref="_snapshotRecordedAt"/> holds each Vm's count at its last call, so the read can tell
+    /// which Vms have had HasSnapshot recorded since its config reads began.
+    /// </summary>
+    private long _snapshotRecords;
+
+    /// <summary>
+    /// Each Vm's <see cref="_snapshotRecords"/> count at its latest <see cref="SetHasSnapshot"/>. Entries
+    /// no read in progress can still need are dropped after each read's save, so this holds only Vms
+    /// with a snapshot change in the last read or so.
+    /// </summary>
+    private readonly ConcurrentDictionary<Guid, long> _snapshotRecordedAt = new();
+
+    /// <summary>
+    /// Serializes <see cref="SetHasSnapshot"/> with a guest-state read's save, so a SetHasSnapshot is
+    /// either seen by the read's check, and its HasSnapshot left alone, or runs after the save and writes
+    /// over it. Without it, the read could check, a SetHasSnapshot could find the row already holding its
+    /// value and skip the write, and the read could then save the stale value over both.
+    /// </summary>
+    private readonly SemaphoreSlim _snapshotWriteLock = new(1, 1);
+
     public ProxmoxStateService(
             ILogger<ProxmoxStateService> logger,
             IOptionsMonitor<ProxmoxOptions> proxmoxOptionsMonitor,
@@ -106,17 +128,33 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
         await _jobQueue.SendAsync(vm);
     }
 
+    /// <remarks>
+    /// Recorded for the guest-state poller as well as written, even when the row already holds the value:
+    /// a read whose config reads began before this call saw the Vm as it was before the change, and must
+    /// not save that over it. The record is in memory, so it covers the poller of this API instance only.
+    /// </remarks>
     public async Task SetHasSnapshot(Guid vmId, bool hasSnapshot)
     {
-        using var scope = _serviceProvider.CreateScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
-        var dbVm = await dbContext.Vms.FirstOrDefaultAsync(x => x.Id == vmId);
+        await _snapshotWriteLock.WaitAsync();
 
-        if (dbVm == null || dbVm.HasSnapshot == hasSnapshot)
-            return;
+        try
+        {
+            _snapshotRecordedAt[vmId] = Interlocked.Increment(ref _snapshotRecords);
 
-        dbVm.HasSnapshot = hasSnapshot;
-        await dbContext.SaveChangesAsync();
+            using var scope = _serviceProvider.CreateScope();
+            var dbContext = scope.ServiceProvider.GetRequiredService<VmContext>();
+            var dbVm = await dbContext.Vms.FirstOrDefaultAsync(x => x.Id == vmId);
+
+            if (dbVm == null || dbVm.HasSnapshot == hasSnapshot)
+                return;
+
+            dbVm.HasSnapshot = hasSnapshot;
+            await dbContext.SaveChangesAsync();
+        }
+        finally
+        {
+            _snapshotWriteLock.Release();
+        }
     }
 
     public override async Task StopAsync(CancellationToken cancellationToken)
@@ -253,7 +291,9 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
     /// Reads and saves the guest-derived columns of the machines a pass loaded, on that pass's scope and
     /// change tracker, while later passes carry on with power state. Only HasSnapshot and IpAddresses are
     /// set here, and EF writes only the columns that changed, so this save cannot put back a power state
-    /// or node a later pass has written since.
+    /// or node a later pass has written since. Nor a HasSnapshot that <see cref="SetHasSnapshot"/> has
+    /// recorded since the read began: that Vm's config was read before its snapshot changed, so the read's
+    /// value for it is dropped.
     /// </summary>
     private async Task ReadGuestStates(
         IServiceScope scope,
@@ -268,15 +308,29 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
 
         try
         {
+            // Before any config is read: a SetHasSnapshot counted after this may have changed a Vm after
+            // its config was read here, so this read's HasSnapshot for that Vm is out of date.
+            var startedAt = Interlocked.Read(ref _snapshotRecords);
+
             var guestStates = await GetGuestStates(dbVms, pveVms, proxmoxService, cancellationToken);
 
-            foreach (var dbVm in dbVms)
-            {
-                if (guestStates.TryGetValue(dbVm.Id, out var guestState))
-                    UpdateGuestState(dbVm, guestState);
-            }
+            await _snapshotWriteLock.WaitAsync(cancellationToken);
 
-            LogUpdated(await dbContext.SaveChangesAsync(cancellationToken));
+            try
+            {
+                foreach (var dbVm in dbVms)
+                {
+                    if (guestStates.TryGetValue(dbVm.Id, out var guestState))
+                        UpdateGuestState(dbVm, guestState, keepHasSnapshot: SnapshotRecordedSince(dbVm.Id, startedAt));
+                }
+
+                LogUpdated(await dbContext.SaveChangesAsync(cancellationToken));
+            }
+            finally
+            {
+                ForgetSnapshotRecordsUpTo(startedAt);
+                _snapshotWriteLock.Release();
+            }
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -288,6 +342,22 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
         finally
         {
             scope.Dispose();
+        }
+    }
+
+    private bool SnapshotRecordedSince(Guid vmId, long startedAt) =>
+        _snapshotRecordedAt.TryGetValue(vmId, out var recordedAt) && recordedAt > startedAt;
+
+    /// <summary>
+    /// Drops the records a read that began at <paramref name="startedAt"/> has accounted for. Only one
+    /// read runs at a time and the next starts later, so no read can still need them.
+    /// </summary>
+    private void ForgetSnapshotRecordsUpTo(long startedAt)
+    {
+        foreach (var record in _snapshotRecordedAt)
+        {
+            if (record.Value <= startedAt)
+                _snapshotRecordedAt.TryRemove(record);
         }
     }
 
@@ -423,9 +493,14 @@ public class ProxmoxStateService : BackgroundService, IProxmoxStateService
         return vm;
     }
 
-    private static void UpdateGuestState(Domain.Models.Vm vm, ProxmoxGuestState guestState)
+    /// <remarks>
+    /// <c>keepHasSnapshot</c> leaves HasSnapshot as the row has it: <see cref="SetHasSnapshot"/> has
+    /// recorded it since this read began, so what the read saw is older than what is stored.
+    /// </remarks>
+    private static void UpdateGuestState(Domain.Models.Vm vm, ProxmoxGuestState guestState, bool keepHasSnapshot)
     {
-        vm.HasSnapshot = guestState.HasSnapshot;
+        if (!keepHasSnapshot)
+            vm.HasSnapshot = guestState.HasSnapshot;
 
         // Only on a change, so an unchanged list is not a Modified entry and an idle cluster stays silent.
         if (guestState.IpAddresses != null &&

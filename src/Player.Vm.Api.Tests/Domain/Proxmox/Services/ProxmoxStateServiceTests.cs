@@ -975,6 +975,68 @@ public class ProxmoxStateServiceTests(DatabaseFixture fixture) : DatabaseTestBas
         Assert.Equal(1, GuestStateReads(h));
     }
 
+    /// <summary>
+    /// A snapshot replaced while a guest-state read is waiting on its machines is not undone when the read
+    /// saves. The read's config came from before the change, so what <c>SetHasSnapshot</c> recorded is
+    /// newer - even when the row already held that value and nothing was written, which is the case a stale
+    /// save would otherwise overwrite: delete A and create B, and bulk Revert would refuse the machine
+    /// until the next read.
+    /// </summary>
+    [Theory]
+    [InlineData(true, null)]
+    [InlineData(false, "snap1")]
+    public async Task ASnapshotChangedDuringAGuestStateRead_IsNotUndoneByIt(bool final, string staleSnapshot)
+    {
+        var h = Build();
+        h.Loop.AllowedPasses = 3;
+        await SeedVm(VmA, Vmid, hasSnapshot: final);
+        h.Returns(await Reporting(Vmid));
+        var read = new TaskCompletionSource<ProxmoxGuestState>(TaskCreationOptions.RunContinuationsAsynchronously);
+        h.Proxmox.GetGuestState(Arg.Any<ProxmoxVmInfo>(), Arg.Any<bool>(), Arg.Any<CancellationToken>())
+            .Returns(read.Task);
+
+        await h.Service.StartAsync(Ct);
+
+        try
+        {
+            await PollLoop.Until(() => GuestStateReads(h) == 1, "the first pass to start a guest-state read");
+
+            // Deleted and taken again (or taken and deleted) while the read waits; the row ends where it began.
+            await h.Service.SetHasSnapshot(VmA, !final);
+            await h.Service.SetHasSnapshot(VmA, final);
+
+            read.SetResult(new ProxmoxGuestState { CurrentSnapshot = staleSnapshot });
+        }
+        finally
+        {
+            await h.Service.StopAsync(Ct);
+        }
+
+        Assert.Equal(final, (await Reread(VmA)).HasSnapshot);
+        Assert.Empty(Failures(h));
+    }
+
+    /// <summary>
+    /// A <c>SetHasSnapshot</c> from before a read began does not hold back that read: its config was read
+    /// after the change, so what it sees is current, and is recorded.
+    /// </summary>
+    [Fact]
+    public async Task ASnapshotChangedBeforeAGuestStateRead_DoesNotStopItRecordingWhatItSees()
+    {
+        var h = Build();
+        await SeedVm(VmA, Vmid, hasSnapshot: false);
+        h.Returns(await Reporting(Vmid));
+        h.GuestState(Vmid, new ProxmoxGuestState { CurrentSnapshot = "snap1" });
+
+        // A scope of its own, so the run below counts it as its first pass.
+        h.Loop.AllowedPasses = 1;
+        await h.Service.SetHasSnapshot(VmA, false);
+
+        await h.Loop.Run(h.Service, h.Service.CheckState, passes: 2);
+
+        Assert.True((await Reread(VmA)).HasSnapshot);
+    }
+
     private static int GuestStateReads(Harness h) =>
         h.Proxmox.ReceivedCalls().Count(x => x.GetMethodInfo().Name == nameof(IProxmoxService.GetGuestState));
 
