@@ -692,4 +692,42 @@ public class NetworksEndpointTests(DatabaseFixture fixture, VmAppFactory factory
     }
 
     #endregion
+
+    #region What the mappings preserve
+
+    /// <summary>A network written without team ids stores and returns an empty list, not null.</summary>
+    [Fact]
+    public async Task Create_and_update_without_team_ids_store_and_return_an_empty_list()
+    {
+        var viewId = Guid.NewGuid();
+        var form = Form("vlan-10", "network");
+        form.TeamIds = null;
+
+        var created = await RootClient.PostAsJsonAsync($"/api/views/{viewId}/networks", form, Ct);
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        var body = await created.Content.ReadFromJsonAsync<ViewNetworkModel>(JsonOptions, Ct);
+        Assert.Empty(body.TeamIds);
+
+        var network = Network(Guid.NewGuid(), "vlan-20", teamIds: [Guid.NewGuid()]);
+        await Seed(network);
+        var update = new UpdateViewNetworkForm
+        {
+            ProviderType = network.ProviderType,
+            ProviderInstanceId = Instance,
+            NetworkId = network.NetworkId,
+            Name = network.Name,
+            TeamIds = null
+        };
+
+        var updated = await RootClient.PutAsJsonAsync($"/api/views/{network.ViewId}/networks/{network.Id}", update, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+        Assert.Empty((await updated.Content.ReadFromJsonAsync<ViewNetworkModel>(JsonOptions, Ct)).TeamIds);
+        await using var context = NewContext();
+        Assert.Empty(context.ViewNetworks.Single(x => x.Id == body.Id).TeamIds);
+        Assert.Empty(context.ViewNetworks.Single(x => x.Id == network.Id).TeamIds);
+    }
+
+    #endregion
 }

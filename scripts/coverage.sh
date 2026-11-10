@@ -5,14 +5,13 @@
 # Nothing about this is part of a normal run or of the pull request build. Coverage is a way of
 # finding the next thing worth testing, not a number to defend: there is no threshold here, nothing
 # fails on a percentage, and `dotnet test` on its own still neither instruments nor slows down.
-# Settings and exclusions are in src/Player.Vm.Api.Tests/coverlet.runsettings (the shared file of the
-# Crucible API test standard, applied to every run through RunSettingsFilePath); read them before
-# believing a figure.
+# Settings and exclusions are the `--coverlet` options below (coverlet.MTP, the Microsoft.Testing.Platform
+# form of coverlet); read them before believing a figure.
 #
 # Usage:
-#   scripts/coverage.sh                              the whole suite
-#   scripts/coverage.sh --filter VmSignalRHandler    any further arguments go to `dotnet test`
-#   TOP=50 scripts/coverage.sh                       a longer ranking; the default is 25
+#   scripts/coverage.sh                                              the whole suite
+#   scripts/coverage.sh --filter-class "*.VmSignalRHandlerTests"    any further arguments go to `dotnet test`
+#   TOP=50 scripts/coverage.sh                                       a longer ranking; the default is 25
 #
 # A filtered run maps only what those tests reach, and reads as 0% for everything else.
 #
@@ -34,17 +33,28 @@ dotnet tool restore
 
 # The test failure is not fatal here. A run with red tests still produces coverage, and the map of
 # what nothing executed is worth having either way, so the exit code is carried to the end instead.
+#
+# The include filter keeps the figure to Player.Vm.Api: without it coverlet also instruments third-party
+# assemblies that ship sources. The test assembly and any *.Migrations.PostgreSQL assembly are excluded by
+# name; EF's migrations, which compile into Player.Vm.Api, and sources that compile in from NuGet packages
+# (Crucible.Common.EntityEvents) by file; generated code by attribute; auto-implemented accessors skipped.
 set +e
 dotnet test src/Player.Vm.Api.Tests/Player.Vm.Api.Tests.csproj \
-  --collect:"XPlat Code Coverage" \
   --results-directory "$RAW" \
+  --coverlet --coverlet-output-format cobertura \
+  --coverlet-include "[Player.Vm.Api]*" \
+  --coverlet-exclude "[*.Migrations.PostgreSQL]*" --coverlet-exclude "[*.Tests]*" \
+  --coverlet-exclude-by-file "**/.nuget/packages/**/*.cs" --coverlet-exclude-by-file "**/Migrations/**/*.cs" \
+  --coverlet-exclude-by-attribute GeneratedCodeAttribute --coverlet-exclude-by-attribute CompilerGeneratedAttribute \
+  --coverlet-exclude-by-attribute ExcludeFromCodeCoverageAttribute --coverlet-exclude-by-attribute Obsolete \
+  --coverlet-skip-auto-props \
   "$@"
 TESTS=$?
 set -e
 
-# The collector writes into a per-run guid directory whose name is not knowable in advance. All of
-# them, rather than the first: a multi-targeted run would write one per framework.
-mapfile -t REPORTS < <(find "$RAW" -name 'coverage.cobertura.xml')
+# coverlet.MTP stamps each file name with the time of the run, so the name is not knowable in advance.
+# All of them, rather than the first: a multi-targeted run would write one per framework.
+mapfile -t REPORTS < <(find "$RAW" -name 'coverage.cobertura*.xml')
 if [ ${#REPORTS[@]} -eq 0 ]; then
   echo "coverage.sh: no coverage file under $RAW - did the test host start?" >&2
   exit 1

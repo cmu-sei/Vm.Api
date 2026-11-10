@@ -6,8 +6,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-using AutoMapper;
-using AutoMapper.QueryableExtensions;
 using MediatR;
 using Microsoft.AspNetCore.SignalR;
 using Microsoft.EntityFrameworkCore;
@@ -16,24 +14,25 @@ using Crucible.Common.EntityEvents.Events;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Features.Vms.Hubs;
 using Player.Vm.Api.Infrastructure.Extensions;
+using Player.Vm.Api.Infrastructure.Options;
 
 namespace Player.Vm.Api.Features.Vms.EventHandlers
 {
     public class VmBaseSignalRHandler
     {
         protected readonly VmContext _db;
-        protected readonly IMapper _mapper;
+        protected readonly ConsoleUrlOptions _consoleUrls;
         protected readonly IViewService _viewService;
         protected readonly IHubContext<VmHub> _vmHub;
 
         public VmBaseSignalRHandler(
             VmContext db,
-            IMapper mapper,
+            ConsoleUrlOptions consoleUrls,
             IViewService viewService,
             IHubContext<VmHub> vmHub)
         {
             _db = db;
-            _mapper = mapper;
+            _consoleUrls = consoleUrls;
             _viewService = viewService;
             _vmHub = vmHub;
         }
@@ -78,7 +77,7 @@ namespace Player.Vm.Api.Features.Vms.EventHandlers
             var groupIds = await this.GetGroups(vmEntity, cancellationToken);
 
             // The last await before the sends, so nothing announced after this read can reach a client first.
-            var vm = _mapper.Map<Vm>(await ToAnnounce(vmEntity, cancellationToken));
+            var vm = (await ToAnnounce(vmEntity, cancellationToken)).ToVm(_consoleUrls);
             var tasks = new List<Task>();
 
             foreach (var groupId in groupIds)
@@ -98,9 +97,9 @@ namespace Player.Vm.Api.Features.Vms.EventHandlers
     {
         public VmCreatedSignalRHandler(
             VmContext db,
-            IMapper mapper,
+            ConsoleUrlOptions consoleUrls,
             IViewService viewService,
-            IHubContext<VmHub> vmHub) : base(db, mapper, viewService, vmHub) { }
+            IHubContext<VmHub> vmHub) : base(db, consoleUrls, viewService, vmHub) { }
 
         public async Task Handle(EntityCreated<Domain.Models.Vm> notification, CancellationToken cancellationToken)
         {
@@ -129,9 +128,9 @@ namespace Player.Vm.Api.Features.Vms.EventHandlers
     {
         public VmUpdatedSignalRHandler(
             VmContext db,
-            IMapper mapper,
+            ConsoleUrlOptions consoleUrls,
             IViewService viewService,
-            IHubContext<VmHub> vmHub) : base(db, mapper, viewService, vmHub) { }
+            IHubContext<VmHub> vmHub) : base(db, consoleUrls, viewService, vmHub) { }
 
         public async Task Handle(EntityUpdated<Domain.Models.Vm> notification, CancellationToken cancellationToken)
         {
@@ -147,9 +146,9 @@ namespace Player.Vm.Api.Features.Vms.EventHandlers
     {
         public VmDeletedSignalRHandler(
             VmContext db,
-            IMapper mapper,
+            ConsoleUrlOptions consoleUrls,
             IViewService viewService,
-            IHubContext<VmHub> vmHub) : base(db, mapper, viewService, vmHub)
+            IHubContext<VmHub> vmHub) : base(db, consoleUrls, viewService, vmHub)
         {
         }
 

@@ -53,7 +53,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
     /// <summary>A VmService over a new real PlayerService, built now; <see cref="_spy"/> records its questions.</summary>
     private VmService Service =>
-        new(Db, PlayerServiceSpy.Wrap(_player.Service, out _spy), _views, Principal(Caller), TestMapper.Mapper, _networks);
+        new(Db, PlayerServiceSpy.Wrap(_player.Service, out _spy), _views, Principal(Caller), TestConsoleUrls.Options, _networks);
 
     #region CanAccessVm
 

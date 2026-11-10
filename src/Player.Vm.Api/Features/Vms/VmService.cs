@@ -1,8 +1,8 @@
 // Copyright 2022 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
+using Npgsql;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Infrastructure.Authorization;
@@ -16,6 +16,7 @@ using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using Player.Vm.Api.Features.Networks;
+using Player.Vm.Api.Infrastructure.Options;
 
 namespace Player.Vm.Api.Features.Vms
 {
@@ -54,7 +55,7 @@ namespace Player.Vm.Api.Features.Vms
         private readonly IPlayerService _playerService;
         private readonly IViewService _viewService;
         private readonly ClaimsPrincipal _user;
-        private readonly IMapper _mapper;
+        private readonly ConsoleUrlOptions _consoleUrls;
         private readonly INetworkService _networkService;
 
         public VmService(
@@ -62,14 +63,14 @@ namespace Player.Vm.Api.Features.Vms
             IPlayerService playerService,
             IViewService viewService,
             IPrincipal user,
-            IMapper mapper,
+            ConsoleUrlOptions consoleUrls,
             INetworkService networkService)
         {
             _context = context;
             _playerService = playerService;
             _viewService = viewService;
             _user = user as ClaimsPrincipal;
-            _mapper = mapper;
+            _consoleUrls = consoleUrls;
             _networkService = networkService;
         }
 
@@ -83,7 +84,7 @@ namespace Player.Vm.Api.Features.Vms
                 .Include(x => x.VmTeams)
                 .ToArrayAsync(ct);
 
-            return _mapper.Map<Vm[]>(vms);
+            return vms.Select(x => x.ToVm(_consoleUrls)).ToArray();
         }
 
         public async Task<Vm> GetAsync(Guid id, CancellationToken ct)
@@ -94,7 +95,7 @@ namespace Player.Vm.Api.Features.Vms
                 .SingleOrDefaultAsync(ct);
 
             await CanAccessVm(vmEntity, ct);
-            var model = _mapper.Map<Vm>(vmEntity);
+            var model = vmEntity.ToVm(_consoleUrls);
             return model;
         }
 
@@ -286,7 +287,7 @@ namespace Player.Vm.Api.Features.Vms
             IEnumerable<Domain.Models.Vm> vmEntities,
             IReadOnlySet<Guid> visibleTeamIds)
         {
-            var models = _mapper.Map<IEnumerable<Vm>>(vmEntities).ToArray();
+            var models = vmEntities.Select(x => x.ToVm(_consoleUrls)).ToArray();
 
             foreach (var model in models)
             {
@@ -305,7 +306,7 @@ namespace Player.Vm.Api.Features.Vms
                 throw new ForbiddenException("Vm already exists");
             }
 
-            var vmEntity = _mapper.Map<Domain.Models.Vm>(form);
+            var vmEntity = form.ToEntity();
             var formTeams = vmEntity.VmTeams.Select(v => v.TeamId).Distinct();
 
             if (!formTeams.Any())
@@ -323,10 +324,94 @@ namespace Player.Vm.Api.Features.Vms
             if (tasks.Any(x => !x.Result))
                 throw new ForbiddenException();
 
-            _context.Vms.Add(vmEntity);
-            await _context.SaveChangesAsync(ct);
+            await EnsureProxmoxVmCanBeRegistered(form.ProxmoxVmInfo, ct);
 
-            return _mapper.Map<Vm>(vmEntity);
+            _context.Vms.Add(vmEntity);
+            await SaveRegisteringProxmoxVm(form.ProxmoxVmInfo, ct);
+
+            return vmEntity.ToVm(_consoleUrls);
+        }
+
+        // Proxmox reserves vmids below 100 for itself and allocates none above 999999999.
+        private const int MinProxmoxVmId = 100;
+        private const int MaxProxmoxVmId = 999_999_999;
+
+        /// <summary>
+        /// A Proxmox VM can back only one Player VM, because its vmid is the key of the ProxmoxVmInfo
+        /// table. The vmid must also be one Proxmox could have assigned: the key is an identity column, so
+        /// a 0 would otherwise be replaced by a number the database picked. The owning VM isn't named,
+        /// because it may belong to a team the caller can't see.
+        /// </summary>
+        private async Task EnsureProxmoxVmCanBeRegistered(ProxmoxVmInfo info, CancellationToken ct)
+        {
+            if (info == null)
+                return;
+
+            if (info.Id < MinProxmoxVmId || info.Id > MaxProxmoxVmId)
+                throw new BadRequestException(
+                    $"Proxmox VM ids range from {MinProxmoxVmId} to {MaxProxmoxVmId}; {info.Id} is outside that range.");
+
+            if (await _context.ProxmoxVmInfo.AnyAsync(p => p.Id == info.Id, ct))
+                throw ProxmoxVmAlreadyRegistered(info.Id);
+        }
+
+        /// <summary>
+        /// Saves, turning a duplicate vmid into the same 409 <see cref="EnsureProxmoxVmCanBeRegistered"/>
+        /// gives. The check can't see a registration that another request commits after it runs.
+        /// </summary>
+        private async Task SaveRegisteringProxmoxVm(ProxmoxVmInfo info, CancellationToken ct)
+        {
+            try
+            {
+                await _context.SaveChangesAsync(ct);
+            }
+            catch (DbUpdateException ex) when (info != null && ex.GetBaseException() is PostgresException
+            {
+                SqlState: PostgresErrorCodes.UniqueViolation,
+                ConstraintName: "PK_proxmox_vm_info"
+            })
+            {
+                throw ProxmoxVmAlreadyRegistered(info.Id);
+            }
+        }
+
+        private static ConflictException ProxmoxVmAlreadyRegistered(int vmid) =>
+            new($"Proxmox VM {vmid} is already registered to another virtual machine.");
+
+        /// <summary>
+        /// The vmid is the key of the VM's ProxmoxVmInfo row, so EF can't change it in place. Pointing the
+        /// VM at another vmid replaces the row instead, and keeping the vmid edits the existing one.
+        /// </summary>
+        private void UpdateProxmoxVmInfo(Domain.Models.Vm vmEntity, ProxmoxVmInfo info)
+        {
+            var current = vmEntity.ProxmoxVmInfo;
+
+            if (info != null && current?.Id == info.Id)
+            {
+                current.Node = info.Node;
+                current.Type = info.Type;
+                return;
+            }
+
+            if (current != null)
+                _context.ProxmoxVmInfo.Remove(current);
+
+            vmEntity.ProxmoxVmInfo = null;
+
+            if (info == null)
+                return;
+
+            // Added explicitly: EF would track a new row whose key is already set as Modified, and the
+            // save would then update a row that doesn't exist.
+            var replacement = new Domain.Models.ProxmoxVmInfo
+            {
+                Id = info.Id,
+                VmId = vmEntity.Id,
+                Node = info.Node,
+                Type = info.Type
+            };
+            _context.ProxmoxVmInfo.Add(replacement);
+            vmEntity.ProxmoxVmInfo = replacement;
         }
 
         public async Task<Vm> UpdateAsync(Guid id, VmUpdateForm form, CancellationToken ct)
@@ -341,12 +426,20 @@ namespace Player.Vm.Api.Features.Vms
             if (!await _playerService.CanManageTeams(teams, ct))
                 throw new ForbiddenException();
 
-            vmEntity = _mapper.Map(form, vmEntity);
+            // Only a vmid the VM doesn't already have needs checking: resending its own is the usual edit.
+            var registering = form.ProxmoxVmInfo != null && form.ProxmoxVmInfo.Id != vmEntity.ProxmoxVmInfo?.Id
+                ? form.ProxmoxVmInfo
+                : null;
+
+            await EnsureProxmoxVmCanBeRegistered(registering, ct);
+
+            form.ApplyTo(vmEntity);
 
             _context.Vms.Update(vmEntity);
-            await _context.SaveChangesAsync(ct);
+            UpdateProxmoxVmInfo(vmEntity, form.ProxmoxVmInfo);
+            await SaveRegisteringProxmoxVm(registering, ct);
 
-            return _mapper.Map<Vm>(vmEntity);
+            return vmEntity.ToVm(_consoleUrls);
         }
 
         public async Task<bool> DeleteAsync(Guid id, CancellationToken ct)
@@ -428,15 +521,13 @@ namespace Player.Vm.Api.Features.Vms
             var existing = await _context.Maps
                 .ToListAsync(ct);
 
-            var mapIntermediate = _mapper.Map<VmMap>(form);
-            mapIntermediate.ViewId = viewId;
-
-            var mapEntity = _mapper.Map<Domain.Models.VmMap>(mapIntermediate);
+            var mapEntity = form.ToEntity();
+            mapEntity.ViewId = viewId;
 
             _context.Maps.Add(mapEntity);
             await _context.SaveChangesAsync(ct);
 
-            return _mapper.Map<VmMap>(mapEntity);
+            return mapEntity.ToVmMap();
         }
 
         public async Task<VmMap[]> GetAllMapsAsync(CancellationToken ct)
@@ -449,7 +540,7 @@ namespace Player.Vm.Api.Features.Vms
                 .Include(x => x.Coordinates)
                 .ToArrayAsync(ct);
 
-            return _mapper.Map<VmMap[]>(maps);
+            return maps.Select(x => x.ToVmMap()).ToArray();
         }
 
         public async Task<VmMap[]> GetViewMapsAsync(Guid viewId, CancellationToken ct)
@@ -486,7 +577,7 @@ namespace Player.Vm.Api.Features.Vms
                 ? canViewTeamlessMaps
                 : m.TeamIds.Any(mapVisibleTeamIds.Contains));
 
-            return _mapper.Map<VmMap[]>(visibleMaps);
+            return visibleMaps.Select(x => x.ToVmMap()).ToArray();
         }
 
         /// <summary>
@@ -508,7 +599,7 @@ namespace Player.Vm.Api.Features.Vms
                 .Where(m => m.ViewId == viewId)
                 .ToArrayAsync(ct);
 
-            return _mapper.Map<VmMap[]>(maps);
+            return maps.Select(x => x.ToVmMap()).ToArray();
         }
 
         public async Task<VmMap> GetMapAsync(Guid mapId, CancellationToken ct)
@@ -524,7 +615,7 @@ namespace Player.Vm.Api.Features.Vms
             if (!await CanViewMapAsync(vmMap, ct))
                 throw new ForbiddenException("You do not have access to this map");
 
-            return _mapper.Map<VmMap>(vmMap);
+            return vmMap.ToVmMap();
         }
 
         /// <summary>
@@ -547,7 +638,7 @@ namespace Player.Vm.Api.Features.Vms
             foreach (Domain.Models.VmMap m in maps)
             {
                 if (m.TeamIds.Contains(teamId))
-                    return _mapper.Map<VmMap>(m);
+                    return m.ToVmMap();
             }
             return null;
         }
@@ -579,17 +670,17 @@ namespace Player.Vm.Api.Features.Vms
             vmMapEntity.Coordinates.Clear();
             foreach (var coord in form.Coordinates)
             {
-                var tempCoord = _mapper.Map<Domain.Models.Coordinate>(coord);
+                var tempCoord = coord.ToEntity();
                 tempCoord.Id = Guid.Empty;
 
                 vmMapEntity.Coordinates.Add(tempCoord);
             }
 
-            vmMapEntity = _mapper.Map(form, vmMapEntity);
+            form.ApplyTo(vmMapEntity);
 
             await _context.SaveChangesAsync(ct);
 
-            return _mapper.Map<VmMap>(vmMapEntity);
+            return vmMapEntity.ToVmMap();
         }
 
         public async Task<bool> DeleteMapAsync(Guid mapId, CancellationToken ct)

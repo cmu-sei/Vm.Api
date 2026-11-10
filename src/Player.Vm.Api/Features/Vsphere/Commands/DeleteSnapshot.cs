@@ -6,7 +6,6 @@ using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
 using System.Threading;
 using System.Threading.Tasks;
-using AutoMapper;
 using MediatR;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Domain.Vsphere.Services;
@@ -33,11 +32,10 @@ namespace Player.Vm.Api.Features.Vsphere
             public Handler(
                 IVsphereService vsphereService,
                 IVmService vmService,
-                IMapper mapper,
                 IPlayerService playerService,
                 IPrincipal principal,
                 IViewService viewService) :
-                base(mapper, vsphereService, playerService, principal, vmService, viewService)
+                base(vsphereService, playerService, principal, vmService, viewService)
             {
                 _vsphereService = vsphereService;
             }

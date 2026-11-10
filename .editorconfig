@@ -13,3 +13,15 @@ root = true
 # current behaviour, never parked with Skip (agent-docs/api-testing). Runtime conditional skips
 # (Assert.SkipWhen, SkipUnless) are unaffected.
 dotnet_diagnostic.xUnit1004.severity = warning
+
+# Mapperly. Its unmapped-member diagnostics are warnings, which Directory.Build.props already turns
+# into errors; they are raised here as well so the guarantee does not depend on that setting.
+#
+# A target member nothing fills (RMG012) or a source member nothing reads (RMG020): a view model
+# that silently carries a default, or a request value that is never persisted.
+dotnet_diagnostic.RMG012.severity = error
+dotnet_diagnostic.RMG020.severity = error
+
+# A helper that cannot be inlined into an IQueryable projection is called instead, which makes EF
+# Core load whole entities into memory to run it. Mapperly reports this as Info by default.
+dotnet_diagnostic.RMG068.severity = error

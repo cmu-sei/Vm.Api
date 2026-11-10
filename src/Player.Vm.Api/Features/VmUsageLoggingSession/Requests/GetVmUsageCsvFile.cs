@@ -15,10 +15,8 @@ using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.AspNetCore.Mvc;
-using AutoMapper.QueryableExtensions;
 using System.Runtime.Serialization;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Infrastructure.Exceptions;
@@ -45,18 +43,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         public class Handler : IRequestHandler<Query, FileResult>
         {
             private readonly VmLoggingContext _db;
-            private readonly IMapper _mapper;
             private readonly IAuthorizationService _authorizationService;
             private readonly IPlayerService _playerService;
 
             public Handler(
                 VmLoggingContext db,
-                IMapper mapper,
                 IAuthorizationService authorizationService,
                 IPlayerService playerService)
             {
                 _db = db;
-                _mapper = mapper;
                 _authorizationService = authorizationService;
                 _playerService = playerService;
             }
@@ -72,7 +67,7 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                     throw new ForbiddenException("You do not have permission to view the specified Vm Usage Log");
 
                 var vmUsageLogEntries = await _db.VmUsageLogEntries
-                    .ProjectTo<VmUsageLogEntry>(_mapper.ConfigurationProvider)
+                    .ProjectToVmUsageLogEntry()
                     .Where(e => e.SessionId == request.SessionId)
                     .OrderByDescending(e => e.VmActiveDT)
                     .ToArrayAsync();

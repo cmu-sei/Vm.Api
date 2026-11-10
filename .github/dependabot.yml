@@ -42,8 +42,6 @@ updates:
         update-types: [minor, patch]
     # These later versions need a commercial license.
     ignore:
-      - dependency-name: AutoMapper
-        versions: [">= 15.0.0"]
       - dependency-name: MediatR
         versions: [">= 13.0.0"]
 

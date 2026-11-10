@@ -8,7 +8,6 @@ using MediatR;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
 using Player.Vm.Api.Infrastructure.Exceptions;
-using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vms;
 using VimClient;

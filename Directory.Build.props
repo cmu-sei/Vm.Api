@@ -21,9 +21,7 @@
       Restore-time warnings stay warnings. NU1901-NU1904 are the NuGet audit, and it has findings
       here that a build failure would only make invisible by blocking every build:
 
-      - AutoMapper 13 is the one direct hit. It is pinned deliberately, because the fix is in
-        15.1.1 and version 15+ requires a commercial license. MediatR 12 is pinned for the same
-        reason.
+      - MediatR 12 is pinned deliberately, because version 13+ requires a commercial license.
       - Microsoft.NETCore.App 2.1.0 arrives through VimClient's dotnet-svcutil.xmlserializer. It is
         the .NET Core 2.1 framework package, so it cannot be raised to a fixed version on net10.0,
         and the net10.0 shared framework is what the API runs on.

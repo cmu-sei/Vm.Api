@@ -495,7 +495,6 @@ public class CallbackBackgroundServiceTests(DatabaseFixture fixture) : DatabaseT
 
         var service = new CallbackBackgroundService(
             new TestScopes(NewContext, usageLogging ? NewLoggingContext : null),
-            TestMapper.Mapper,
             Substitute.For<ILogger<CallbackBackgroundService>>(),
             factory,
             options);

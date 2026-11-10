@@ -266,10 +266,9 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         var response = await RootClient.PostAsJsonAsync("/api/vms", form, Ct);
 
+        // The team list is built from the id, which is not there.
         var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
-        Assert.Contains("Error mapping types.", problem.Detail);
-        Assert.Contains("Destination Member:", problem.Detail);
-        Assert.Contains("VmTeams", problem.Detail);
+        Assert.Equal("Nullable object must have a value.", problem.Detail);
         await using var context = NewContext();
         Assert.Empty(context.Vms);
         Assert.Empty(context.VmTeams);
@@ -312,24 +311,20 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     [Fact]
-    public async Task Create_with_an_existing_Proxmox_id_answers_a_server_error_and_keeps_the_vm()
+    public async Task Create_with_an_existing_Proxmox_id_is_409_and_keeps_the_vm()
     {
         var teamId = Guid.NewGuid();
         TeamVisibility(teamId);
         var vm = TestData.ProxmoxVm(teamId);
         await Seed(vm);
         var form = CreateForm(teamId, "another-vm");
-        form.ProxmoxVmInfo = new Player.Vm.Api.Features.Vms.ProxmoxVmInfo
-        {
-            Id = vm.ProxmoxVmInfo.Id,
-            Node = "another-node",
-            Type = ProxmoxVmType.QEMU
-        };
+        form.ProxmoxVmInfo = ProxmoxInfo(vm.ProxmoxVmInfo.Id, "another-node");
 
         var response = await RootClient.PostAsJsonAsync("/api/vms", form, Ct);
 
-        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
-        Assert.Equal("An error occurred while saving the entity changes. See the inner exception for details.", problem.Detail);
+        var problem = await AssertJsonError(HttpStatusCode.Conflict, response);
+        Assert.Equal($"Proxmox VM {vm.ProxmoxVmInfo.Id} is already registered to another virtual machine.", problem.Title);
+        Assert.Null(problem.Detail);
         await using var context = NewContext();
         Assert.Equal(vm.Id, Assert.Single(context.Vms).Id);
         var info = Assert.Single(context.ProxmoxVmInfo);
@@ -338,30 +333,151 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal("pve-1", info.Node);
     }
 
-    [Fact]
-    public async Task Update_adding_Proxmox_info_to_a_vm_answers_a_server_error_and_keeps_the_vm()
+    /// <summary>
+    /// The vmid is an identity column, so a 0 used to be replaced by a number the database picked, and the
+    /// VM was registered against a Proxmox VM nobody named. Proxmox itself assigns 100 to 999999999.
+    /// </summary>
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(99)]
+    [InlineData(1_000_000_000)]
+    public async Task Create_with_a_Proxmox_id_outside_the_Proxmox_range_is_400_and_stores_nothing(int vmid)
     {
-        var vm = Vm([Guid.NewGuid()], name: "before");
+        var teamId = Guid.NewGuid();
+        TeamVisibility(teamId);
+        var form = CreateForm(teamId, "out-of-range-vm");
+        form.ProxmoxVmInfo = ProxmoxInfo(vmid);
+
+        var response = await RootClient.PostAsJsonAsync("/api/vms", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.BadRequest, response);
+        Assert.Equal($"Proxmox VM ids range from 100 to 999999999; {vmid} is outside that range.", problem.Title);
+        await using var context = NewContext();
+        Assert.Empty(context.Vms);
+        Assert.Empty(context.ProxmoxVmInfo);
+    }
+
+    [Fact]
+    public async Task Update_with_a_Proxmox_id_outside_the_Proxmox_range_is_400_and_changes_nothing()
+    {
+        var vm = TestData.ProxmoxVm(vmid: 101);
         await Seed(vm);
-        var form = new VmUpdateForm
-        {
-            Name = "after",
-            ProxmoxVmInfo = new Player.Vm.Api.Features.Vms.ProxmoxVmInfo
-            {
-                Id = 100,
-                Node = "node-1",
-                Type = ProxmoxVmType.QEMU
-            }
-        };
+        var form = new VmUpdateForm { Name = "after", ProxmoxVmInfo = ProxmoxInfo(0) };
 
         var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", form, Ct);
 
-        var problem = await AssertJsonError(HttpStatusCode.InternalServerError, response);
-        Assert.StartsWith("The database operation was expected to affect 1 row(s), but actually affected 0 row(s)", problem.Detail);
+        var problem = await AssertJsonError(HttpStatusCode.BadRequest, response);
+        Assert.Equal("Proxmox VM ids range from 100 to 999999999; 0 is outside that range.", problem.Title);
+        await using var context = NewContext();
+        Assert.Equal(vm.Name, context.Vms.Single(x => x.Id == vm.Id).Name);
+        Assert.Equal(vm.Id, Assert.Single(context.ProxmoxVmInfo).VmId);
+    }
+
+    [Fact]
+    public async Task Update_pointing_a_vm_at_another_vms_Proxmox_id_is_409_and_changes_nothing()
+    {
+        var teamId = Guid.NewGuid();
+        TeamVisibility(teamId);
+        var first = TestData.ProxmoxVm(teamId, vmid: 100);
+        var second = TestData.ProxmoxVm(teamId, vmid: 101);
+        await Seed(first, second);
+        var form = new VmUpdateForm { Name = "after", ProxmoxVmInfo = ProxmoxInfo(100, "pve-2", ProxmoxVmType.LXC) };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{second.Id}", form, Ct);
+
+        var problem = await AssertJsonError(HttpStatusCode.Conflict, response);
+        Assert.Equal("Proxmox VM 100 is already registered to another virtual machine.", problem.Title);
+        Assert.Null(problem.Detail);
+        await using var context = NewContext();
+        Assert.Equal(first.Name, context.Vms.Single(x => x.Id == first.Id).Name);
+        Assert.Equal(second.Name, context.Vms.Single(x => x.Id == second.Id).Name);
+        foreach (var (vm, vmid) in new[] { (first, 100), (second, 101) })
+        {
+            var info = context.ProxmoxVmInfo.Single(x => x.Id == vmid);
+            Assert.Equal(vm.Id, info.VmId);
+            Assert.Equal("pve-1", info.Node);
+            Assert.Equal(ProxmoxVmType.QEMU, info.Type);
+        }
+    }
+
+    [Fact]
+    public async Task Update_pointing_a_vm_at_an_unregistered_Proxmox_id_moves_it()
+    {
+        var vm = TestData.ProxmoxVm(vmid: 101);
+        await Seed(vm);
+        var form = new VmUpdateForm { Name = "after", ProxmoxVmInfo = ProxmoxInfo(102, "pve-2", ProxmoxVmType.LXC) };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", form, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        var body = await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct);
+        Assert.Equal(102, body.ProxmoxVmInfo.Id);
+        await using var context = NewContext();
+        Assert.Equal("after", context.Vms.Single(x => x.Id == vm.Id).Name);
+        var info = Assert.Single(context.ProxmoxVmInfo);
+        Assert.Equal(102, info.Id);
+        Assert.Equal(vm.Id, info.VmId);
+        Assert.Equal("pve-2", info.Node);
+        Assert.Equal(ProxmoxVmType.LXC, info.Type);
+    }
+
+    /// <summary>
+    /// The usual edit: a Proxmox VM's form carries its own vmid back. That vmid is registered, to this VM,
+    /// so it must not count as taken.
+    /// </summary>
+    [Fact]
+    public async Task Update_keeping_the_vms_own_Proxmox_id_edits_its_node_and_type()
+    {
+        var vm = TestData.ProxmoxVm(vmid: 101);
+        await Seed(vm);
+        var form = new VmUpdateForm { Name = "after", ProxmoxVmInfo = ProxmoxInfo(101, "pve-2", ProxmoxVmType.LXC) };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", form, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        await using var context = NewContext();
+        Assert.Equal("after", context.Vms.Single(x => x.Id == vm.Id).Name);
+        var info = Assert.Single(context.ProxmoxVmInfo);
+        Assert.Equal(101, info.Id);
+        Assert.Equal(vm.Id, info.VmId);
+        Assert.Equal("pve-2", info.Node);
+        Assert.Equal(ProxmoxVmType.LXC, info.Type);
+    }
+
+    [Fact]
+    public async Task Update_adding_Proxmox_info_to_a_vm_registers_it()
+    {
+        var vm = Vm([Guid.NewGuid()], name: "before");
+        await Seed(vm);
+        var form = new VmUpdateForm { Name = "after", ProxmoxVmInfo = ProxmoxInfo(100) };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", form, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
         await using var context = NewContext();
         var stored = context.Vms.Single(x => x.Id == vm.Id);
-        Assert.Equal("before", stored.Name);
-        Assert.Equal(VmType.Vsphere, stored.Type);
+        Assert.Equal("after", stored.Name);
+        Assert.Equal(VmType.Proxmox, stored.Type);
+        var info = Assert.Single(context.ProxmoxVmInfo);
+        Assert.Equal(100, info.Id);
+        Assert.Equal(vm.Id, info.VmId);
+        Assert.Equal("node-1", info.Node);
+    }
+
+    [Fact]
+    public async Task Update_without_Proxmox_info_unregisters_the_vm()
+    {
+        var vm = TestData.ProxmoxVm(vmid: 101);
+        await Seed(vm);
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        await using var context = NewContext();
+        var stored = context.Vms.Single(x => x.Id == vm.Id);
+        Assert.Equal("after", stored.Name);
+        Assert.Equal(VmType.Unknown, stored.Type);
         Assert.Empty(context.ProxmoxVmInfo);
     }
 
@@ -387,6 +503,25 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     /// 201 with a Location a caller can follow. The route is built by action name, so renaming Get
     /// without updating the CreatedAtAction would leave the response without one.
     /// </summary>
+    /// <summary>A Vm created without Proxmox details is of unknown type until a poller sets it.</summary>
+    [Fact]
+    public async Task Create_without_Proxmox_info_stores_a_vm_of_unknown_type()
+    {
+        var teamId = Guid.NewGuid();
+        TeamVisibility(teamId);
+
+        var response = await RootClient.PostAsJsonAsync("/api/vms", CreateForm(teamId, "new-vm"), Ct);
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+        var created = await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct);
+        Assert.Equal(VmType.Unknown, created.Type);
+        Assert.Null(created.ProxmoxVmInfo);
+
+        await using var context = NewContext();
+        Assert.Equal(VmType.Unknown, context.Vms.Single(x => x.Id == created.Id).Type);
+        Assert.Empty(context.ProxmoxVmInfo);
+    }
+
     [Fact]
     public async Task Create_Returns201AndALocationThatResolves()
     {
@@ -997,6 +1132,40 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         Assert.Equal("after", stored.Name);
         Assert.Equal("after", Assert.Single(stored.Coordinates).Label);
+    }
+
+    /// <summary>
+    /// A coordinate sent back with its own stored id is still a new row: the update rebuilds the
+    /// coordinates and gives each a new id.
+    /// </summary>
+    [Fact]
+    public async Task UpdateMap_given_a_stored_coordinates_own_id_replaces_it_with_a_new_row()
+    {
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId]);
+        map.Coordinates = [CoordinateEntityFor("before", 1, 1)];
+        await Seed(map);
+        View(map.ViewId, teamId);
+        var storedId = map.Coordinates.Single().Id;
+
+        var resent = Coordinate("after", 9, 9);
+        resent.Id = storedId;
+        var form = new VmMapUpdateForm
+        {
+            Name = map.Name,
+            ImageUrl = map.ImageUrl,
+            TeamIds = [teamId],
+            Coordinates = [resent]
+        };
+
+        var response = await RootClient.PutAsJsonAsync($"/api/views/maps/{map.Id}", form, Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        await using var context = NewContext();
+        var stored = Assert.Single(context.Maps.Include(x => x.Coordinates).Single(x => x.Id == map.Id).Coordinates);
+        Assert.Equal("after", stored.Label);
+        Assert.NotEqual(storedId, stored.Id);
     }
 
     [Fact]
@@ -2857,6 +3026,10 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     private static VmCreateForm CreateForm(Guid teamId, string name) =>
         new() { Id = Guid.NewGuid(), Name = name, TeamIds = [teamId] };
 
+    private static Player.Vm.Api.Features.Vms.ProxmoxVmInfo ProxmoxInfo(
+        int vmid, string node = "node-1", ProxmoxVmType type = ProxmoxVmType.QEMU) =>
+        new() { Id = vmid, Node = node, Type = type };
+
     private static VmMapCreateForm MapCreateForm(Guid teamId) =>
         new() { Name = "floor-1", ImageUrl = "https://images/floor-1.png", TeamIds = [teamId], Coordinates = [] };
 
@@ -2916,6 +3089,188 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         }
 
         return map;
+    }
+
+    #endregion
+
+    #region What the mappings preserve
+
+    /// <summary>A Vm stored without ip addresses is returned with an empty list, not null.</summary>
+    [Fact]
+    public async Task Get_returns_a_vm_stored_without_ip_addresses_with_an_empty_list()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = Vm([teamId]);
+        vm.IpAddresses = null;
+        await Seed(vm);
+        TeamVisibility(teamId);
+
+        var body = await Get<VmModel>($"/api/vms/{vm.Id}");
+
+        Assert.Empty(body.IpAddresses);
+    }
+
+    /// <summary>The ip addresses are returned as stored.</summary>
+    [Fact]
+    public async Task Get_returns_the_stored_ip_addresses()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = Vm([teamId]);
+        vm.IpAddresses = ["10.0.0.1", "10.0.0.2"];
+        await Seed(vm);
+        TeamVisibility(teamId);
+
+        var body = await Get<VmModel>($"/api/vms/{vm.Id}");
+
+        Assert.Equal(["10.0.0.1", "10.0.0.2"], body.IpAddresses);
+    }
+
+    /// <summary>
+    /// A Vm with no url of its own is opened through the console app; one with a url and console
+    /// connection details through Guacamole; one with only a url at that url.
+    /// </summary>
+    [Fact]
+    public async Task Get_returns_the_console_url_the_vm_is_opened_at()
+    {
+        var teamId = Guid.NewGuid();
+        var consoleApp = Vm([teamId]);
+        var guacamole = Vm([teamId]);
+        guacamole.Url = "https://guacamole.test";
+        guacamole.ConsoleConnectionInfo = new Player.Vm.Api.Domain.Models.ConsoleConnectionInfo { Hostname = "host", Port = "22", Protocol = "ssh" };
+        var direct = Vm([teamId]);
+        direct.Url = "https://direct.test/console";
+        await Seed(consoleApp, guacamole, direct);
+        TeamVisibility(teamId);
+
+        var consoleAppBody = await Get<VmModel>($"/api/vms/{consoleApp.Id}");
+        var guacamoleBody = await Get<VmModel>($"/api/vms/{guacamole.Id}");
+        var directBody = await Get<VmModel>($"/api/vms/{direct.Id}");
+
+        Assert.EndsWith($"/vm/{consoleApp.Id}/console", consoleAppBody.Url);
+        Assert.True(consoleAppBody.DefaultUrl);
+        Assert.StartsWith("https://guacamole.test/#/client/", guacamoleBody.Url);
+        Assert.False(guacamoleBody.DefaultUrl);
+        Assert.Equal("ssh", guacamoleBody.ConsoleConnectionInfo.Protocol);
+        Assert.Equal("https://direct.test/console", directBody.Url);
+    }
+
+    /// <summary>An update keeps the type of a Vm from another provider; its own poller sets it.</summary>
+    [Fact]
+    public async Task Update_without_Proxmox_info_keeps_a_vSphere_vms_type()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+
+        var response = await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        await using var context = NewContext();
+        Assert.Equal(VmType.Vsphere, context.Vms.Single(x => x.Id == vm.Id).Type);
+    }
+
+    /// <summary>
+    /// An update writes the url, owner and console details it carries, clearing those it leaves out,
+    /// and keeps what the pollers set.
+    /// </summary>
+    [Fact]
+    public async Task Update_clears_what_it_leaves_out_and_keeps_the_polled_state()
+    {
+        var vm = Vm([Guid.NewGuid()], userId: Guid.NewGuid());
+        vm.Url = "https://console/before";
+        vm.ConsoleConnectionInfo = new Player.Vm.Api.Domain.Models.ConsoleConnectionInfo { Hostname = "host", Protocol = "ssh" };
+        vm.PowerState = PowerState.On;
+        vm.IpAddresses = ["10.0.0.1"];
+        vm.HasSnapshot = true;
+        vm.HasPendingTasks = true;
+        vm.Embeddable = false;
+        await Seed(vm);
+
+        await AssertStatus(HttpStatusCode.OK, await RootClient.PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct));
+
+        await using var context = NewContext();
+        var stored = context.Vms.Single(x => x.Id == vm.Id);
+        Assert.Equal(("after", null, null, null), (stored.Name, stored.Url, stored.UserId, stored.ConsoleConnectionInfo));
+        Assert.Equal((PowerState.On, true, true, true), (stored.PowerState, stored.HasSnapshot, stored.HasPendingTasks, stored.Embeddable));
+        Assert.Equal(["10.0.0.1"], stored.IpAddresses);
+    }
+
+    /// <summary>A Map created without team ids stores an empty list.</summary>
+    [Fact]
+    public async Task CreateMap_without_team_ids_stores_an_empty_list()
+    {
+        var viewId = Guid.NewGuid();
+        View(viewId);
+        var form = MapCreateForm(Guid.NewGuid());
+        form.TeamIds = null;
+
+        var response = await RootClient.PostAsJsonAsync($"/api/views/{viewId}/map", form, Ct);
+
+        await AssertStatus(HttpStatusCode.Created, response);
+        var body = await response.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct);
+        Assert.Empty(body.TeamIds);
+        await using var context = NewContext();
+        Assert.Empty((await context.Maps.SingleAsync(x => x.Id == body.Id, Ct)).TeamIds);
+    }
+
+    /// <summary>A Map update without team ids or an image clears them, and keeps the Map's id and View.</summary>
+    [Fact]
+    public async Task UpdateMap_without_team_ids_or_an_image_clears_them_and_keeps_the_view()
+    {
+        var teamId = Guid.NewGuid();
+        var map = Map([teamId]);
+        await Seed(map);
+        View(map.ViewId, teamId);
+
+        var response = await RootClient.PutAsJsonAsync($"/api/views/maps/{map.Id}",
+            new VmMapUpdateForm { Name = "after", ImageUrl = null, TeamIds = null, Coordinates = [] }, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        await using var context = NewContext();
+        var stored = await context.Maps.SingleAsync(x => x.Id == map.Id, Ct);
+        Assert.Equal(("after", null, map.ViewId), (stored.Name, stored.ImageUrl, stored.ViewId));
+        Assert.Empty(stored.TeamIds);
+    }
+
+    /// <summary>A Map created without coordinates, or with a coordinate without urls, stores and returns empty lists.</summary>
+    [Fact]
+    public async Task CreateMap_without_coordinates_or_urls_stores_and_returns_empty_lists()
+    {
+        var teamId = Guid.NewGuid();
+        var viewId = Guid.NewGuid();
+        View(viewId, teamId);
+        var withoutCoordinates = MapCreateForm(teamId);
+        withoutCoordinates.Coordinates = null;
+        var withoutUrls = MapCreateForm(teamId);
+        var coordinate = Coordinate("no-urls", 1, 2);
+        coordinate.Urls = null;
+        withoutUrls.Coordinates = [coordinate];
+
+        var first = await RootClient.PostAsJsonAsync($"/api/views/{viewId}/map", withoutCoordinates, Ct);
+        var second = await RootClient.PostAsJsonAsync($"/api/views/{viewId}/map", withoutUrls, Ct);
+
+        await AssertStatus(HttpStatusCode.Created, first);
+        await AssertStatus(HttpStatusCode.Created, second);
+        var firstBody = await first.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct);
+        var secondBody = await second.Content.ReadFromJsonAsync<VmMapModel>(JsonOptions, Ct);
+        Assert.Empty(firstBody.Coordinates);
+        Assert.Empty(Assert.Single(secondBody.Coordinates).Urls);
+        await using var context = NewContext();
+        var stored = await context.Maps.Include(x => x.Coordinates).SingleAsync(x => x.Id == secondBody.Id, Ct);
+        Assert.Empty(Assert.Single(stored.Coordinates).Urls);
+        Assert.Equal(viewId, stored.ViewId);
+    }
+
+    /// <summary>A Map stored without teams is returned with an empty team list.</summary>
+    [Fact]
+    public async Task GetAllMaps_returns_a_map_stored_without_team_ids_with_an_empty_list()
+    {
+        var map = Map([]);
+        map.TeamIds = null;
+        await Seed(map);
+
+        var maps = await Get<VmMapModel[]>("/api/views/maps");
+
+        Assert.Empty(Assert.Single(maps).TeamIds);
     }
 
     #endregion

@@ -31,7 +31,7 @@ rest do not.
 
 Thirteen classes host the application in process and send real HTTP requests through it. Everything between
 the request and the hypervisor client is production wiring - routing, model binding, the authorization
-policy, the MediatR pipeline behaviors, the handlers, AutoMapper and EF Core against real PostgreSQL -
+policy, the MediatR pipeline behaviors, the handlers, the mappings and EF Core against real PostgreSQL -
 and only the edges are replaced.
 
 - `VmsEndpointTests` and `BulkPowerOperationEndpointTests` cover `VmController`, the largest surface in
@@ -318,43 +318,49 @@ second database of its own rather than the same one with more tables in it.
 # Running the tests
 
 ```bash
-dotnet test src/Player.Vm.Api.Tests                                  # needs Docker
-dotnet test src/Player.Vm.Api.Tests -- xUnit.DiagnosticMessages=true # prints the provider banner
-dotnet test src/Player.Vm.Api.Tests --filter "FullyQualifiedName~.VsphereServiceCommandTests"
-dotnet test src/Player.Vm.Api.Tests --collect:"XPlat Code Coverage" # cobertura under TestResults/
+dotnet test src/Player.Vm.Api.Tests                                         # needs Docker
+dotnet run --project src/Player.Vm.Api.Tests -- --xunit-diagnostics on      # prints the provider banner
+dotnet test src/Player.Vm.Api.Tests --filter-class "*.VsphereServiceCommandTests"
+scripts/coverage.sh                                                         # coverage; see Coverage below
 ```
+
+The suite runs on Microsoft.Testing.Platform (`"test": { "runner": "Microsoft.Testing.Platform" }` in
+`global.json`), which xunit.v3 4 requires on the .NET 10 SDK, so test options are xUnit's own
+(`--filter-class`, `--filter-method`, `--xunit-diagnostics`; see `dotnet test src/Player.Vm.Api.Tests --help`)
+rather than VSTest's `--filter` and `-- xUnit.…` settings. The banner is printed with `dotnet run` because
+`dotnet test` does not forward the test app's diagnostic messages.
 
 **Docker must be running.** PostgreSQL is the only database these tests use, and there is deliberately
 no in-memory or SQLite fallback - a fallback that quietly swaps the provider reports a green run that
 never touched what production uses. Without Docker every database test fails, each naming the reason;
 the rest still pass, because the containers are started by the first test that asks for a database
-rather than at assembly load. With `-- xUnit.DiagnosticMessages=true` the run prints
+rather than at assembly load. With `--xunit-diagnostics on` the run prints
 `[Player.Vm.Api.Tests] database provider: PostgreSQL (postgres:16-alpine, real migrations)`, which is what
 CI greps for. Never set `diagnosticMessages` in `xunit.runner.json`: the run then hangs after the last test.
 
-The leading dot in a filter (`~.VmsEndpointTests`) keeps a class name from also matching every class that
+The leading dot in a filter (`*.VmsEndpointTests`) keeps a class name from also matching every class that
 ends with it.
 
 A full run takes about forty seconds, container start and both sets of migrations included. About five
 of those are one test: `CallbackBackgroundServiceTests.WhenTheFirstAttemptFails_TheEventIsKeptAndRetried`
 waits out the real first retry delay, which is the shortest one the service has.
 
-A plain run collects no coverage. `--collect:"XPlat Code Coverage"` turns the collector on with the
-exclusions in `src/Player.Vm.Api.Tests/coverlet.runsettings` (applied to every run through
-`RunSettingsFilePath`), and `scripts/coverage.sh` adds the HTML report and the ranking; nothing gates on
-the figure - see Coverage below.
+A plain run collects no coverage. `scripts/coverage.sh` turns coverage on with `--coverlet` and the
+exclusions in What is measured below, and adds the HTML report and the ranking; nothing gates on the
+figure - see Coverage below.
 
 # Build settings
 
 The test project follows the Crucible API test standard (`agent-docs/api-testing/` in the workspace; its
-`README.md` is the description of the shared parts, and `CONVENTIONS.md` is how tests are written). Three
+`README.md` is the description of the shared parts, and `CONVENTIONS.md` is how tests are written). Two
 files in `src/Player.Vm.Api.Tests` are copied from it byte for byte and are not edited here:
 `Directory.Build.props` (imports the repository's own, then sets `TreatWarningsAsErrors` and keeps the
-NuGet restore warnings as warnings), `xunit.runner.json` and `coverlet.runsettings`. The pinned test
-packages (`xunit.v3` 3.2.2, `xunit.runner.visualstudio` 3.1.5, `Microsoft.NET.Test.Sdk` 18.8.1,
-`coverlet.collector` 10.0.1, `NSubstitute` 6.0.0, `Testcontainers.PostgreSql` 4.15.0,
-`Microsoft.AspNetCore.Mvc.Testing` 10.0.1) live in `Directory.Packages.props`. The suite runs in VSTest mode
-of `dotnet test`, as every Crucible API does; the standard's README says why.
+NuGet restore warnings as warnings) and `xunit.runner.json`. The pinned test packages (`xunit.v3` 4.0.1,
+`coverlet.MTP` 10.0.1, `NSubstitute` 6.0.0, `Testcontainers.PostgreSql` 4.15.0,
+`Microsoft.AspNetCore.Mvc.Testing` 10.0.1) live in `Directory.Packages.props`. The suite runs on
+Microsoft.Testing.Platform: `global.json` selects it for `dotnet test`, and `UseMicrosoftTestingPlatformRunner`
+in the project file builds the test app for it. Coverage comes from `coverlet.MTP`; `xunit.runner.visualstudio`
+and `Microsoft.NET.Test.Sdk` are not referenced (both VSTest only).
 
 `TreatWarningsAsErrors` is what enforces the xUnit analyzers that ship with `xunit.v3`. These fail the
 build:
@@ -384,9 +390,8 @@ file-scoped ones, and encoding one of them would turn every file into a diff wit
 more correct.
 
 Restore-time warnings stay warnings, through `WarningsNotAsErrors`. NU1901 to NU1904 are the NuGet
-audit, and it has two findings here. `AutoMapper` 13 is the only direct one, and it is pinned on
-purpose because the fix is in 15.1.1 and version 15+ requires a commercial license; `MediatR` 12 is
-pinned for the same reason. `Microsoft.NETCore.App` 2.1.0 arrives through `VimClient` and is the
+audit. `MediatR` 12 is pinned on purpose because version 13+ requires a commercial license.
+`Microsoft.NETCore.App` 2.1.0 arrives through `VimClient` and is the
 .NET Core 2.1 framework package, which cannot be raised to a fixed version on net10.0. The other
 transitive hits are raised by the security pins at the bottom of `Directory.Packages.props`, each
 commented with the dependency it comes through, and the test project names the
@@ -423,7 +428,7 @@ production types are written in full, `Player.Vm.Api.Domain.Models.Vm`, or throu
   reports any difference.
 - `Support/` - the files built from the standard's templates: `DatabaseFixture`, `VmContextFactory`,
   `VmAppFactory`, `TestConfiguration`, `DatabaseTestBase`, `ApiTestBase`, `TestActor`, `TestData`,
-  `ClaimsPrincipalBuilder`, `AuthorizationHarness`, `TestMapper`, and the harness self-tests
+  `ClaimsPrincipalBuilder`, `AuthorizationHarness`, `TestConsoleUrls`, and the harness self-tests
   `DatabaseHarnessTests`, `HttpHarnessTests` and `TestActorTests`.
 - `Support/` also holds vm.api's own extras, each named for what it fakes: `FakeProxmoxCluster` (a PVE
   cluster at the socket), `FakeChangeFeed` (vCenter's property collector), `PollLoop` (a counted turn of a
@@ -658,8 +663,8 @@ player.api, route by route.
   "announced twice", with `HubAudience.All` among the audiences), `Recipients` and `FailsFor`. vm.api's own
   `HubContextHarness` went once the shared recorder kept the ordered log. The host itself keeps the real
   hub contexts.
-- `Support/TestMapper.cs` is the application's real AutoMapper configuration, built through DI as
-  `Startup` builds it (`ConsoleUrlResolver` needs `ConsoleUrlOptions`, registered with recognizable urls).
+- `Support/TestConsoleUrls.cs` is the `ConsoleUrlOptions`, with recognizable urls, for a service or
+  handler a test builds itself: mapping a Vm to its view model needs it for the console url.
 
 ## The harness self-tests
 
@@ -709,7 +714,7 @@ reviewer judges against; what follows is how they land in this repository.
 6. Do not add Arrange, Act and Assert comments. A blank line already shows the shape of a test.
    Comments should explain what a test pins and why it matters, not what the next line does.
 7. For an authorization test of a service, construct the service with `PlayerHarness.Service` (the real
-   `PlayerService`) and `TestMapper.Mapper`, and arrange the caller as player.api data with
+   `PlayerService`) and `TestConsoleUrls.Options`, and arrange the caller as player.api data with
    `_player.Grant(...)`. Never substitute `IPlayerService`: it is the code that decides. Whether the test
    is a service or an endpoint test, every authorization call site it touches needs, for each permission
    value the site reads (directly, through a `PlayerService` helper such as `CanViewVms`, `CanViewMaps` or
@@ -820,13 +825,13 @@ classes build their entities inline rather than through `Support/TestData.cs`.
 
 # Continuous integration
 
-`.github/workflows/build-and-test.yml` is the standard's workflow, copied by `agent-docs/api-testing/sync.sh`
-with this repository's test project filled in and not edited here (it replaced the earlier `test.yml`). It
-runs on pull requests and on pushes to `main`: restore, build the solution (`Player.Vm.Api` and the test
-project; `Player.Vm.Api.Client` is not in `Player.Vm.Api.sln` and is built only by `client.yml`), and
-`dotnet test src/Player.Vm.Api.Tests -- xUnit.DiagnosticMessages=true`, then confirms the log carries
-`[Player.Vm.Api.Tests] database provider: PostgreSQL`, so a harness change cannot silently stop exercising
-the production database. The SDK comes from `global.json`. There is no database service block:
+`.github/workflows/build-and-test.yml` calls the shared `dotnet-test.yaml` workflow in
+cmu-sei/Crucible-Github-Actions, which reads the test runner from `global.json`. It runs on pull requests
+and on pushes to `main`: restore, build the solution (`Player.Vm.Api` and the test project;
+`Player.Vm.Api.Client` is not in `Player.Vm.Api.sln` and is built only by `client.yml`), and
+`dotnet run --project src/Player.Vm.Api.Tests -- --xunit-diagnostics on` (with a TRX report), then confirms
+the log carries `[Player.Vm.Api.Tests] database provider: PostgreSQL`, so a harness change cannot silently
+stop exercising the production database. The SDK comes from `global.json`. There is no database service block:
 `ubuntu-latest` runners ship Docker, and Testcontainers starts and disposes the containers itself. The TRX
 of the run is uploaded as `test-results` even when the job fails. Coverage is not collected there.
 
@@ -842,19 +847,19 @@ runner, started by hand from the Actions tab, and it publishes the table to the 
 and the report as an artifact.
 
 ```
-scripts/coverage.sh                              the whole suite
-scripts/coverage.sh --filter VmSignalRHandler    anything further goes to `dotnet test`
-TOP=50 scripts/coverage.sh                       a longer ranking; the default is 25
+scripts/coverage.sh                                              the whole suite
+scripts/coverage.sh --filter-class "*.VmSignalRHandlerTests"    anything further goes to `dotnet test`
+TOP=50 scripts/coverage.sh                                       a longer ranking; the default is 25
 ```
 
 A filtered run maps only what those tests reach, so everything else in it reads as 0%. That is the
 useful form when the question is "what does this class of mine not touch" and a misleading one for
 anything else; `coverage/` is rebuilt from scratch each time, so the last run is the only one there.
 
-None of it is part of a normal run or of the build that gates a pull request. `coverlet.collector` is
-a VSTest data collector, so it is inert until a run asks for XPlat Code Coverage, and only the script
-and that workflow ask: `dotnet test` neither instruments nor slows down, and `build-and-test.yml` never
-collects a figure or sees one. The single extra tool, ReportGenerator, is pinned as a local tool in
+None of it is part of a normal run or of the build that gates a pull request. `coverlet.MTP` is
+inert until a run passes `--coverlet`, and only the script and that workflow do: `dotnet test` neither
+instruments nor slows down, and `build-and-test.yml` never collects a figure
+or sees one. The single extra tool, ReportGenerator, is pinned as a local tool in
 `.config/dotnet-tools.json` and restored by the script. `jq` formats the ranking, and the script says
 so and carries on without it if it is not installed.
 
@@ -876,8 +881,9 @@ So: a map for deciding what to test next, and nothing else. It has no vote on wh
 
 ## What is measured
 
-`src/Player.Vm.Api.Tests/coverlet.runsettings` (the standard's shared file) holds the settings, and they
-matter to any figure quoted from it. The test assembly and any `*.Migrations.PostgreSQL` assembly are
+The `--coverlet` options in `scripts/coverage.sh` hold the settings, and they matter to any figure quoted
+from it. Only `Player.Vm.Api` is included (without the include filter coverlet also instruments
+third-party assemblies that ship sources). The test assembly and any `*.Migrations.PostgreSQL` assembly are
 excluded by name; EF's migrations under `Data/Migrations` are excluded by file, because the
 harness migrates the template database once per run and would report them as well covered while
 proving nothing; so is any source that compiles in from a NuGet package (`**/.nuget/packages/**/*.cs`);
@@ -1100,7 +1106,7 @@ currently tell you.
   themselves to each other - each asserts the same names independently, and a renamed group would have to be
   renamed in both suites - which is a gap a test cannot close without one of them stopping being a test of
   what the code does.
-- **The projections.** The AutoMapper profiles run in every endpoint test, but only the projections those
+- **The projections.** The mappings run in every endpoint test, but only the projections those
   tests happen to read are asserted.
 - **What the out-of-process clients assume.** `ViewService`, `AuthenticationService`,
   `AuthenticatingHandler` and `CallbackBackgroundService` are now covered down to the socket, which is as

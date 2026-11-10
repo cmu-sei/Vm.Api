@@ -13,7 +13,6 @@ using Player.Vm.Api.Features.Vms;
 using System.IO;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
-using AutoMapper;
 using Player.Vm.Api.Domain.Services;
 using System.Security.Principal;
 using Player.Vm.Api.Domain.Models;
@@ -41,11 +40,10 @@ namespace Player.Vm.Api.Features.Vsphere
             public Handler(
                 IVsphereService vsphereService,
                 IVmService vmService,
-                IMapper mapper,
                 IPlayerService playerService,
                 IPrincipal principal,
                 IViewService viewService) :
-                base(mapper, vsphereService, playerService, principal, vmService, viewService)
+                base(vsphereService, playerService, principal, vmService, viewService)
             {
                 _vsphereService = vsphereService;
             }
