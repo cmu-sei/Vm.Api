@@ -94,12 +94,12 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             int wait = DefaultTaskPollMs,
             long timeout = DefaultTaskTimeoutMs)
         {
-            // A refusal is a 400 with Proxmox's reason, not a 500: PVE answers a locked Vm, an unlockable
-            // config file or a missing snapshot with an HTTP 500 of its own, but that is the hypervisor
-            // declining the request, not this API failing. The node-migration retry happens before this,
-            // on the Result, so it is unaffected by what is thrown here.
+            // A refusal is a 409 (or a 400) with Proxmox's reason, not a 500: PVE answers a locked Vm, an
+            // unlockable config file or a missing snapshot with an HTTP 500 of its own, but that is the
+            // hypervisor declining the request, not this API failing. The node-migration retry happens
+            // before this, on the Result, so it is unaffected by what is thrown here.
             if (!result.IsSuccessStatusCode)
-                throw new ProxmoxRequestRefusedException(result.GetErrorMessage(), OperationName(operation));
+                throw new ProxmoxRequestRefusedException(result.GetErrorMessage(), OperationName(operation), result.StatusCode);
 
             bool finished;
             try
@@ -112,7 +112,7 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
             }
             catch (ProxmoxRequestRefusedException ex) when (ex.Operation == null)
             {
-                throw new ProxmoxRequestRefusedException(ex.Reason, OperationName(operation));
+                throw new ProxmoxRequestRefusedException(ex.Reason, OperationName(operation), ex.ProxmoxStatus);
             }
 
             // A 504 rather than a 500: Proxmox took the request and has not finished it, which is an
@@ -164,7 +164,7 @@ namespace Player.Vm.Api.Domain.Proxmox.Extensions
                 return false;
 
             if (result.ResponseInError || !result.IsSuccessStatusCode)
-                throw new ProxmoxRequestRefusedException(result.GetErrorMessage());
+                throw new ProxmoxRequestRefusedException(result.GetErrorMessage(), proxmoxStatus: result.StatusCode);
 
             var data = result.ToData() as string;
             if (data is null || !data.StartsWith("UPID:"))

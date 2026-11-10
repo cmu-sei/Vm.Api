@@ -143,10 +143,28 @@ public class ProxmoxServiceCommandTests
 
         var ex = await Assert.ThrowsAsync<ProxmoxRequestRefusedException>(() => cluster.Service().PowerOnVm(info));
 
-        Assert.Equal(HttpStatusCode.BadRequest, ex.GetStatusCode());
+        Assert.Equal(HttpStatusCode.Conflict, ex.GetStatusCode());
         Assert.StartsWith("Power On failed: ", ex.Message);
         Assert.EndsWith("VM is locked (backup)", ex.Message);
         Assert.Equal([path, FakeProxmoxCluster.ClusterResources], cluster.Http.Paths);
+    }
+
+    // PVE reports a request the Vm's state rules out as its own HTTP 500, which is the 409 above. A
+    // request PVE rejects as malformed is its 400, and that one is still a 400 here, with PVE's reason.
+    [Fact]
+    public async Task PowerOn_RejectedByProxmoxAsMalformed_IsA400()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Rejects(
+            $"POST {FakeProxmoxCluster.VmPath(info, "/status/start")}",
+            "Parameter verification failed.",
+            status: HttpStatusCode.BadRequest);
+
+        var ex = await Assert.ThrowsAsync<ProxmoxRequestRefusedException>(() => cluster.Service().PowerOnVm(info));
+
+        Assert.Equal(HttpStatusCode.BadRequest, ex.GetStatusCode());
+        Assert.StartsWith("Power On failed: ", ex.Message);
     }
 
     // The migration retry decides on the Result, before anything is thrown, so a Vm that moved and is

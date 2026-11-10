@@ -790,17 +790,19 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     // Proxmox declining the request itself - a backup holds the lock - is the hypervisor saying no, not
-    // this API failing: a 400 whose title is Proxmox's reason, and no stack trace in the body.
+    // this API failing: a 409, since the Vm's state is what rules it out, whose title is Proxmox's reason,
+    // and no stack trace in the body.
     [Fact]
-    public async Task Reboot_WhenProxmoxRefusesTheRequest_Is400WithProxmoxsReason()
+    public async Task Reboot_WhenProxmoxRefusesTheRequest_Is409WithProxmoxsReason()
     {
         var vm = await SeedProxmoxVm();
         Factory.Proxmox.RebootVm(Arg.Any<ProxmoxVmInfo>())
-            .Returns<Task<string>>(_ => throw new ProxmoxRequestRefusedException("VM is locked (backup)", "Reboot"));
+            .Returns<Task<string>>(_ => throw new ProxmoxRequestRefusedException(
+                "VM is locked (backup)", "Reboot", HttpStatusCode.InternalServerError));
 
         var response = await Send("POST", "/actions/reboot", vm.Id);
 
-        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
         var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct)).RootElement;
         Assert.Equal("Reboot failed: VM is locked (backup)", body.GetProperty("title").GetString());
         Assert.False(body.TryGetProperty("detail", out var detail) && detail.ValueKind == JsonValueKind.String);
