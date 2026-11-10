@@ -8,7 +8,6 @@ using MediatR;
 using System.Runtime.Serialization;
 using System.Text.Json.Serialization;
 using Player.Vm.Api.Infrastructure.Exceptions;
-using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vms;
 using VimClient;
@@ -38,11 +37,10 @@ namespace Player.Vm.Api.Features.Vsphere
             public Handler(
                 IVsphereService vsphereService,
                 IVmService vmService,
-                IMapper mapper,
                 IPlayerService playerService,
                 IPrincipal principal,
                 IViewService viewService) :
-                base(mapper, vsphereService, playerService, principal, vmService, viewService)
+                base(vsphereService, playerService, principal, vmService, viewService)
             {
                 _vsphereService = vsphereService;
             }

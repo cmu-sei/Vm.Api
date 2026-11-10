@@ -34,7 +34,7 @@ public class NetworkServiceTests(DatabaseFixture fixture) : DatabaseTestBase(fix
 {
     private readonly PlayerHarness _player = new(Guid.NewGuid(), TestContext.Current.CancellationToken);
 
-    private NetworkService Service => new(Db, _player.Service, TestMapper.Mapper);
+    private NetworkService Service => new(Db, _player.Service);
 
     #region Read and write gates
 

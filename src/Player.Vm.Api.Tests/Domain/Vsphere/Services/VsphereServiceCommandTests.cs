@@ -5,7 +5,6 @@ using System;
 using System.Net.Http;
 using System.ServiceModel;
 using System.Threading.Tasks;
-using AutoMapper;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Logging.Abstractions;
 using Player.Vm.Api.Domain.Models;
@@ -106,7 +105,6 @@ public class VsphereServiceCommandTests
                 Options,
                 Substitute.For<IConfiguration>(),
                 Connections,
-                Substitute.For<IMapper>(),
                 Substitute.For<IHttpClientFactory>());
 
         /// <summary>

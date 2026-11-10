@@ -31,7 +31,7 @@ public class WriteHandlerCancellationTests(DatabaseFixture fixture) : DatabaseTe
     [Fact]
     public async Task Create_WithACancelledToken_StoresTheSession()
     {
-        var handler = new Create.Handler(Logging, TestMapper.Mapper, Substitute.For<IAuthorizationService>(), Caller());
+        var handler = new Create.Handler(Logging, Substitute.For<IAuthorizationService>(), Caller());
 
         await handler.Handle(new Create.Command { ViewId = Guid.NewGuid(), SessionName = "abandoned" }, Cancelled());
 
@@ -44,7 +44,7 @@ public class WriteHandlerCancellationTests(DatabaseFixture fixture) : DatabaseTe
     public async Task Edit_WithACancelledToken_StoresTheEdit()
     {
         var session = await SeedSession();
-        var handler = new Edit.Handler(Logging, TestMapper.Mapper, Substitute.For<IAuthorizationService>(), Caller());
+        var handler = new Edit.Handler(Logging, Substitute.For<IAuthorizationService>(), Caller());
 
         await handler.Handle(
             new Edit.Command { Id = session.Id, ViewId = session.ViewId, SessionName = "edited" }, Cancelled());
@@ -58,7 +58,7 @@ public class WriteHandlerCancellationTests(DatabaseFixture fixture) : DatabaseTe
     public async Task EndSession_WithACancelledToken_StoresTheEnd()
     {
         var session = await SeedSession();
-        var handler = new EndSession.Handler(Logging, TestMapper.Mapper, Substitute.For<IAuthorizationService>(), Caller());
+        var handler = new EndSession.Handler(Logging, Substitute.For<IAuthorizationService>(), Caller());
 
         await handler.Handle(new EndSession.Command { Id = session.Id }, Cancelled());
 

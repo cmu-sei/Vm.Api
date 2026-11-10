@@ -5,7 +5,6 @@ using System;
 using System.Threading;
 using System.Threading.Tasks;
 using Player.Vm.Api.Infrastructure.Exceptions;
-using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Services;
 using Player.Vm.Api.Features.Vms;
 using Player.Vm.Api.Domain.Services;
@@ -20,7 +19,6 @@ namespace Player.Vm.Api.Features.Vsphere
 {
     public class BaseHandler
     {
-        private readonly IMapper _mapper;
         private readonly IVsphereService _vsphereService;
         protected readonly IPlayerService _playerService;
         private readonly Guid _userId;
@@ -29,14 +27,12 @@ namespace Player.Vm.Api.Features.Vsphere
 
 
         public BaseHandler(
-            IMapper mapper,
             IVsphereService vsphereService,
             IPlayerService playerService,
             IPrincipal principal,
             IVmService vmService,
             IViewService viewService)
         {
-            _mapper = mapper;
             _vsphereService = vsphereService;
             _playerService = playerService;
             _userId = (principal as ClaimsPrincipal).GetId();
@@ -51,7 +47,7 @@ namespace Player.Vm.Api.Features.Vsphere
             if (domainMachine == null)
                 throw new EntityNotFoundException<VsphereVirtualMachine>();
 
-            var vsphereVirtualMachine = _mapper.Map<VsphereVirtualMachine>(domainMachine);
+            var vsphereVirtualMachine = domainMachine.ToVsphereVirtualMachine();
 
             var connectionAddress = await _vsphereService.GetConnectionAddress(vm.Id);
 
@@ -73,7 +69,7 @@ namespace Player.Vm.Api.Features.Vsphere
                 machine: domainMachine);
 
             // copy vm properties
-            vsphereVirtualMachine = _mapper.Map(vm, vsphereVirtualMachine);
+            vm.ApplyTo(vsphereVirtualMachine);
             vsphereVirtualMachine.CanAccessNicConfiguration = hasAnyNetworkAccess;
             vsphereVirtualMachine.IsOwner = vsphereVirtualMachine.UserId == _userId;
 

@@ -345,7 +345,6 @@ public class Startup
         services.AddScoped<Features.Proxmox.IProxmoxVmNetworkService, Features.Proxmox.ProxmoxVmNetworkService>();
 
         services.AddFeatureHandlers();
-        services.AddAutoMapper(typeof(Startup));
         services.AddMediatR(cfg => cfg.RegisterServicesFromAssemblies(typeof(Startup).Assembly));
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CheckVsphereTasksBehavior<,>));
         services.AddTransient(typeof(IPipelineBehavior<,>), typeof(CheckProxmoxTasksBehavior<,>));

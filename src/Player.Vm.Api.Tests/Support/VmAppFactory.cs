@@ -41,7 +41,7 @@ namespace Player.Vm.Api.Tests.Support;
 /// Hosts <c>Player.Vm.Api</c> in process, once per test class, with the collaborators that leave the
 /// process substituted. Everything between the HTTP request and those collaborators is the production
 /// wiring: routing, model binding, the authorization policies, the MediatR pipeline behaviors, the
-/// handlers, AutoMapper and EF Core against real PostgreSQL.
+/// handlers, the mappings and EF Core against real PostgreSQL.
 /// </summary>
 /// <remarks>
 /// <para>

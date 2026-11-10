@@ -15,7 +15,6 @@ using System.Security.Principal;
 using System.Threading;
 using System.Threading.Tasks;
 using MediatR;
-using AutoMapper;
 using Microsoft.AspNetCore.Authorization;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Infrastructure.Exceptions;
@@ -49,18 +48,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         public class Handler : IRequestHandler<Command, VmUsageLoggingSession>
         {
             private readonly VmLoggingContext _db;
-            private readonly IMapper _mapper;
             private readonly IAuthorizationService _authorizationService;
             private readonly IPlayerService _playerService;
 
             public Handler(
                 VmLoggingContext db,
-                IMapper mapper,
                 IAuthorizationService authorizationService,
                 IPlayerService playerService)
             {
                 _db = db;
-                _mapper = mapper;
                 _authorizationService = authorizationService;
                 _playerService = playerService;
             }
@@ -70,13 +66,13 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 if (!await _playerService.Can([], request.ViewId.HasValue ? [request.ViewId.Value] : [], [AppSystemPermission.ManageViews], [AppViewPermission.ManageView], [], cancellationToken))
                     throw new ForbiddenException("You do not have permission to create a Vm Usage Log");
 
-                var loggingSession = _mapper.Map<Domain.Models.VmUsageLoggingSession>(request);
+                var loggingSession = request.ToEntity();
 
                 loggingSession.CreatedDt = DateTimeOffset.UtcNow;
 
                 await _db.VmUsageLoggingSessions.AddAsync(loggingSession);
                 await _db.SaveChangesAsync();
-                return _mapper.Map<VmUsageLoggingSession>(loggingSession);
+                return loggingSession.ToVmUsageLoggingSession();
             }
         }
     }

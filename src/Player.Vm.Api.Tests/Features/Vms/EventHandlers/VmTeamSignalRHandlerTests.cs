@@ -41,8 +41,8 @@ public class VmTeamSignalRHandlerTests(DatabaseFixture fixture) : DatabaseTestBa
     private readonly IViewService _views = Substitute.For<IViewService>();
     private readonly HubRecorder<VmHub> _hub = new();
 
-    private VmTeamCreatedSignalRHandler Created => new(Db, TestMapper.Mapper, _views, _hub);
-    private VmTeamDeletedSignalRHandler Deleted => new(Db, TestMapper.Mapper, _views, _hub);
+    private VmTeamCreatedSignalRHandler Created => new(Db, TestConsoleUrls.Options, _views, _hub);
+    private VmTeamDeletedSignalRHandler Deleted => new(Db, TestConsoleUrls.Options, _views, _hub);
 
     #region Who hears that a team gained or lost a Vm
 

@@ -16,7 +16,6 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Microsoft.Extensions.Logging;
 using VimClient;
-using AutoMapper;
 using Player.Vm.Api.Domain.Vsphere.Options;
 using Player.Vm.Api.Domain.Vsphere.Models;
 using Player.Vm.Api.Features.Files.Models;
@@ -78,7 +77,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
 
         private readonly IConfiguration _configuration;
         private readonly IConnectionService _connectionService;
-        private readonly IMapper _mapper;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly VsphereOptions _vsphereOptions;
 
@@ -88,7 +86,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
                 VsphereOptions vsphereOptions,
                 IConfiguration configuration,
                 IConnectionService connectionService,
-                IMapper mapper,
                 IHttpClientFactory httpClientFactory
             )
         {
@@ -96,7 +93,6 @@ namespace Player.Vm.Api.Domain.Vsphere.Services
             _logger = logger;
             _connectionService = connectionService;
             _configuration = configuration;
-            _mapper = mapper;
             _httpClientFactory = httpClientFactory;
             _vsphereOptions = vsphereOptions;
 

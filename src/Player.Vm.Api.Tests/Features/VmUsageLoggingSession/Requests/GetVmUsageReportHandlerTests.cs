@@ -74,7 +74,7 @@ public class GetVmUsageReportHandlerTests(DatabaseFixture fixture) : DatabaseTes
     {
         await using var context = NewLoggingContext();
         var handler = new GetVmUsageReport.Handler(
-            context, TestMapper.Mapper, FrameworkAuthorization(), _player.User, _player.Service);
+            context, FrameworkAuthorization(), _player.User, _player.Service);
 
         return await handler.Handle(
             new GetVmUsageReport.Query { ReportStart = Noon.AddDays(-1), ReportEnd = Noon.AddDays(1) }, Ct);

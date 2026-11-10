@@ -30,7 +30,7 @@ public class VmServiceProxmoxRegistrationTests(DatabaseFixture fixture) : Databa
     private readonly PlayerHarness _player = new(Caller, TestContext.Current.CancellationToken, Principal(Caller));
 
     private VmService Service =>
-        new(Db, _player.Service, _player.Views, Principal(Caller), TestMapper.Mapper, Substitute.For<INetworkService>());
+        new(Db, _player.Service, _player.Views, Principal(Caller), TestConsoleUrls.Options, Substitute.For<INetworkService>());
 
     public override async ValueTask InitializeAsync()
     {

@@ -1,7 +1,6 @@
 // Copyright 2026 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
-using AutoMapper;
 using Microsoft.EntityFrameworkCore;
 using Player.Vm.Api.Data;
 using Player.Vm.Api.Domain.Models;
@@ -39,13 +38,11 @@ namespace Player.Vm.Api.Features.Networks
     {
         private readonly VmContext _context;
         private readonly IPlayerService _playerService;
-        private readonly IMapper _mapper;
 
-        public NetworkService(VmContext context, IPlayerService playerService, IMapper mapper)
+        public NetworkService(VmContext context, IPlayerService playerService)
         {
             _context = context;
             _playerService = playerService;
-            _mapper = mapper;
         }
 
         public async Task<ViewNetwork[]> GetByViewId(Guid viewId, CancellationToken ct)
@@ -57,7 +54,7 @@ namespace Player.Vm.Api.Features.Networks
                 .Where(n => n.ViewId == viewId)
                 .ToArrayAsync(ct);
 
-            return _mapper.Map<ViewNetwork[]>(entities);
+            return entities.Select(x => x.ToViewNetwork()).ToArray();
         }
 
         public async Task<ViewNetwork> CreateViewNetwork(Guid viewId, CreateViewNetworkForm form, CancellationToken ct)
@@ -73,15 +70,15 @@ namespace Player.Vm.Api.Features.Networks
                 .SingleOrDefaultAsync(ct);
 
             if (existing != null)
-                return _mapper.Map<ViewNetwork>(existing);
+                return existing.ToViewNetwork();
 
-            var entity = _mapper.Map<Domain.Models.ViewNetwork>(form);
+            var entity = form.ToEntity();
             entity.ViewId = viewId;
 
             _context.ViewNetworks.Add(entity);
             await _context.SaveChangesAsync(ct);
 
-            return _mapper.Map<ViewNetwork>(entity);
+            return entity.ToViewNetwork();
         }
 
         public async Task DeleteViewNetwork(Guid viewId, Guid id, CancellationToken ct)
@@ -112,7 +109,7 @@ namespace Player.Vm.Api.Features.Networks
             if (entity == null)
                 throw new EntityNotFoundException<ViewNetwork>();
 
-            return _mapper.Map<ViewNetwork>(entity);
+            return entity.ToViewNetwork();
         }
 
         public async Task<ViewNetwork> UpdateViewNetwork(Guid viewId, Guid id, UpdateViewNetworkForm form, CancellationToken ct)
@@ -144,11 +141,11 @@ namespace Player.Vm.Api.Features.Networks
                         "A network with the same ProviderType, ProviderInstanceId, and NetworkId already exists for this view.");
             }
 
-            _mapper.Map(form, entity);
+            form.ApplyTo(entity);
 
             await _context.SaveChangesAsync(ct);
 
-            return _mapper.Map<ViewNetwork>(entity);
+            return entity.ToViewNetwork();
         }
 
         public async Task<EffectiveNetworkPermission> GetEffectiveNetworkPermissions(

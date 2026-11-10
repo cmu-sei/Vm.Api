@@ -14,14 +14,12 @@ using System.Threading.Tasks;
 using System.Linq;
 using MediatR;
 using Player.Vm.Api.Data;
-using AutoMapper;
 using System.Runtime.Serialization;
 using Player.Vm.Api.Infrastructure.Exceptions;
 using System.Security.Claims;
 using System.Security.Principal;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
-using AutoMapper.QueryableExtensions;
 using Player.Vm.Api.Domain.Services;
 using Player.Vm.Api.Infrastructure.Authorization;
 
@@ -52,18 +50,15 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
         public class Handler : IRequestHandler<Command, VmUsageLoggingSession>
         {
             private readonly VmLoggingContext _db;
-            private readonly IMapper _mapper;
             private readonly IAuthorizationService _authorizationService;
             private readonly IPlayerService _playerService;
 
             public Handler(
                 VmLoggingContext db,
-                IMapper mapper,
                 IAuthorizationService authorizationService,
                 IPlayerService playerService)
             {
                 _db = db;
-                _mapper = mapper;
                 _authorizationService = authorizationService;
                 _playerService = playerService;
             }
@@ -78,9 +73,9 @@ namespace Player.Vm.Api.Features.VmUsageLoggingSession
                 if (!await _playerService.Can([], [entry.ViewId], [AppSystemPermission.ManageViews], [AppViewPermission.ManageView], [], cancellationToken))
                     throw new ForbiddenException("You do not have permission to edit the specified Vm Usage Log");
 
-                _mapper.Map(request, entry);
+                request.ApplyTo(entry);
                 await _db.SaveChangesAsync();
-                return _mapper.Map<VmUsageLoggingSession>(entry);
+                return entry.ToVmUsageLoggingSession();
             }
         }
     }
