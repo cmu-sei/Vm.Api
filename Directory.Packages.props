@@ -21,7 +21,7 @@
   <!-- Application and data access. -->
   <ItemGroup>
     <PackageVersion Include="Riok.Mapperly" Version="4.3.1" />
-    <PackageVersion Include="MediatR" Version="12.4.1" /> <!-- DO NOT UPDATE. Version 13+ requires a license. Plan to migrate to something else. -->
+    <PackageVersion Include="MediatR" Version="12.5.0" /> <!-- DO NOT UPDATE. Version 13+ requires a license. Plan to migrate to something else. -->
     <PackageVersion Include="Crucible.Common.EntityEvents" Version="0.2.1" />
     <PackageVersion Include="Crucible.Common.ServiceDefaults" Version="0.0.3" />
     <PackageVersion Include="DiscUtils.Iso9660" Version="0.16.13" />
@@ -32,26 +32,26 @@
     <PackageVersion Include="IdentityModel" Version="5.2.0" />
     <PackageVersion Include="Nito.AsyncEx" Version="5.1.2" />
     <PackageVersion Include="Player.Api.Client" Version="3.5.1" />
-    <PackageVersion Include="Polly" Version="8.6.5" />
+    <PackageVersion Include="Polly" Version="8.9.0" />
     <!-- The xAPI statement model, for the learning-record-store queue. -->
     <PackageVersion Include="TinCanStandard" Version="1.5.0" />
   </ItemGroup>
 
   <!-- The hypervisors. -->
   <ItemGroup>
-    <PackageVersion Include="Corsinvest.ProxmoxVE.Api" Version="9.2.1" />
-    <PackageVersion Include="Corsinvest.ProxmoxVE.Api.Extension" Version="9.2.1" />
+    <PackageVersion Include="Corsinvest.ProxmoxVE.Api" Version="9.2.5" />
+    <PackageVersion Include="Corsinvest.ProxmoxVE.Api.Extension" Version="9.2.5" />
     <PackageVersion Include="VimClient" Version="7.0.0" />
   </ItemGroup>
 
   <!-- EF Core and its providers. All four providers ship in the image: Postgres is production, and
        Database:Provider selects among them. -->
   <ItemGroup>
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.13" />
-    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.0" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.14" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
   </ItemGroup>
 
   <!-- ASP.NET Core, diagnostics and API surface. -->
@@ -62,10 +62,10 @@
     <PackageVersion Include="AspNetCore.HealthChecks.UI" Version="9.0.0" />
     <PackageVersion Include="AspNetCore.HealthChecks.UI.Client" Version="9.0.0" />
     <PackageVersion Include="AspNetCore.HealthChecks.UI.InMemory.Storage" Version="9.0.0" />
-    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.13" />
-    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.13" />
-    <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.1.0" />
-    <PackageVersion Include="Swashbuckle.AspNetCore.Annotations" Version="10.1.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.14" />
+    <PackageVersion Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="10.0.14" />
+    <PackageVersion Include="Swashbuckle.AspNetCore" Version="10.3.1" />
+    <PackageVersion Include="Swashbuckle.AspNetCore.Annotations" Version="10.3.1" />
   </ItemGroup>
 
   <!-- The generated client, which targets netstandard2.0 and is released separately. -->
@@ -79,18 +79,18 @@
     <!-- Hosts the application in process for the endpoint tests. Tied to the ASP.NET Core version, so
          it tracks Microsoft.AspNetCore.Authentication.JwtBearer above rather than the test-tool
          versions around it. -->
-    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.13" />
+    <PackageVersion Include="Microsoft.AspNetCore.Mvc.Testing" Version="10.0.14" />
     <!-- The SignalR client, for connecting to the hubs the way the Angular UI does. Tied to the
          ASP.NET Core version for the same reason Mvc.Testing is: it has to speak the protocol the
          hosted server negotiates. -->
-    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.13" />
-    <PackageVersion Include="NSubstitute" Version="6.0.0" />
+    <PackageVersion Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.14" />
+    <PackageVersion Include="NSubstitute" Version="6.2.0" />
     <!-- Coverage collection, and inert until it is asked for: the Microsoft.Testing.Platform form of
          coverlet only instruments when a run asks for coverage, so a plain `dotnet test` neither
          instruments the assembly nor pays for it. `scripts/coverage.sh` is what turns it on. -->
-    <PackageVersion Include="coverlet.MTP" Version="10.0.1" />
-    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.15.0" />
-    <PackageVersion Include="xunit.v3" Version="4.0.1" />
+    <PackageVersion Include="coverlet.MTP" Version="10.1.0" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.16.0" />
+    <PackageVersion Include="xunit.v3" Version="4.0.3" />
   </ItemGroup>
 
   <!--
@@ -101,9 +101,9 @@
   -->
   <ItemGroup>
     <!-- Through Microsoft.Data.SqlClient, which carries 9.0.11 even under EF Core 10.0.13. -->
-    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.13" />
+    <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.14" />
     <!-- Through Swashbuckle.AspNetCore 10.1.0, which carries 2.3.0. -->
-    <PackageVersion Include="Microsoft.OpenApi" Version="2.7.5" />
+    <PackageVersion Include="Microsoft.OpenApi" Version="2.13.0" />
     <!-- Through AspNetCore.HealthChecks.UI 9.0.0, which carries 15.0.1. Only the UI's Kubernetes
          service discovery uses it, and this API does not turn that on. -->
     <PackageVersion Include="KubernetesClient" Version="17.0.14" />
