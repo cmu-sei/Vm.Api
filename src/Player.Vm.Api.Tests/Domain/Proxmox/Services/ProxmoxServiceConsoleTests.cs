@@ -28,8 +28,9 @@ namespace Player.Vm.Api.Tests.Domain.Proxmox.Services;
 /// <para>
 /// This class also carries the coverage for the private <c>ResolveNode</c>, of which
 /// <c>GetConsole</c> is the simplest caller: the same node refresh sits in front of
-/// <c>GetVmConfigSummary</c>, <c>ChangeNetwork</c>, <c>MountIso</c>, <c>GetCurrentNodeForVm</c> and the
-/// stale-node retry in <c>BulkPowerOperation</c>.
+/// <c>GetVmConfigSummary</c>, <c>ChangeNetwork</c>, <c>MountIso</c>, <c>GetCurrentNodeForVm</c>, the
+/// stale-node retry in <c>BulkPowerOperation</c>, and the retry-on-refusal (<c>OnCurrentNode</c>) the
+/// single-Vm power, snapshot and guest-agent calls go through.
 /// </para>
 /// <para>
 /// Every service here is built with a null <c>VmContext</c>, which is an assertion in itself: a console

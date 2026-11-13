@@ -6,8 +6,10 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Microsoft.CSharp.RuntimeBinder;
+using NSubstitute;
 using Player.Vm.Api.Domain.Models;
 using Player.Vm.Api.Domain.Proxmox.Services;
+using Player.Vm.Api.Infrastructure.Exceptions;
 using Player.Vm.Api.Tests.Support;
 
 namespace Player.Vm.Api.Tests.Domain.Proxmox.Services;
@@ -265,7 +267,7 @@ public class ProxmoxServiceSnapshotTests
         Assert.Equal(
             """{"snapname":"snap1","description":"before patching","vmstate":1}""",
             cluster.Request(HttpMethod.Post, path).Body);
-        Assert.Equal([path], cluster.Http.Paths);
+        Assert.Equal([path, ConfigPath(info)], cluster.Http.Paths);
     }
 
     // Not asking for RAM is a different body, not a different route. Pinned as an exact body because
@@ -313,7 +315,7 @@ public class ProxmoxServiceSnapshotTests
         Assert.Equal(
             """{"snapname":"snap1","description":"before patching"}""",
             cluster.Request(HttpMethod.Post, path).Body);
-        Assert.Equal([$"api2/json/nodes/pve1/lxc/{Vmid}/snapshot"], cluster.Http.Paths);
+        Assert.Equal([$"api2/json/nodes/pve1/lxc/{Vmid}/snapshot", ConfigPath(info)], cluster.Http.Paths);
     }
 
     // The string reaches the API response verbatim, for both machine types.
@@ -422,6 +424,62 @@ public class ProxmoxServiceSnapshotTests
 
     #endregion
 
+    #region RevertToCurrentSnapshot
+
+    // The snapshot to revert to is the one the config names as the running state's parent, read first and
+    // then rolled back on its own route - for each machine type through its own config and snapshot routes.
+    [Theory]
+    [InlineData(ProxmoxVmType.QEMU)]
+    [InlineData(ProxmoxVmType.LXC)]
+    public async Task RevertToCurrentSnapshot_RollsBackTheSnapshotTheConfigNamesAsParent(ProxmoxVmType type)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, type);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"parent":"before-patching"}""");
+        cluster.Accepts($"POST {SnapshotPath(info)}/before-patching/rollback");
+
+        var reported = await cluster.Service().RevertToCurrentSnapshot(info);
+
+        Assert.Equal($"vmid {Vmid} reverted to its current snapshot", reported);
+        Assert.Equal(
+            [FakeProxmoxCluster.VmPath(info, "/config"), $"{SnapshotPath(info)}/before-patching/rollback"],
+            cluster.Http.Paths);
+        cluster.State.Received(1).CheckState();
+    }
+
+    // No parent is no snapshot to revert to, which is the caller's problem rather than the server's - a 400
+    // with a sentence a user can read - and nothing is rolled back.
+    [Fact]
+    public async Task RevertToCurrentSnapshot_WithNoSnapshot_IsABadRequestAndRollsNothingBack()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"name":"vm"}""");
+
+        var ex = await Assert.ThrowsAsync<BadRequestException>(
+            () => cluster.Service().RevertToCurrentSnapshot(info));
+
+        Assert.Equal("This virtual machine has no snapshot to revert to.", ex.Message);
+        Assert.DoesNotContain(cluster.Http.Sent, x => x.Method == HttpMethod.Post);
+        cluster.State.DidNotReceive().CheckState();
+    }
+
+    // A refused config read is reported as the revert failing, with what Proxmox said.
+    [Fact]
+    public async Task RevertToCurrentSnapshot_WhenTheConfigCannotBeRead_ThrowsWithProxmoxsReason()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Rejects($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", "no such VM");
+
+        var ex = await Assert.ThrowsAsync<ProxmoxRequestRefusedException>(() => cluster.Service().RevertToCurrentSnapshot(info));
+
+        Assert.StartsWith("Revert failed: ", ex.Message);
+        Assert.EndsWith("no such VM", ex.Message);
+    }
+
+    #endregion
+
     #region DeleteSnapshot
 
     // DELETE on the snapshot's own route, and note what is not there: no /delsnapshot segment, despite
@@ -440,7 +498,7 @@ public class ProxmoxServiceSnapshotTests
 
         await cluster.Service().DeleteSnapshot(info, Snap);
 
-        Assert.Equal([$"api2/json/nodes/pve1/{segment}/{Vmid}/snapshot/{Snap}"], cluster.Http.Paths);
+        Assert.Equal([$"api2/json/nodes/pve1/{segment}/{Vmid}/snapshot/{Snap}", ConfigPath(info)], cluster.Http.Paths);
         Assert.Equal(string.Empty, cluster.Request(HttpMethod.Delete, path).Query);
     }
 
@@ -474,27 +532,148 @@ public class ProxmoxServiceSnapshotTests
 
     #endregion
 
+    #region Recording HasSnapshot
+
+    // Bulk Revert decides from the stored HasSnapshot, so a create or delete records it from the
+    // config's parent straight away instead of leaving it to the poller's next guest-state read: a
+    // revert right after the first snapshot would otherwise be refused, and one right after the last
+    // was deleted accepted and then failed.
+    [Fact]
+    public async Task CreateSnapshot_RecordsThatTheVmNowHasASnapshot()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        info.VmId = Guid.NewGuid();
+        cluster.Accepts($"POST {SnapshotPath(info)}");
+        cluster.Answers($"GET {ConfigPath(info)}", """{"parent":"snap1"}""");
+
+        await cluster.Service().CreateSnapshot(info, Snap, "before patching", includeRam: false);
+
+        await cluster.State.Received(1).SetHasSnapshot(info.VmId, true);
+    }
+
+    // PVE leaves "parent" out of the config once no snapshot is current.
+    [Theory]
+    [InlineData(ProxmoxVmType.QEMU)]
+    [InlineData(ProxmoxVmType.LXC)]
+    public async Task DeleteSnapshot_OfTheLastSnapshot_RecordsThatTheVmHasNone(ProxmoxVmType type)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, type);
+        info.VmId = Guid.NewGuid();
+        cluster.Accepts($"DELETE {SnapshotPath(info)}/{Snap}");
+        cluster.Answers($"GET {ConfigPath(info)}", """{"name":"vm"}""");
+
+        await cluster.Service().DeleteSnapshot(info, Snap);
+
+        await cluster.State.Received(1).SetHasSnapshot(info.VmId, false);
+    }
+
+    // Deleting one snapshot of several leaves the parent pointing at another, so the Vm still has one.
+    [Fact]
+    public async Task DeleteSnapshot_WithAnotherStillCurrent_RecordsThatTheVmStillHasOne()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        info.VmId = Guid.NewGuid();
+        cluster.Accepts($"DELETE {SnapshotPath(info)}/{Snap}");
+        cluster.Answers($"GET {ConfigPath(info)}", """{"parent":"snap0"}""");
+
+        await cluster.Service().DeleteSnapshot(info, Snap);
+
+        await cluster.State.Received(1).SetHasSnapshot(info.VmId, true);
+    }
+
+    // The snapshot change has already happened by the time the config is read, so failing to read it
+    // must not turn a success into an error; the poller will catch up.
+    [Fact]
+    public async Task CreateSnapshot_WhenTheConfigCannotBeRead_StillSucceedsAndRecordsNothing()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Accepts($"POST {SnapshotPath(info)}");
+
+        Assert.Equal(
+            $"snapshot {Snap} created on vmid {Vmid}",
+            await cluster.Service().CreateSnapshot(info, Snap, "before patching", includeRam: false));
+
+        await cluster.State.DidNotReceiveWithAnyArgs().SetHasSnapshot(default, default);
+    }
+
+    #endregion
+
     #region The node the caller holds
 
-    /// <summary>Each snapshot operation is addressed to the node the caller's <c>ProxmoxVmInfo</c> names, without resolving it.</summary>
+    /// <summary>
+    /// Each snapshot operation is addressed to the node the caller's <c>ProxmoxVmInfo</c> names, and costs no
+    /// /cluster/resources read when that node is right.
+    /// </summary>
     [Theory]
     [InlineData("GetSnapshots")]
     [InlineData("CreateSnapshot")]
     [InlineData("RevertSnapshot")]
     [InlineData("DeleteSnapshot")]
-    public async Task SnapshotOperation_IsAddressedToTheStaleNodeTheCallerHoldsRatherThanResolvingIt(
-        string operation)
+    public async Task SnapshotOperation_OnTheRightNode_DoesNotResolveIt(string operation)
     {
         var cluster = new FakeProxmoxCluster();
         var info = cluster.Has(Vmid, node: "pve1");
-        cluster.Migrates(Vmid, "pve7");
         Arrange(cluster, info);
 
         await Run(cluster.Service(), info, operation);
 
-        // Every path begins pve1, and /cluster/resources - the read ResolveNode would have made, and the
-        // only thing that could have discovered pve7 - was never asked for.
         Assert.All(cluster.Http.Paths, x => Assert.StartsWith("api2/json/nodes/pve1/", x));
+    }
+
+    /// <summary>
+    /// After a migration the state poller has not caught up with, PVE refuses the operation on the
+    /// node the machine has left. The node is re-resolved and the operation sent once more where the machine
+    /// now is, so the caller sees it succeed on the first attempt.
+    /// </summary>
+    [Theory]
+    [InlineData("GetSnapshots")]
+    [InlineData("CreateSnapshot")]
+    [InlineData("RevertSnapshot")]
+    [InlineData("DeleteSnapshot")]
+    [InlineData("RevertToCurrentSnapshot")]
+    public async Task SnapshotOperation_AfterAMigration_IsSentAgainToTheNewNode(string operation)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var stale = cluster.Has(Vmid, node: "pve1");
+        cluster.Migrates(Vmid, "pve7");
+        var live = new ProxmoxVmInfo { Id = Vmid, Node = "pve7", Type = ProxmoxVmType.QEMU };
+        cluster.Rejects($"GET {SnapshotPath(stale)}", "does not exist");
+        cluster.Rejects($"POST {SnapshotPath(stale)}", "does not exist");
+        cluster.Rejects($"POST {SnapshotPath(stale)}/{Snap}/rollback", "does not exist");
+        cluster.Rejects($"DELETE {SnapshotPath(stale)}/{Snap}", "does not exist");
+        cluster.Rejects($"GET {FakeProxmoxCluster.VmPath(stale, "/config")}", "does not exist");
+        Arrange(cluster, live);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(live, "/config")}", $$"""{"parent":"{{Snap}}"}""");
+
+        await Run(cluster.Service(), stale, operation);
+
+        Assert.StartsWith("api2/json/nodes/pve7/", cluster.Http.Paths[^1]);
+        Assert.Contains(FakeProxmoxCluster.ClusterResources, cluster.Http.Paths);
+        Assert.Equal("pve7", stale.Node);
+    }
+
+    /// <summary>
+    /// A refusal on a node the machine has not left is reported as it was, after one resolve, rather than
+    /// sent a second time - a snapshot name already in use is not made better by asking twice.
+    /// </summary>
+    [Fact]
+    public async Task CreateSnapshot_RefusedOnTheRightNode_IsNotSentTwice()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Rejects($"POST {SnapshotPath(info)}", "snapshot name 'snap1' already used");
+
+        var ex = await Assert.ThrowsAsync<ProxmoxRequestRefusedException>(
+            () => cluster.Service().CreateSnapshot(info, Snap, "again", includeRam: false));
+
+        Assert.StartsWith("Create Snapshot failed: ", ex.Message);
+        Assert.EndsWith("snapshot name 'snap1' already used", ex.Message);
+
+        Assert.Single(cluster.Requests(HttpMethod.Post, SnapshotPath(info)));
     }
 
     #endregion
@@ -526,6 +705,9 @@ public class ProxmoxServiceSnapshotTests
             case "DeleteSnapshot":
                 await service.DeleteSnapshot(info, Snap);
                 break;
+            case "RevertToCurrentSnapshot":
+                await service.RevertToCurrentSnapshot(info);
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(operation));
         }
@@ -533,6 +715,9 @@ public class ProxmoxServiceSnapshotTests
 
     private static string SnapshotPath(ProxmoxVmInfo info) =>
         FakeProxmoxCluster.VmPath(info, "/snapshot");
+
+    private static string ConfigPath(ProxmoxVmInfo info) =>
+        FakeProxmoxCluster.VmPath(info, "/config");
 
     /// <summary>One snapshot entry with every field but <paramref name="omitted"/>, which is left out.</summary>
     private static string Fields(string omitted) =>

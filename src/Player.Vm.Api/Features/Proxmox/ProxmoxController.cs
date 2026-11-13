@@ -192,8 +192,29 @@ public class ProxmoxController : Controller
     }
 
     /// <summary>
-    /// Upload a file to a proxmox virtual machine via qemu-guest-agent (limited to ~60 KiB per file)
+    /// Download a file from the guest OS of a proxmox virtual machine via qemu-guest-agent, as raw bytes
     /// </summary>
+    /// <remarks>
+    /// Any file content, binary included, up to Proxmox's 16 MiB read limit; a larger file is a 400. The
+    /// response's Content-Disposition carries the file name from the path.
+    /// </remarks>
+    /// <param name="id">The virtual machine.</param>
+    /// <param name="path">The file's path in the guest.</param>
+    [HttpGet("vms/proxmox/{id}/actions/download-file")]
+    [Produces("application/octet-stream")]
+    [ProducesResponseType(typeof(FileResult), (int)HttpStatusCode.OK, "application/octet-stream")]
+    [SwaggerOperation(OperationId = "downloadFileFromProxmoxVirtualMachine")]
+    public async Task<IActionResult> DownloadFile([FromRoute] Guid id, [FromQuery] string path)
+    {
+        return await _mediator.Send(new DownloadFile.Query { Id = id, Path = path });
+    }
+
+    /// <summary>
+    /// Upload a file to a proxmox virtual machine via qemu-guest-agent (limited to 45 KB per file)
+    /// </summary>
+    /// <remarks>
+    /// Any file content, binary included. A file over the limit is a 400 whose message states the limit in KB.
+    /// </remarks>
     [HttpPost("vms/proxmox/{id}/actions/upload-file"), DisableRequestSizeLimit]
     [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
     [SwaggerOperation(OperationId = "uploadFileToProxmoxVirtualMachine")]
@@ -238,6 +259,21 @@ public class ProxmoxController : Controller
     public async Task<IActionResult> RevertSnapshot([FromRoute] Guid id, [FromRoute] string name)
     {
         var result = await _mediator.Send(new RevertSnapshot.Command { Id = id, SnapshotName = name });
+        return Json(result);
+    }
+
+    /// <summary>
+    /// Revert a proxmox virtual machine to its current snapshot (the snapshot it is running from)
+    /// </summary>
+    /// <remarks>
+    /// Answers 400 when the virtual machine has no snapshot.
+    /// </remarks>
+    [HttpPost("vms/proxmox/{id}/actions/revert")]
+    [ProducesResponseType(typeof(string), (int)HttpStatusCode.OK)]
+    [SwaggerOperation(OperationId = "revertProxmoxVirtualMachine")]
+    public async Task<IActionResult> Revert([FromRoute] Guid id)
+    {
+        var result = await _mediator.Send(new Revert.Command { Id = id });
         return Json(result);
     }
 

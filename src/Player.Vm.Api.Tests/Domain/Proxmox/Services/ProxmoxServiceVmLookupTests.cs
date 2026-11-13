@@ -237,28 +237,40 @@ public class ProxmoxServiceVmLookupTests(DatabaseFixture fixture) : DatabaseTest
     }
 
     /// <summary>
-    /// Revert has no case in the switch, and the message that reaches the caller is the
-    /// <see cref="NotSupportedException"/>'s - turned into a per-Vm entry rather than thrown out of the
-    /// call.
+    /// Revert is "revert to the current snapshot", as it is for vSphere: the config's parent is read and its
+    /// rollback submitted without waiting for the task, which the task poller observes like any other.
     /// </summary>
-    /// <remarks>
-    /// Reachable, not theoretical: <c>PowerOperation.Revert</c> is a value of the enum the API binds, and
-    /// vSphere handles it here by reverting to the current snapshot. So the same request that reverts a
-    /// vSphere Vm answers this for a Proxmox one - and with a different string again ("Unsupported
-    /// Operation" over there), which is the kind of divergence only a pair of pinned drivers shows.
-    /// </remarks>
     [Fact]
-    public async Task BulkPowerOperation_ForRevert_ReportsThatProxmoxDoesNotSupportItRatherThanThrowing()
+    public async Task BulkPowerOperation_ForRevert_SubmitsARollbackToTheCurrentSnapshot()
     {
         var cluster = new FakeProxmoxCluster();
-        await SeedVm(cluster.Has(Vmid, vmId: VmA));
+        var info = cluster.Has(Vmid, vmId: VmA);
+        await SeedVm(info);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"parent":"snap1"}""");
+        var rollback = FakeProxmoxCluster.VmPath(info, "/snapshot/snap1/rollback");
+        cluster.Accepts($"POST {rollback}");
 
         var results = await cluster.Service(Db).BulkPowerOperation([VmA], PowerOperation.Revert);
 
-        Assert.Equal("Revert is not supported on Proxmox virtual machines.", results[VmA]);
+        Assert.Equal(string.Empty, results[VmA]);
+        Assert.Single(cluster.Requests(HttpMethod.Post, rollback));
+    }
 
-        // The throw happens before any request is built, so the cluster hears nothing at all.
-        Assert.Empty(cluster.Http.Sent);
+    /// <summary>
+    /// A Vm with no snapshot is one entry in the results, not a failed batch, and nothing is rolled back.
+    /// </summary>
+    [Fact]
+    public async Task BulkPowerOperation_ForRevertOfAVmWithNoSnapshot_ReportsItWithoutRollingBack()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, vmId: VmA);
+        await SeedVm(info);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", "{}");
+
+        var results = await cluster.Service(Db).BulkPowerOperation([VmA], PowerOperation.Revert);
+
+        Assert.Equal("This virtual machine has no snapshot to revert to.", results[VmA]);
+        Assert.DoesNotContain(cluster.Http.Sent, x => x.Method == HttpMethod.Post);
     }
 
     // The stale-node retry, which is what makes a bulk power operation survive a migration. The stored

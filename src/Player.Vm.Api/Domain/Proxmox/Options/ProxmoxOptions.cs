@@ -13,14 +13,30 @@ namespace Player.Vm.Api.Domain.Proxmox.Options
 
         public int StateRefreshIntervalSeconds { get; set; }
 
+        // How often the state poller reads per-Vm state (snapshot, IP addresses), which costs a request or
+        // two per tracked Vm rather than one for the whole cluster. The read runs beside the power-state
+        // passes, one at a time, so a slow guest agent never delays power state. A CheckState nudge does
+        // not force one. Zero or less: whenever the last read has finished.
+        public int GuestStateRefreshIntervalSeconds { get; set; } = 30;
+
+        // How many Vms the state poller reads per-Vm state for (config, guest agent) at once. Each pass
+        // makes one or two requests per tracked Vm, so this bounds the burst against pveproxy.
+        public int GuestStateParallelism { get; set; } = 8;
+
         // How often ProxmoxTaskService polls cluster tasks while nothing is pending, and while at
         // least one task is still running. Mirrors the equivalent VsphereOptions settings.
         public int CheckTaskProgressIntervalMilliseconds { get; set; } = 5000;
         public int ReCheckTaskProgressIntervalMilliseconds { get; set; } = 1000;
 
-        // Maximum payload accepted by UploadFileToGuest. The QEMU guest agent's file-write is limited
-        // (~64 KiB per call), so this defaults to 60 KiB to stay safely under that ceiling.
+        // Maximum file size accepted by UploadFileToGuest, in bytes. PVE's agent/file-write caps its
+        // content at 61,440 characters and the file is sent base64-encoded (so binary files survive), so
+        // whatever this is set to, the effective limit is at most 46,080 bytes (45 KB).
         public int FileUploadMaxBytes { get; set; } = 61440;
+
+        // How long to wait on a guest-agent query made only to report status - agent/ping and the
+        // state poller's network-get-interfaces - before treating it as unanswered. PVE itself waits
+        // several seconds on an agent that is configured but not running in the guest.
+        public int GuestAgentTimeoutMilliseconds { get; set; } = 2000;
 
         // Interval, in milliseconds, between guest-agent exec-status polls while waiting for a
         // RunGuestProcess command to finish.
