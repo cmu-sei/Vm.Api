@@ -131,6 +131,7 @@ namespace Player.Vm.Api.Features.Proxmox
                 HasSnapshot = config.CurrentSnapshot != null,
                 CurrentSnapshot = config.CurrentSnapshot,
                 VncClipboardEnabled = config.VncClipboardEnabled,
+                FileUploadMaxBytes = _proxmoxService.UploadLimitBytes,
             };
         }
     }
