@@ -85,6 +85,20 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal<Guid>([teamId], body.TeamIds);
     }
 
+    // Caster's Terraform provider creates Vms with ManageViews and reads each one back; it holds no Vm
+    // permission and is on no team in the View.
+    [Fact]
+    public async Task Get_is_200_for_a_caller_holding_only_ManageViews()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ManageViews).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
     /// <summary>
     /// A missing Vm is a 404 - but by way of <c>EntityNotFoundException</c> from the service and the
     /// exception middleware, not the controller's own <c>if (vm == null) return NotFound(vm)</c>, which
