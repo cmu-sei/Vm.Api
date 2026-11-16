@@ -173,6 +173,17 @@ public class ProxmoxVmNetworkServiceTests
         Assert.Equal(enabled, response.VncClipboardEnabled);
     }
 
+    // Whether the display can resize is passed through from the same live config read.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CanResizeDisplay_ComesFromTheConfigSummary(bool resizable)
+    {
+        var (response, _) = await Respond(new ProxmoxVmConfigSummary([], false) { DisplayResizable = resizable });
+
+        Assert.Equal(resizable, response.CanResizeDisplay);
+    }
+
     // The upload limit is the one ProxmoxService enforces, so the console can refuse a file the API would
     // refuse, and a deployment that configures a lower FileUploadMaxBytes is reflected without a UI change.
     [Fact]
