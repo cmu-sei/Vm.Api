@@ -391,12 +391,12 @@ more correct.
 
 Restore-time warnings stay warnings, through `WarningsNotAsErrors`. NU1901 to NU1904 are the NuGet
 audit. `MediatR` 12 is pinned on purpose because version 13+ requires a commercial license.
-`Microsoft.NETCore.App` 2.1.0 arrives through `VimClient` and is the
-.NET Core 2.1 framework package, which cannot be raised to a fixed version on net10.0. The other
-transitive hits are raised by the security pins at the bottom of `Directory.Packages.props`, each
-commented with the dependency it comes through, and the test project names the
-`Microsoft.AspNetCore.App` framework so that restore prunes the packages it ships, as it does for the
-API. Check where it stands when bumping a dependency:
+`Directory.Build.props` prunes `Microsoft.NETCore.App` 2.1.0, the .NET Core 2.1 framework package
+that `VimClient` pulls in, so it is no longer an audit hit. The other transitive hits are raised by
+the security pins at the bottom of `Directory.Packages.props`, each commented with the dependency it
+comes through, and the test project names the `Microsoft.AspNetCore.App` framework so that restore
+prunes the packages it ships, as it does for the API. Check where it stands when bumping a
+dependency:
 
 ```bash
 dotnet list package --vulnerable --include-transitive
