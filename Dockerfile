@@ -27,7 +27,7 @@ EXPOSE 8080
 WORKDIR /app
 COPY --link --from=build /app .
 USER $APP_UID
-ENTRYPOINT ["dotnet", "Player.Vm.Api.dll"]
+ENTRYPOINT ["./Player.Vm.Api"]
 
 # Production stage
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-noble-chiseled AS prod
@@ -37,4 +37,4 @@ ENV DOTNET_HOSTBUILDER__RELOADCONFIGCHANGE=false
 EXPOSE 8080
 WORKDIR /app
 COPY --link --from=build /app .
-ENTRYPOINT ["dotnet", "Player.Vm.Api.dll"]
+ENTRYPOINT ["./Player.Vm.Api"]
