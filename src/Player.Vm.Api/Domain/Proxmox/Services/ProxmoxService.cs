@@ -502,12 +502,6 @@ public partial class ProxmoxService : IProxmoxService
     }
 
     /// <summary>
-    /// Whether a QEMU config's <c>vga</c> property turns on the VNC clipboard. It is a property string -
-    /// <c>std</c>, <c>virtio,memory=32</c>, <c>std,clipboard=vnc</c> and the like - and only the
-    /// <c>clipboard=vnc</c> option makes QEMU pass the guest's clipboard out over VNC, which is the only
-    /// way Copy in noVNC can return anything.
-    /// </summary>
-    /// <summary>
     /// Whether a QEMU config's <c>vga</c> property names a display adapter that follows a VNC client's
     /// SetDesktopSize: <c>virtio</c> or <c>virtio-gl</c>, the virtio-gpu adapters, which are the only
     /// ones QEMU passes the request to. The property string is <c>[[type=]&lt;type&gt;][,clipboard=vnc]
@@ -538,6 +532,12 @@ public partial class ProxmoxService : IProxmoxService
             || string.Equals(type, "virtio-gl", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>
+    /// Whether a QEMU config's <c>vga</c> property turns on the VNC clipboard. It is a property string -
+    /// <c>std</c>, <c>virtio,memory=32</c>, <c>std,clipboard=vnc</c> and the like - and only the
+    /// <c>clipboard=vnc</c> option makes QEMU pass the guest's clipboard out over VNC, which is the only
+    /// way Copy in noVNC can return anything.
+    /// </summary>
     internal static bool IsVncClipboardEnabled(object vga)
     {
         var text = vga?.ToString();
