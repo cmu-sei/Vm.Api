@@ -131,7 +131,7 @@ namespace Player.Vm.Api.Features.Vms
                     throw;
             }
 
-            return _mapper.Map<Vm>(vmEntity);
+            return vmEntity.ToVm(_consoleUrls);
         }
 
         public async Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct)
