@@ -181,6 +181,20 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         Assert.Equal(vm.Id, (await Service.GetRecordAsync(vm.Id, Ct)).Id);
     }
 
+    // A global reader is answered by the Vm permission alone: the manage lookup, which asks Player about
+    // each team's View, is never made, so a team whose View is gone cannot turn the read into an error.
+    [Fact]
+    public async Task GetRecord_for_a_global_Vm_reader_makes_no_manage_lookup()
+    {
+        var vm = Vm(teamIds: [Guid.NewGuid()]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppSystemPermission.ViewVms));
+
+        var service = Service;
+        Assert.Equal(vm.Id, (await service.GetRecordAsync(vm.Id, Ct)).Id);
+        Assert.Empty(_spy.CallsTo(nameof(IPlayerService.CanManageTeams)));
+    }
+
     [Fact]
     public async Task GetRecord_is_forbidden_without_a_manage_or_Vm_permission()
     {

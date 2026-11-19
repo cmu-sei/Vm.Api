@@ -1,4 +1,4 @@
-// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
+﻿// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using Microsoft.EntityFrameworkCore;
@@ -116,10 +116,20 @@ namespace Player.Vm.Api.Features.Vms
             if (vmEntity == null)
                 throw new EntityNotFoundException<Vm>();
 
-            var teamIds = vmEntity.VmTeams.Select(v => v.TeamId).Distinct();
-
-            if (!await _playerService.CanManageTeams(teamIds, ct))
+            // A Vm permission is asked first: a global reader is answered without any scoped lookup,
+            // which can fail on its own (a team whose View is gone from Player). The manage permission
+            // is only the fallback for a caller the Vm permission refused.
+            try
+            {
                 await CanAccessVm(vmEntity, ct);
+            }
+            catch (ForbiddenException)
+            {
+                var teamIds = vmEntity.VmTeams.Select(v => v.TeamId).Distinct();
+
+                if (!await _playerService.CanManageTeams(teamIds, ct))
+                    throw;
+            }
 
             return _mapper.Map<Vm>(vmEntity);
         }
