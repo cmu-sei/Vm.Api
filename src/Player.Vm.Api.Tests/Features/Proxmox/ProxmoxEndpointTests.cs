@@ -889,6 +889,23 @@ public class ProxmoxEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.True(body.RootElement.GetProperty("vncClipboardEnabled").GetBoolean());
     }
 
+    /// <summary>
+    /// The resizable-display flag reaches the wire as <c>canResizeDisplay</c>, which the console reads to
+    /// decide whether to offer Match Window Size.
+    /// </summary>
+    [Fact]
+    public async Task Get_ReportsTheResizableDisplayFlagUnderItsWireName()
+    {
+        var vm = await SeedProxmoxVm();
+        Factory.Proxmox.GetVmConfigSummary(Arg.Any<ProxmoxVmInfo>(), Arg.Any<CancellationToken>())
+            .Returns(new ProxmoxVmConfigSummary(new() { ["net0"] = "vmbr0" }, true) { DisplayResizable = true });
+
+        var response = await RootClient.GetAsync(Route(vm.Id), Ct);
+        using var body = JsonDocument.Parse(await response.Content.ReadAsStringAsync(Ct));
+
+        Assert.True(body.RootElement.GetProperty("canResizeDisplay").GetBoolean());
+    }
+
     [Fact]
     public async Task Get_WithNoNetworksRegistered_ReportsTheNicConfigurationAsUnavailable()
     {

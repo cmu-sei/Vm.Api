@@ -38,4 +38,13 @@ public class ProxmoxVirtualMachine
     // Copy. Copy also needs spice-vdagent running in the guest, which the config cannot tell us. Always
     // false for LXC.
     public bool VncClipboardEnabled { get; set; }
+
+    // Whether the Vm's display adapter can change resolution when the console asks (virtio or virtio-gl),
+    // so the console offers Match Window Size only where it can work. Always false for LXC.
+    public bool CanResizeDisplay { get; set; }
+
+    // The largest file actions/upload-file accepts, in bytes: the deployment's FileUploadMaxBytes,
+    // capped at what PVE's agent/file-write can take. Lets the console refuse a larger file before
+    // sending it, since the API can only refuse it once the whole file has arrived.
+    public int FileUploadMaxBytes { get; set; }
 }

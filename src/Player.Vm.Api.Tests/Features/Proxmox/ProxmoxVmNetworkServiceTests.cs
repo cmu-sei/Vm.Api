@@ -172,4 +172,41 @@ public class ProxmoxVmNetworkServiceTests
 
         Assert.Equal(enabled, response.VncClipboardEnabled);
     }
+
+    // Whether the display can resize is passed through from the same live config read.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task CanResizeDisplay_ComesFromTheConfigSummary(bool resizable)
+    {
+        var (response, _) = await Respond(new ProxmoxVmConfigSummary([], false) { DisplayResizable = resizable });
+
+        Assert.Equal(resizable, response.CanResizeDisplay);
+    }
+
+    // The upload limit is the one ProxmoxService enforces, so the console can refuse a file the API would
+    // refuse, and a deployment that configures a lower FileUploadMaxBytes is reflected without a UI change.
+    [Fact]
+    public async Task FileUploadMaxBytes_IsTheLimitTheUploadEnforces()
+    {
+        var vm = Vm(ProxmoxVmType.QEMU);
+        var proxmox = Substitute.For<IProxmoxService>();
+        proxmox.GetVmConfigSummary(vm.ProxmoxVmInfo, Arg.Any<CancellationToken>())
+            .Returns(new ProxmoxVmConfigSummary([], false));
+        proxmox.UploadLimitBytes.Returns(2048);
+
+        var service = new ProxmoxVmNetworkService(
+            Substitute.For<IViewService>(),
+            Substitute.For<INetworkService>(),
+            proxmox,
+            new ProxmoxOptions { Host = "pve.example.test" },
+            [IsoProvider(true)]);
+
+        var response = await service.ToResponse(
+            vm,
+            new ProxmoxNetworkPermissions(ViewId, new EffectiveNetworkPermission()),
+            CancellationToken.None);
+
+        Assert.Equal(2048, response.FileUploadMaxBytes);
+    }
 }
