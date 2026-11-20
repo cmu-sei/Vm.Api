@@ -1,4 +1,4 @@
-// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
+﻿// Copyright 2022 Carnegie Mellon University. All Rights Reserved.
 // Released under a MIT (SEI)-style license. See LICENSE.md in the project root for license information.
 
 using Microsoft.EntityFrameworkCore;
@@ -25,6 +25,7 @@ namespace Player.Vm.Api.Features.Vms
 
         Task<Vm[]> GetAllAsync(CancellationToken ct);
         Task<Vm> GetAsync(Guid id, CancellationToken ct);
+        Task<Vm> GetRecordAsync(Guid id, CancellationToken ct);
         Task<IEnumerable<Vm>> GetByTeamIdAsync(Guid teamId, string name, bool includePersonal, bool onlyMine, CancellationToken ct);
         Task<IEnumerable<Vm>> GetByViewIdAsync(Guid viewId, string name, bool includePersonal, bool onlyMine, CancellationToken ct);
         Task<IEnumerable<Vm>> GetAllByViewIdAsync(Guid viewId, CancellationToken ct);
@@ -97,6 +98,40 @@ namespace Player.Vm.Api.Features.Vms
             await CanAccessVm(vmEntity, ct);
             var model = vmEntity.ToVm(_consoleUrls);
             return model;
+        }
+
+        /// <summary>
+        /// The Vm for GET vms/{id}. A caller who may update or delete the Vm may also read it back, so
+        /// an automation account that creates Vms with a manage permission (Caster's Terraform provider)
+        /// can confirm what it wrote. This is only the record: consoles, power and the other Vm
+        /// operations still go through <see cref="GetAsync"/> and need a Vm permission.
+        /// </summary>
+        public async Task<Vm> GetRecordAsync(Guid id, CancellationToken ct)
+        {
+            var vmEntity = await _context.Vms
+                .Include(v => v.VmTeams)
+                .Where(v => v.Id == id)
+                .SingleOrDefaultAsync(ct);
+
+            if (vmEntity == null)
+                throw new EntityNotFoundException<Vm>();
+
+            // A Vm permission is asked first: a global reader is answered without any scoped lookup,
+            // which can fail on its own (a team whose View is gone from Player). The manage permission
+            // is only the fallback for a caller the Vm permission refused.
+            try
+            {
+                await CanAccessVm(vmEntity, ct);
+            }
+            catch (ForbiddenException)
+            {
+                var teamIds = vmEntity.VmTeams.Select(v => v.TeamId).Distinct();
+
+                if (!await _playerService.CanManageTeams(teamIds, ct))
+                    throw;
+            }
+
+            return vmEntity.ToVm(_consoleUrls);
         }
 
         public async Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct)

@@ -47,6 +47,9 @@ namespace Player.Vm.Api.Features.Vms
         /// <summary>
         /// Retrieve a single Vm by Id
         /// </summary>
+        /// <remarks>
+        /// Needs a Vm read permission, or the permission to update or delete this Vm.
+        /// </remarks>
         /// <param name="id">The Id of the Vm</param>
         /// <param name="ct"></param>
         /// <returns></returns>
@@ -56,7 +59,7 @@ namespace Player.Vm.Api.Features.Vms
         [SwaggerOperation(OperationId = "getVm")]
         public async Task<IActionResult> Get(Guid id, CancellationToken ct)
         {
-            var vm = await _vmService.GetAsync(id, ct);
+            var vm = await _vmService.GetRecordAsync(id, ct);
 
             if (vm == null)
                 return NotFound(vm);
