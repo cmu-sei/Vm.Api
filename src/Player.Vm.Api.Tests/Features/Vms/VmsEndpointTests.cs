@@ -1692,9 +1692,26 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal("after", context.Vms.Single(x => x.Id == vm.Id).Name);
     }
 
-    // Same case as Update_by_a_caller_holding_ManageTeam_on_the_Vms_team_is_403_and_leaves_the_name.
+    // Over HTTP, so the update runs on a request's own context, which has not loaded the Vm's teams.
     [Fact]
-    public async Task Update_by_a_caller_holding_ManageView_on_the_Vms_view_is_403_and_leaves_the_name()
+    public async Task Update_is_allowed_for_a_caller_holding_exactly_ManageTeam_on_the_Vms_team()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = Vm([teamId], name: "before");
+        await Seed(vm);
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, teamId).SeedAsync();
+
+        var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        Assert.Equal<Guid>([teamId], (await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct)).TeamIds);
+
+        await using var context = NewContext();
+        Assert.Equal("after", context.Vms.Single(x => x.Id == vm.Id).Name);
+    }
+
+    [Fact]
+    public async Task Update_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_Vms_view()
     {
         var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
         Factory.Player.PlaceTeam(teamId, viewId);
@@ -1704,26 +1721,10 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-        await using var context = NewContext();
-        Assert.Equal("before", context.Vms.Single(x => x.Id == vm.Id).Name);
-    }
-
-    /// <summary>A caller holding ManageTeam on the Vm's only team is refused the update.</summary>
-    [Fact]
-    public async Task Update_by_a_caller_holding_ManageTeam_on_the_Vms_team_is_403_and_leaves_the_name()
-    {
-        var teamId = Guid.NewGuid();
-        var vm = Vm([teamId], name: "before");
-        await Seed(vm);
-        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, teamId).SeedAsync();
-
-        var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
-
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await AssertStatus(HttpStatusCode.OK, response);
 
         await using var context = NewContext();
-        Assert.Equal("before", context.Vms.Single(x => x.Id == vm.Id).Name);
+        Assert.Equal("after", context.Vms.Single(x => x.Id == vm.Id).Name);
     }
 
     [Fact]

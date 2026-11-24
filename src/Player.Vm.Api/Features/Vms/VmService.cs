@@ -451,7 +451,11 @@ namespace Player.Vm.Api.Features.Vms
 
         public async Task<Vm> UpdateAsync(Guid id, VmUpdateForm form, CancellationToken ct)
         {
-            var vmEntity = await _context.Vms.Where(v => v.Id == id).SingleOrDefaultAsync(ct);
+            // The teams are what the manage permission is checked against; without them only ManageViews passes.
+            var vmEntity = await _context.Vms
+                .Include(v => v.VmTeams)
+                .Where(v => v.Id == id)
+                .SingleOrDefaultAsync(ct);
 
             if (vmEntity == null)
                 throw new EntityNotFoundException<Vm>();
