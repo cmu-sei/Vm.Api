@@ -149,6 +149,190 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
     #endregion
 
+    #region GetRecordAsync
+
+    // An account that creates Vms with a manage permission, and no Vm permission, reads back what it
+    // wrote: Caster's Terraform provider in a View Alloy copied, where it is on no team.
+    [Fact]
+    public async Task GetRecord_is_allowed_for_a_caller_holding_only_ManageViews()
+    {
+        var vm = Vm(teamIds: [Guid.NewGuid()], userId: OtherUser);
+        await Seed(vm);
+        CanManageTeams(true);
+
+        var record = await Service.GetRecordAsync(vm.Id, Ct);
+
+        Assert.Equal(vm.Id, record.Id);
+    }
+
+    [Fact]
+    public async Task GetRecord_is_allowed_for_a_caller_holding_ManageTeam_on_the_Vms_team()
+    {
+        var vm = await SeedVmOnOneTeam(AppTeamPermission.ManageTeam);
+
+        Assert.Equal(vm.Id, (await Service.GetRecordAsync(vm.Id, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetRecord_is_allowed_for_a_caller_holding_ManageView_in_the_Vms_view()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(teamId, viewId);
+        var vm = Vm(teamIds: [teamId]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppViewPermission.ManageView, viewId));
+
+        Assert.Equal(vm.Id, (await Service.GetRecordAsync(vm.Id, Ct)).Id);
+    }
+
+    [Fact]
+    public async Task GetRecord_is_forbidden_for_a_caller_holding_ManageTeam_only_on_another_team()
+    {
+        var vm = Vm(teamIds: [Guid.NewGuid()]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, Guid.NewGuid()));
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetRecordAsync(vm.Id, Ct));
+    }
+
+    [Fact]
+    public async Task GetRecord_is_forbidden_for_a_caller_holding_ManageView_only_in_another_view()
+    {
+        var teamId = Guid.NewGuid();
+        _player.Directory.PlaceTeam(teamId, Guid.NewGuid());
+        var vm = Vm(teamIds: [teamId]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppViewPermission.ManageView, Guid.NewGuid()));
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetRecordAsync(vm.Id, Ct));
+    }
+
+    // A team Vm permission does not reach another user's personal Vm (CanAccessVm), but managing its team
+    // does: the same caller may already update or delete it.
+    [Fact]
+    public async Task GetRecord_of_another_users_personal_Vm_is_allowed_for_a_caller_holding_ManageTeam_on_its_team()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = Vm(teamIds: [teamId], userId: OtherUser);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, teamId));
+
+        Assert.Equal(vm.Id, (await Service.GetRecordAsync(vm.Id, Ct)).Id);
+    }
+
+    // Reading back follows updating and deleting: manage on every one of the Vm's teams.
+    [Fact]
+    public async Task GetRecord_is_forbidden_for_a_caller_managing_only_one_of_the_Vms_teams()
+    {
+        var (managed, other) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(other, Guid.NewGuid());
+        var vm = Vm(teamIds: [managed, other]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, managed));
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetRecordAsync(vm.Id, Ct));
+    }
+
+    [Fact]
+    public async Task GetRecord_is_allowed_for_a_caller_holding_exactly_ViewTeamVms_on_the_Vms_team()
+    {
+        var vm = await SeedVmOnOneTeam(AppTeamPermission.ViewTeamVms);
+
+        Assert.Equal(vm.Id, (await Service.GetRecordAsync(vm.Id, Ct)).Id);
+    }
+
+    // A global reader is answered by the Vm permission alone: no manage lookup names a team (the ManageViews
+    // check asks about none), so a team whose View is gone cannot turn the read into an error.
+    [Fact]
+    public async Task GetRecord_for_a_global_Vm_reader_makes_no_manage_lookup()
+    {
+        var vm = Vm(teamIds: [Guid.NewGuid()]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppSystemPermission.ViewVms));
+
+        var service = Service;
+        Assert.Equal(vm.Id, (await service.GetRecordAsync(vm.Id, Ct)).Id);
+        Assert.All(_spy.CallsTo(nameof(IPlayerService.CanManageTeams)), args => Assert.Empty((IEnumerable<Guid>)args[0]));
+    }
+
+    // The same for ManageViews, the grant Caster's provider reads back with: answered before the Vm
+    // permission's scoped lookups, which it would make for every Vm it reads, and which here would fail
+    // because Player no longer has the team's View.
+    [Fact]
+    public async Task GetRecord_for_a_ManageViews_caller_does_not_depend_on_the_teams_View()
+    {
+        var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(teamId, viewId);
+        var vm = Vm(teamIds: [teamId]);
+        await Seed(vm);
+        CanManageTeams(true);
+        ViewIsGone(viewId);
+
+        var service = Service;
+        Assert.Equal(vm.Id, (await service.GetRecordAsync(vm.Id, Ct)).Id);
+        Assert.Empty(_spy.CallsTo(nameof(IPlayerService.CanViewVms)));
+    }
+
+    // The scoped fallback too: the Vm permission check fails on the gone View, and the manage check skips it.
+    [Fact]
+    public async Task GetRecord_of_a_Vm_also_on_a_team_whose_View_is_gone_is_allowed_for_a_manager_of_its_other_team()
+    {
+        var (live, stale, goneView) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(stale, goneView);
+        var vm = Vm(teamIds: [live, stale]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, live));
+        ViewIsGone(goneView);
+
+        Assert.Equal(vm.Id, (await Service.GetRecordAsync(vm.Id, Ct)).Id);
+    }
+
+    // Refused by the manage check as well, the read keeps Player's answer about the gone View.
+    [Fact]
+    public async Task GetRecord_of_a_Vm_on_a_team_whose_View_is_gone_is_not_found_for_a_caller_who_manages_none_of_its_teams()
+    {
+        var (stale, goneView) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(stale, goneView);
+        var vm = Vm(teamIds: [stale]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, Guid.NewGuid()));
+        ViewIsGone(goneView);
+
+        var ex = await Assert.ThrowsAsync<Player.Api.Client.ApiException>(() => Service.GetRecordAsync(vm.Id, Ct));
+        Assert.Equal(404, ex.StatusCode);
+    }
+
+    [Fact]
+    public async Task GetRecord_is_forbidden_without_a_manage_or_Vm_permission()
+    {
+        var vm = await SeedVmOnOneTeam(AppTeamPermission.ViewTeamMaps);
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetRecordAsync(vm.Id, Ct));
+    }
+
+    [Fact]
+    public async Task GetRecord_ForAMissingVm_IsNotFound()
+    {
+        CanManageTeams(true);
+
+        await Assert.ThrowsAsync<EntityNotFoundException<Player.Vm.Api.Features.Vms.Vm>>(
+            () => Service.GetRecordAsync(Guid.NewGuid(), Ct));
+    }
+
+    // The manage permission opens the record and nothing else: the Vm operations behind GetAsync,
+    // consoles and power among them, still need a Vm permission.
+    [Fact]
+    public async Task GetAsync_is_still_forbidden_for_a_caller_holding_only_ManageViews()
+    {
+        var vm = Vm(teamIds: [Guid.NewGuid()]);
+        await Seed(vm);
+        CanManageTeams(true);
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.GetAsync(vm.Id, Ct));
+    }
+
+    #endregion
+
     #region GetByTeamIdAsync
 
     // A team the caller cannot see at all is refused rather than answered with an empty list.
@@ -1106,6 +1290,168 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         Assert.Equal("renamed", context.Vms.Single(x => x.Id == vm.Id).Name);
     }
 
+    // A Vm shared by several teams is changed only by a caller who manages all of them, as for creating one:
+    // a manager of one team must not change or remove what another team uses.
+    [Fact]
+    public async Task Update_is_forbidden_for_a_caller_managing_only_one_of_the_Vms_teams()
+    {
+        var (managed, other) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(other, Guid.NewGuid());
+        var vm = Vm(teamIds: [managed, other]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, managed));
+
+        await Assert.ThrowsAsync<ForbiddenException>(
+            () => Service.UpdateAsync(vm.Id, new VmUpdateForm { Name = "renamed" }, Ct));
+    }
+
+    [Fact]
+    public async Task Update_is_allowed_for_a_caller_managing_every_one_of_the_Vms_teams()
+    {
+        var (first, second) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm(teamIds: [first, second]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, first).Holding(AppTeamPermission.ManageTeam, second));
+
+        await Service.UpdateAsync(vm.Id, new VmUpdateForm { Name = "renamed" }, Ct);
+
+        await using var context = NewContext();
+        Assert.Equal("renamed", context.Vms.Single(x => x.Id == vm.Id).Name);
+    }
+
+    // With no teams there is no team to manage: only ManageViews passes, not every-of-nothing.
+    [Fact]
+    public async Task Update_of_a_Vm_on_no_team_is_forbidden_without_ManageViews()
+    {
+        var vm = Vm(teamIds: []);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, Guid.NewGuid()));
+
+        await Assert.ThrowsAsync<ForbiddenException>(
+            () => Service.UpdateAsync(vm.Id, new VmUpdateForm { Name = "renamed" }, Ct));
+    }
+
+    [Fact]
+    public async Task Delete_is_forbidden_for_a_caller_managing_only_one_of_the_Vms_teams()
+    {
+        var (managed, other) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(other, Guid.NewGuid());
+        var vm = Vm(teamIds: [managed, other]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, managed));
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.DeleteAsync(vm.Id, Ct));
+
+        await using var context = NewContext();
+        Assert.Single(context.Vms.Where(x => x.Id == vm.Id));
+    }
+
+    // Managing the team a Vm joins is not enough: without managing a team it is already on, a manager could
+    // take any Vm whose id they know onto their own team.
+    [Fact]
+    public async Task AddToTeam_is_forbidden_for_a_caller_managing_only_the_team_it_joins()
+    {
+        var (target, current) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(current, Guid.NewGuid());
+        var vm = Vm(teamIds: [current]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, target));
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.AddToTeamAsync(vm.Id, target, Ct));
+
+        await using var context = NewContext();
+        Assert.Empty(context.VmTeams.Where(x => x.VmId == vm.Id && x.TeamId == target));
+    }
+
+    [Fact]
+    public async Task AddToTeam_is_allowed_for_a_caller_managing_the_team_it_joins_and_a_team_it_is_on()
+    {
+        var (target, current) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm(teamIds: [current]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, target).Holding(AppTeamPermission.ManageTeam, current));
+
+        await Service.AddToTeamAsync(vm.Id, target, Ct);
+
+        await using var context = NewContext();
+        Assert.Single(context.VmTeams.Where(x => x.VmId == vm.Id && x.TeamId == target));
+    }
+
+    // Vm.Api keeps a Vm's link to a team deleted in Player. Such a team is skipped, not refused, or it would
+    // lock every scoped manager out of the Vm. Unplaced here, the team is one Player does not have.
+    [Fact]
+    public async Task Update_of_a_Vm_also_on_a_team_Player_no_longer_has_is_allowed_for_a_manager_of_its_other_team()
+    {
+        var (live, gone) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm(teamIds: [live, gone]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, live));
+
+        await Service.UpdateAsync(vm.Id, new VmUpdateForm { Name = "renamed" }, Ct);
+
+        await using var context = NewContext();
+        Assert.Equal("renamed", context.Vms.Single(x => x.Id == vm.Id).Name);
+    }
+
+    // The same while the team is still cached with its View, which Player has deleted: asking for the View's
+    // permissions is a 404.
+    [Fact]
+    public async Task Delete_of_a_Vm_also_on_a_team_whose_View_is_gone_is_allowed_for_a_manager_of_its_other_team()
+    {
+        var (live, stale, goneView) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(stale, goneView);
+        var vm = Vm(teamIds: [live, stale]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, live));
+        ViewIsGone(goneView);
+
+        await Service.DeleteAsync(vm.Id, Ct);
+
+        await using var context = NewContext();
+        Assert.Empty(context.Vms.Where(x => x.Id == vm.Id));
+    }
+
+    [Fact]
+    public async Task Update_of_a_Vm_only_on_teams_Player_no_longer_has_is_forbidden_without_ManageViews()
+    {
+        var vm = Vm(teamIds: [Guid.NewGuid()]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, Guid.NewGuid()));
+
+        await Assert.ThrowsAsync<ForbiddenException>(
+            () => Service.UpdateAsync(vm.Id, new VmUpdateForm { Name = "renamed" }, Ct));
+    }
+
+    // Creating is not lenient: a new Vm is not put on a team Player doesn't have.
+    [Fact]
+    public async Task Create_on_a_team_Player_does_not_have_is_forbidden_even_beside_a_managed_team()
+    {
+        var (managed, gone) = (Guid.NewGuid(), Guid.NewGuid());
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, managed));
+        var form = new VmCreateForm { Id = Guid.NewGuid(), Name = "new-vm", TeamIds = [managed, gone] };
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.CreateAsync(form, Ct));
+
+        await using var context = NewContext();
+        Assert.Empty(context.Vms.Where(x => x.Id == form.Id));
+    }
+
+    [Fact]
+    public async Task AddToTeam_from_a_Vm_also_on_a_team_whose_View_is_gone_is_allowed_for_a_manager_of_its_other_team()
+    {
+        var (target, live, stale, goneView) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(stale, goneView);
+        var vm = Vm(teamIds: [stale, live]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, target).Holding(AppTeamPermission.ManageTeam, live));
+        ViewIsGone(goneView);
+
+        await Service.AddToTeamAsync(vm.Id, target, Ct);
+
+        await using var context = NewContext();
+        Assert.Single(context.VmTeams.Where(x => x.VmId == vm.Id && x.TeamId == target));
+    }
+
     [Fact]
     public async Task Delete_is_allowed_for_a_caller_holding_exactly_ManageTeam_on_the_Vms_team()
     {
@@ -1115,20 +1461,6 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
         await using var context = NewContext();
         Assert.Empty(context.Vms.Where(x => x.Id == vm.Id));
-    }
-
-    [Fact]
-    public async Task AddToTeam_is_allowed_for_a_caller_holding_exactly_ManageTeam_on_the_target_team()
-    {
-        var vm = Vm(teamIds: [Guid.NewGuid()]);
-        await Seed(vm);
-        var target = Guid.NewGuid();
-        Grant(b => b.Holding(AppTeamPermission.ManageTeam, target));
-
-        Assert.True(await Service.AddToTeamAsync(vm.Id, target, Ct));
-
-        await using var context = NewContext();
-        Assert.Single(context.VmTeams.Where(x => x.VmId == vm.Id && x.TeamId == target));
     }
 
     [Fact]
@@ -1306,6 +1638,19 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     }
 
     private void Grant(Func<TestActorBuilder, TestActorBuilder> steps) => _player.Grant(steps);
+
+    /// <summary>
+    /// Player has deleted <paramref name="viewId"/>, as player.api answers it: the caller has no claims there
+    /// (team-permissions/mine only filters), and the caller's teams in the View are a 404.
+    /// </summary>
+    private void ViewIsGone(Guid viewId)
+    {
+        _player.Client.GetMyTeamPermissionsAsync(viewId, null, true, Arg.Any<CancellationToken>())
+            .Returns(Task.FromResult<ICollection<Player.Api.Client.TeamPermissionsClaim>>([]));
+        _player.Client.GetUserViewTeamsAsync(viewId, Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns<ICollection<Player.Api.Client.Team>>(_ =>
+                throw new Player.Api.Client.ApiException("Not Found", 404, null, new Dictionary<string, IEnumerable<string>>(), null));
+    }
 
     /// <summary>Team management everywhere: the system <c>ManageViews</c>. False grants nothing.</summary>
     private void CanManageTeams(bool allowed)

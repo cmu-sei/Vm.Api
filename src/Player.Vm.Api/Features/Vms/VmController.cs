@@ -47,6 +47,9 @@ namespace Player.Vm.Api.Features.Vms
         /// <summary>
         /// Retrieve a single Vm by Id
         /// </summary>
+        /// <remarks>
+        /// Needs a Vm read permission, or the permission to update or delete this Vm.
+        /// </remarks>
         /// <param name="id">The Id of the Vm</param>
         /// <param name="ct"></param>
         /// <returns></returns>
@@ -56,7 +59,7 @@ namespace Player.Vm.Api.Features.Vms
         [SwaggerOperation(OperationId = "getVm")]
         public async Task<IActionResult> Get(Guid id, CancellationToken ct)
         {
-            var vm = await _vmService.GetAsync(id, ct);
+            var vm = await _vmService.GetRecordAsync(id, ct);
 
             if (vm == null)
                 return NotFound(vm);
@@ -154,7 +157,7 @@ namespace Player.Vm.Api.Features.Vms
         /// <remarks>
         /// Creates a new Virtual Machine with the attributes specified
         /// <para />
-        /// Accessible to a User with management permissions on a team the Virtual Machine will be added to
+        /// Accessible to a User with management permissions on every team the Virtual Machine will be added to
         /// </remarks>
         /// <param name="form">The data to create the Team with</param>
         /// <param name="ct"></param>
@@ -176,7 +179,7 @@ namespace Player.Vm.Api.Features.Vms
         /// <remarks>
         /// Updates a Virtual Machine with the attributes specified
         /// <para />
-        /// Accessible to a User with management permissions on a team the Virtual Machine is in
+        /// Accessible to a User with management permissions on every team the Virtual Machine is in
         /// </remarks>
         /// <param name="id"></param>
         /// <param name="form">The data to update the Virtual Machine with</param>
@@ -199,7 +202,7 @@ namespace Player.Vm.Api.Features.Vms
         /// <remarks>
         /// Deletes a Vm with the specified id
         /// <para />
-        /// Accessible to a User with management permission on a team the Virtual Machine is in
+        /// Accessible to a User with management permission on every team the Virtual Machine is in
         /// </remarks>
         /// <param name="id">The id of the Vm</param>
         /// <param name="ct"></param>
@@ -216,9 +219,9 @@ namespace Player.Vm.Api.Features.Vms
         /// Adds a Virtual Machine to a Team
         /// </summary>
         /// <remarks>
-        /// Creates a new Virtual Machine with the attributes specified
+        /// Adds the Virtual Machine to the specified Team
         /// <para />
-        /// Accessible to a User with management permissions on a team the Virtual Machine will be added to
+        /// Accessible to a User with management permissions on the Team, and on a team the Virtual Machine is already in
         /// </remarks>
         /// <param name="vmId">The id of the Virtual Machine</param>
         /// <param name="teamId">The id of the Team</param>

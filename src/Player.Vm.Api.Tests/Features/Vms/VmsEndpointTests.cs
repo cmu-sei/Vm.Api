@@ -85,6 +85,20 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal<Guid>([teamId], body.TeamIds);
     }
 
+    // Caster's Terraform provider creates Vms with ManageViews and reads each one back; it holds no Vm
+    // permission and is on no team in the View.
+    [Fact]
+    public async Task Get_is_200_for_a_caller_holding_only_ManageViews()
+    {
+        var vm = Vm([Guid.NewGuid()]);
+        await Seed(vm);
+        var actor = await Actor().Holding(AppSystemPermission.ManageViews).SeedAsync();
+
+        var response = await Client(actor).GetAsync($"/api/vms/{vm.Id}", Ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+    }
+
     /// <summary>
     /// A missing Vm is a 404 - but by way of <c>EntityNotFoundException</c> from the service and the
     /// exception middleware, not the controller's own <c>if (vm == null) return NotFound(vm)</c>, which
@@ -1678,9 +1692,26 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Equal("after", context.Vms.Single(x => x.Id == vm.Id).Name);
     }
 
-    // Same case as Update_by_a_caller_holding_ManageTeam_on_the_Vms_team_is_403_and_leaves_the_name.
+    // Over HTTP, so the update runs on a request's own context, which has not loaded the Vm's teams.
     [Fact]
-    public async Task Update_by_a_caller_holding_ManageView_on_the_Vms_view_is_403_and_leaves_the_name()
+    public async Task Update_is_allowed_for_a_caller_holding_exactly_ManageTeam_on_the_Vms_team()
+    {
+        var teamId = Guid.NewGuid();
+        var vm = Vm([teamId], name: "before");
+        await Seed(vm);
+        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, teamId).SeedAsync();
+
+        var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
+
+        await AssertStatus(HttpStatusCode.OK, response);
+        Assert.Equal<Guid>([teamId], (await response.Content.ReadFromJsonAsync<VmModel>(JsonOptions, Ct)).TeamIds);
+
+        await using var context = NewContext();
+        Assert.Equal("after", context.Vms.Single(x => x.Id == vm.Id).Name);
+    }
+
+    [Fact]
+    public async Task Update_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_Vms_view()
     {
         var (viewId, teamId) = (Guid.NewGuid(), Guid.NewGuid());
         Factory.Player.PlaceTeam(teamId, viewId);
@@ -1690,26 +1721,10 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
 
         var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
 
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
-        await using var context = NewContext();
-        Assert.Equal("before", context.Vms.Single(x => x.Id == vm.Id).Name);
-    }
-
-    /// <summary>A caller holding ManageTeam on the Vm's only team is refused the update.</summary>
-    [Fact]
-    public async Task Update_by_a_caller_holding_ManageTeam_on_the_Vms_team_is_403_and_leaves_the_name()
-    {
-        var teamId = Guid.NewGuid();
-        var vm = Vm([teamId], name: "before");
-        await Seed(vm);
-        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, teamId).SeedAsync();
-
-        var response = await Client(actor).PutAsJsonAsync($"/api/vms/{vm.Id}", new VmUpdateForm { Name = "after" }, Ct);
-
-        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+        await AssertStatus(HttpStatusCode.OK, response);
 
         await using var context = NewContext();
-        Assert.Equal("before", context.Vms.Single(x => x.Id == vm.Id).Name);
+        Assert.Equal("after", context.Vms.Single(x => x.Id == vm.Id).Name);
     }
 
     [Fact]
@@ -1758,13 +1773,18 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Single(context.Vms.Where(x => x.Id == vm.Id));
     }
 
+    // Managing the target team alone is refused: the caller must also manage a team the Vm is already on.
     [Fact]
-    public async Task AddToTeam_is_allowed_for_a_caller_holding_exactly_ManageTeam_on_the_target_team()
+    public async Task AddToTeam_is_allowed_for_a_caller_holding_ManageTeam_on_the_target_team_and_the_Vms_current_team()
     {
-        var vm = Vm([Guid.NewGuid()]);
+        var current = Guid.NewGuid();
+        var vm = Vm([current]);
         await Seed(vm);
         var target = Guid.NewGuid();
-        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, target).SeedAsync();
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ManageTeam, target)
+            .Holding(AppTeamPermission.ManageTeam, current)
+            .SeedAsync();
 
         var response = await Client(actor).PostAsync($"/api/teams/{target}/vms/{vm.Id}", null, Ct);
 
@@ -2858,12 +2878,13 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     [Fact]
-    public async Task AddToTeam_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_target_teams_view()
+    public async Task AddToTeam_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_view_of_the_target_and_current_teams()
     {
-        var vm = Vm([Guid.NewGuid()]);
-        await Seed(vm);
-        var (viewId, target) = (Guid.NewGuid(), Guid.NewGuid());
+        var (viewId, target, current) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
         Factory.Player.PlaceTeam(target, viewId);
+        Factory.Player.PlaceTeam(current, viewId);
+        var vm = Vm([current]);
+        await Seed(vm);
         var actor = await Actor().Holding(AppViewPermission.ManageView, viewId).SeedAsync();
 
         var response = await Client(actor).PostAsync($"/api/teams/{target}/vms/{vm.Id}", null, Ct);
