@@ -128,7 +128,7 @@ namespace Player.Vm.Api.Features.Vms
             }
             catch (ForbiddenException)
             {
-                if (!await CanManageEveryTeam(vmEntity.VmTeams.Select(v => v.TeamId), ct))
+                if (!await CanManageEveryTeam(vmEntity.VmTeams.Select(v => v.TeamId), skipGoneTeams: true, ct))
                     throw;
             }
 
@@ -138,18 +138,52 @@ namespace Player.Vm.Api.Features.Vms
         /// <summary>
         /// Whether the caller manages every one of these teams, the rule for creating, updating, deleting
         /// and reading back a Vm. <see cref="IPlayerService.CanManageTeams"/> passes on any one of them,
-        /// which would let a manager of one team change a Vm another team shares. No teams is ManageViews only.
+        /// which would let a manager of one team change a Vm another team shares. ManageViews always passes;
+        /// otherwise no teams is a refusal.
         /// </summary>
-        private async Task<bool> CanManageEveryTeam(IEnumerable<Guid> teamIds, CancellationToken ct)
+        /// <remarks>
+        /// With <c>skipGoneTeams</c>, a team Player no longer has is skipped rather than refused, as long as
+        /// one team is left. Vm.Api keeps a Vm's link to a team deleted in Player, which would otherwise lock
+        /// every scoped manager out of the Vm. Creating passes false, so a new Vm is not put on a team Player
+        /// doesn't have.
+        /// </remarks>
+        private async Task<bool> CanManageEveryTeam(IEnumerable<Guid> teamIds, bool skipGoneTeams, CancellationToken ct)
         {
-            var ids = teamIds.Distinct().ToArray();
+            if (await _playerService.CanManageTeams([], ct))
+                return true;
 
-            if (ids.Length == 0)
-                return await _playerService.CanManageTeams([], ct);
+            var results = await Task.WhenAll(teamIds.Distinct().Select(teamId => CanManageTeam(teamId, ct)));
+            var counted = skipGoneTeams ? results.Where(x => x.HasValue).ToArray() : results;
 
-            var results = await Task.WhenAll(ids.Select(teamId => _playerService.CanManageTeams([teamId], ct)));
+            return counted.Length > 0 && counted.All(x => x == true);
+        }
 
-            return results.All(x => x);
+        /// <summary>Whether the caller manages one of these teams, skipping any team Player no longer has.</summary>
+        private async Task<bool> CanManageAnyTeam(IEnumerable<Guid> teamIds, CancellationToken ct)
+        {
+            if (await _playerService.CanManageTeams([], ct))
+                return true;
+
+            var results = await Task.WhenAll(teamIds.Distinct().Select(teamId => CanManageTeam(teamId, ct)));
+
+            return results.Any(x => x == true);
+        }
+
+        /// <summary>Whether the caller manages this team, or null for a team Player no longer has.</summary>
+        private async Task<bool?> CanManageTeam(Guid teamId, CancellationToken ct)
+        {
+            if (await _viewService.GetViewIdForTeam(teamId, ct) == null)
+                return null;
+
+            try
+            {
+                return await _playerService.CanManageTeams([teamId], ct);
+            }
+            catch (Player.Api.Client.ApiException ex) when (ex.StatusCode == 404)
+            {
+                // The team's View was deleted in Player while the team is still in ViewService's cache.
+                return null;
+            }
         }
 
         public async Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct)
@@ -365,7 +399,7 @@ namespace Player.Vm.Api.Features.Vms
             if (!formTeams.Any())
                 throw new ForbiddenException("Must include at least 1 team");
 
-            if (!await CanManageEveryTeam(formTeams, ct))
+            if (!await CanManageEveryTeam(formTeams, skipGoneTeams: false, ct))
                 throw new ForbiddenException();
 
             await EnsureProxmoxVmCanBeRegistered(form.ProxmoxVmInfo, ct);
@@ -469,7 +503,7 @@ namespace Player.Vm.Api.Features.Vms
             if (vmEntity == null)
                 throw new EntityNotFoundException<Vm>();
 
-            if (!await CanManageEveryTeam(vmEntity.VmTeams.Select(v => v.TeamId), ct))
+            if (!await CanManageEveryTeam(vmEntity.VmTeams.Select(v => v.TeamId), skipGoneTeams: true, ct))
                 throw new ForbiddenException();
 
             // Only a vmid the VM doesn't already have needs checking: resending its own is the usual edit.
@@ -498,7 +532,7 @@ namespace Player.Vm.Api.Features.Vms
             if (vmEntity == null)
                 throw new EntityNotFoundException<Vm>();
 
-            if (!await CanManageEveryTeam(vmEntity.VmTeams.Select(v => v.TeamId), ct))
+            if (!await CanManageEveryTeam(vmEntity.VmTeams.Select(v => v.TeamId), skipGoneTeams: true, ct))
                 throw new ForbiddenException();
 
             _context.Vms.Remove(vmEntity);
@@ -524,7 +558,7 @@ namespace Player.Vm.Api.Features.Vms
                 .Select(vt => vt.TeamId)
                 .ToListAsync(ct);
 
-            if (!await _playerService.CanManageTeams(currentTeamIds, ct))
+            if (!await CanManageAnyTeam(currentTeamIds, ct))
                 throw new ForbiddenException();
 
             var vmteam = await _context.VmTeams.SingleOrDefaultAsync(vt => vt.VmId == vmId && vt.TeamId == teamId);

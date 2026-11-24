@@ -225,6 +225,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task GetRecord_is_forbidden_for_a_caller_managing_only_one_of_the_Vms_teams()
     {
         var (managed, other) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(other, Guid.NewGuid());
         var vm = Vm(teamIds: [managed, other]);
         await Seed(vm);
         Grant(b => b.Holding(AppTeamPermission.ManageTeam, managed));
@@ -1265,6 +1266,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task Update_is_forbidden_for_a_caller_managing_only_one_of_the_Vms_teams()
     {
         var (managed, other) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(other, Guid.NewGuid());
         var vm = Vm(teamIds: [managed, other]);
         await Seed(vm);
         Grant(b => b.Holding(AppTeamPermission.ManageTeam, managed));
@@ -1303,6 +1305,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task Delete_is_forbidden_for_a_caller_managing_only_one_of_the_Vms_teams()
     {
         var (managed, other) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(other, Guid.NewGuid());
         var vm = Vm(teamIds: [managed, other]);
         await Seed(vm);
         Grant(b => b.Holding(AppTeamPermission.ManageTeam, managed));
@@ -1319,6 +1322,7 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     public async Task AddToTeam_is_forbidden_for_a_caller_managing_only_the_team_it_joins()
     {
         var (target, current) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(current, Guid.NewGuid());
         var vm = Vm(teamIds: [current]);
         await Seed(vm);
         Grant(b => b.Holding(AppTeamPermission.ManageTeam, target));
@@ -1336,6 +1340,81 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var vm = Vm(teamIds: [current]);
         await Seed(vm);
         Grant(b => b.Holding(AppTeamPermission.ManageTeam, target).Holding(AppTeamPermission.ManageTeam, current));
+
+        await Service.AddToTeamAsync(vm.Id, target, Ct);
+
+        await using var context = NewContext();
+        Assert.Single(context.VmTeams.Where(x => x.VmId == vm.Id && x.TeamId == target));
+    }
+
+    // Vm.Api keeps a Vm's link to a team deleted in Player. Such a team is skipped, not refused, or it would
+    // lock every scoped manager out of the Vm. Unplaced here, the team is one Player does not have.
+    [Fact]
+    public async Task Update_of_a_Vm_also_on_a_team_Player_no_longer_has_is_allowed_for_a_manager_of_its_other_team()
+    {
+        var (live, gone) = (Guid.NewGuid(), Guid.NewGuid());
+        var vm = Vm(teamIds: [live, gone]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, live));
+
+        await Service.UpdateAsync(vm.Id, new VmUpdateForm { Name = "renamed" }, Ct);
+
+        await using var context = NewContext();
+        Assert.Equal("renamed", context.Vms.Single(x => x.Id == vm.Id).Name);
+    }
+
+    // The same while the team is still cached with its View, which Player has deleted: asking for the View's
+    // permissions is a 404.
+    [Fact]
+    public async Task Delete_of_a_Vm_also_on_a_team_whose_View_is_gone_is_allowed_for_a_manager_of_its_other_team()
+    {
+        var (live, stale, goneView) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(stale, goneView);
+        var vm = Vm(teamIds: [live, stale]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, live));
+        ViewIsGone(goneView);
+
+        await Service.DeleteAsync(vm.Id, Ct);
+
+        await using var context = NewContext();
+        Assert.Empty(context.Vms.Where(x => x.Id == vm.Id));
+    }
+
+    [Fact]
+    public async Task Update_of_a_Vm_only_on_teams_Player_no_longer_has_is_forbidden_without_ManageViews()
+    {
+        var vm = Vm(teamIds: [Guid.NewGuid()]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, Guid.NewGuid()));
+
+        await Assert.ThrowsAsync<ForbiddenException>(
+            () => Service.UpdateAsync(vm.Id, new VmUpdateForm { Name = "renamed" }, Ct));
+    }
+
+    // Creating is not lenient: a new Vm is not put on a team Player doesn't have.
+    [Fact]
+    public async Task Create_on_a_team_Player_does_not_have_is_forbidden_even_beside_a_managed_team()
+    {
+        var (managed, gone) = (Guid.NewGuid(), Guid.NewGuid());
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, managed));
+        var form = new VmCreateForm { Id = Guid.NewGuid(), Name = "new-vm", TeamIds = [managed, gone] };
+
+        await Assert.ThrowsAsync<ForbiddenException>(() => Service.CreateAsync(form, Ct));
+
+        await using var context = NewContext();
+        Assert.Empty(context.Vms.Where(x => x.Id == form.Id));
+    }
+
+    [Fact]
+    public async Task AddToTeam_from_a_Vm_also_on_a_team_whose_View_is_gone_is_allowed_for_a_manager_of_its_other_team()
+    {
+        var (target, live, stale, goneView) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(stale, goneView);
+        var vm = Vm(teamIds: [stale, live]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, target).Holding(AppTeamPermission.ManageTeam, live));
+        ViewIsGone(goneView);
 
         await Service.AddToTeamAsync(vm.Id, target, Ct);
 
@@ -1529,6 +1608,12 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     }
 
     private void Grant(Func<TestActorBuilder, TestActorBuilder> steps) => _player.Grant(steps);
+
+    /// <summary>Player has deleted <paramref name="viewId"/>: asking for its permissions is a 404.</summary>
+    private void ViewIsGone(Guid viewId) =>
+        _player.Client.GetMyTeamPermissionsAsync(viewId, null, true, Arg.Any<CancellationToken>())
+            .Returns<ICollection<Player.Api.Client.TeamPermissionsClaim>>(_ =>
+                throw new Player.Api.Client.ApiException("Not Found", 404, null, new Dictionary<string, IEnumerable<string>>(), null));
 
     /// <summary>Team management everywhere: the system <c>ManageViews</c>. False grants nothing.</summary>
     private void CanManageTeams(bool allowed)
