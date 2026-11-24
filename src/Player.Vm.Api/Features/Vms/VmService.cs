@@ -101,10 +101,10 @@ namespace Player.Vm.Api.Features.Vms
         }
 
         /// <summary>
-        /// The Vm for GET vms/{id}. A caller who may update or delete the Vm may also read it back, so
-        /// an automation account that creates Vms with a manage permission (Caster's Terraform provider)
-        /// can confirm what it wrote. This is only the record: consoles, power and the other Vm
-        /// operations still go through <see cref="GetAsync"/> and need a Vm permission.
+        /// The Vm for GET vms/{id}. A caller who may update or delete the Vm (manage on every one of its
+        /// teams) may also read it back, so an automation account that creates Vms with a manage permission
+        /// (Caster's Terraform provider) can confirm what it wrote. This is only the record: consoles, power
+        /// and the other Vm operations still go through <see cref="GetAsync"/> and need a Vm permission.
         /// </summary>
         public async Task<Vm> GetRecordAsync(Guid id, CancellationToken ct)
         {
@@ -116,22 +116,40 @@ namespace Player.Vm.Api.Features.Vms
             if (vmEntity == null)
                 throw new EntityNotFoundException<Vm>();
 
-            // A Vm permission is asked first: a global reader is answered without any scoped lookup,
-            // which can fail on its own (a team whose View is gone from Player). The manage permission
-            // is only the fallback for a caller the Vm permission refused.
+            // The global grants are answered before any scoped lookup, which can fail on its own (a team
+            // whose View is gone from Player): ManageViews here, a global Vm permission inside CanAccessVm.
+            // The scoped manage permission is only the fallback for a caller the Vm permission refused.
+            if (await _playerService.CanManageTeams([], ct))
+                return vmEntity.ToVm(_consoleUrls);
+
             try
             {
                 await CanAccessVm(vmEntity, ct);
             }
             catch (ForbiddenException)
             {
-                var teamIds = vmEntity.VmTeams.Select(v => v.TeamId).Distinct();
-
-                if (!await _playerService.CanManageTeams(teamIds, ct))
+                if (!await CanManageEveryTeam(vmEntity.VmTeams.Select(v => v.TeamId), ct))
                     throw;
             }
 
             return vmEntity.ToVm(_consoleUrls);
+        }
+
+        /// <summary>
+        /// Whether the caller manages every one of these teams, the rule for creating, updating, deleting
+        /// and reading back a Vm. <see cref="IPlayerService.CanManageTeams"/> passes on any one of them,
+        /// which would let a manager of one team change a Vm another team shares. No teams is ManageViews only.
+        /// </summary>
+        private async Task<bool> CanManageEveryTeam(IEnumerable<Guid> teamIds, CancellationToken ct)
+        {
+            var ids = teamIds.Distinct().ToArray();
+
+            if (ids.Length == 0)
+                return await _playerService.CanManageTeams([], ct);
+
+            var results = await Task.WhenAll(ids.Select(teamId => _playerService.CanManageTeams([teamId], ct)));
+
+            return results.All(x => x);
         }
 
         public async Task<bool> CanAccessVm(Domain.Models.Vm vm, CancellationToken ct)
@@ -347,16 +365,7 @@ namespace Player.Vm.Api.Features.Vms
             if (!formTeams.Any())
                 throw new ForbiddenException("Must include at least 1 team");
 
-            List<Task<bool>> tasks = [];
-
-            foreach (var teamId in formTeams)
-            {
-                tasks.Add(_playerService.CanManageTeams([teamId], ct));
-            }
-
-            await Task.WhenAll(tasks);
-
-            if (tasks.Any(x => !x.Result))
+            if (!await CanManageEveryTeam(formTeams, ct))
                 throw new ForbiddenException();
 
             await EnsureProxmoxVmCanBeRegistered(form.ProxmoxVmInfo, ct);
@@ -460,9 +469,7 @@ namespace Player.Vm.Api.Features.Vms
             if (vmEntity == null)
                 throw new EntityNotFoundException<Vm>();
 
-            var teams = vmEntity.VmTeams.Select(v => v.TeamId).Distinct();
-
-            if (!await _playerService.CanManageTeams(teams, ct))
+            if (!await CanManageEveryTeam(vmEntity.VmTeams.Select(v => v.TeamId), ct))
                 throw new ForbiddenException();
 
             // Only a vmid the VM doesn't already have needs checking: resending its own is the usual edit.
@@ -491,9 +498,7 @@ namespace Player.Vm.Api.Features.Vms
             if (vmEntity == null)
                 throw new EntityNotFoundException<Vm>();
 
-            var teamIds = vmEntity.VmTeams.Select(v => v.TeamId).Distinct();
-
-            if (!await _playerService.CanManageTeams(teamIds, ct))
+            if (!await CanManageEveryTeam(vmEntity.VmTeams.Select(v => v.TeamId), ct))
                 throw new ForbiddenException();
 
             _context.Vms.Remove(vmEntity);
@@ -510,6 +515,16 @@ namespace Player.Vm.Api.Features.Vms
                 throw new EntityNotFoundException<Vm>();
 
             if (!await _playerService.CanManageTeams([teamId], ct))
+                throw new ForbiddenException();
+
+            // Managing the team it joins is not enough: the caller must also manage a team the Vm is
+            // already on, or a manager could take any Vm whose id they know onto their own team.
+            var currentTeamIds = await _context.VmTeams
+                .Where(vt => vt.VmId == vmId)
+                .Select(vt => vt.TeamId)
+                .ToListAsync(ct);
+
+            if (!await _playerService.CanManageTeams(currentTeamIds, ct))
                 throw new ForbiddenException();
 
             var vmteam = await _context.VmTeams.SingleOrDefaultAsync(vt => vt.VmId == vmId && vt.TeamId == teamId);

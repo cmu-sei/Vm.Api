@@ -1773,13 +1773,18 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
         Assert.Single(context.Vms.Where(x => x.Id == vm.Id));
     }
 
+    // Managing the target team alone is refused: the caller must also manage a team the Vm is already on.
     [Fact]
-    public async Task AddToTeam_is_allowed_for_a_caller_holding_exactly_ManageTeam_on_the_target_team()
+    public async Task AddToTeam_is_allowed_for_a_caller_holding_ManageTeam_on_the_target_team_and_the_Vms_current_team()
     {
-        var vm = Vm([Guid.NewGuid()]);
+        var current = Guid.NewGuid();
+        var vm = Vm([current]);
         await Seed(vm);
         var target = Guid.NewGuid();
-        var actor = await Actor().Holding(AppTeamPermission.ManageTeam, target).SeedAsync();
+        var actor = await Actor()
+            .Holding(AppTeamPermission.ManageTeam, target)
+            .Holding(AppTeamPermission.ManageTeam, current)
+            .SeedAsync();
 
         var response = await Client(actor).PostAsync($"/api/teams/{target}/vms/{vm.Id}", null, Ct);
 
@@ -2873,12 +2878,13 @@ public class VmsEndpointTests(DatabaseFixture fixture, VmAppFactory factory)
     }
 
     [Fact]
-    public async Task AddToTeam_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_target_teams_view()
+    public async Task AddToTeam_is_allowed_for_a_caller_holding_exactly_ManageView_on_the_view_of_the_target_and_current_teams()
     {
-        var vm = Vm([Guid.NewGuid()]);
-        await Seed(vm);
-        var (viewId, target) = (Guid.NewGuid(), Guid.NewGuid());
+        var (viewId, target, current) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
         Factory.Player.PlaceTeam(target, viewId);
+        Factory.Player.PlaceTeam(current, viewId);
+        var vm = Vm([current]);
+        await Seed(vm);
         var actor = await Actor().Holding(AppViewPermission.ManageView, viewId).SeedAsync();
 
         var response = await Client(actor).PostAsync($"/api/teams/{target}/vms/{vm.Id}", null, Ct);
