@@ -118,7 +118,8 @@ namespace Player.Vm.Api.Features.Vms
 
             // The global grants are answered before any scoped lookup, which can fail on its own (a team
             // whose View is gone from Player): ManageViews here, a global Vm permission inside CanAccessVm.
-            // The scoped manage permission is only the fallback for a caller the Vm permission refused.
+            // The scoped manage permission is the fallback for a caller the Vm permission refused, or whose
+            // Vm permission check hit a team whose View Player no longer has; the fallback skips that team.
             if (await _playerService.CanManageTeams([], ct))
                 return vmEntity.ToVm(_consoleUrls);
 
@@ -126,7 +127,7 @@ namespace Player.Vm.Api.Features.Vms
             {
                 await CanAccessVm(vmEntity, ct);
             }
-            catch (ForbiddenException)
+            catch (Exception ex) when (ex is ForbiddenException or Player.Api.Client.ApiException { StatusCode: 404 })
             {
                 if (!await CanManageEveryTeam(vmEntity.VmTeams.Select(v => v.TeamId), skipGoneTeams: true, ct))
                     throw;
@@ -181,7 +182,8 @@ namespace Player.Vm.Api.Features.Vms
             }
             catch (Player.Api.Client.ApiException ex) when (ex.StatusCode == 404)
             {
-                // The team's View was deleted in Player while the team is still in ViewService's cache.
+                // The team's View was deleted in Player while the team is still in ViewService's cache:
+                // Player 404s the caller's teams in that View.
                 return null;
             }
         }

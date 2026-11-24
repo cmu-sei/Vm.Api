@@ -256,7 +256,8 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
     }
 
     // The same for ManageViews, the grant Caster's provider reads back with: answered before the Vm
-    // permission's scoped lookup, which here fails because Player no longer has the team's View.
+    // permission's scoped lookups, which it would make for every Vm it reads, and which here would fail
+    // because Player no longer has the team's View.
     [Fact]
     public async Task GetRecord_for_a_ManageViews_caller_does_not_depend_on_the_teams_View()
     {
@@ -265,11 +266,40 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
         var vm = Vm(teamIds: [teamId]);
         await Seed(vm);
         CanManageTeams(true);
-        _player.Client.GetMyTeamPermissionsAsync(default, default, default, Ct)
-            .ReturnsForAnyArgs<ICollection<Player.Api.Client.TeamPermissionsClaim>>(_ =>
-                throw new Player.Api.Client.ApiException("Not Found", 404, null, new Dictionary<string, IEnumerable<string>>(), null));
+        ViewIsGone(viewId);
+
+        var service = Service;
+        Assert.Equal(vm.Id, (await service.GetRecordAsync(vm.Id, Ct)).Id);
+        Assert.Empty(_spy.CallsTo(nameof(IPlayerService.CanViewVms)));
+    }
+
+    // The scoped fallback too: the Vm permission check fails on the gone View, and the manage check skips it.
+    [Fact]
+    public async Task GetRecord_of_a_Vm_also_on_a_team_whose_View_is_gone_is_allowed_for_a_manager_of_its_other_team()
+    {
+        var (live, stale, goneView) = (Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(stale, goneView);
+        var vm = Vm(teamIds: [live, stale]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, live));
+        ViewIsGone(goneView);
 
         Assert.Equal(vm.Id, (await Service.GetRecordAsync(vm.Id, Ct)).Id);
+    }
+
+    // Refused by the manage check as well, the read keeps Player's answer about the gone View.
+    [Fact]
+    public async Task GetRecord_of_a_Vm_on_a_team_whose_View_is_gone_is_not_found_for_a_caller_who_manages_none_of_its_teams()
+    {
+        var (stale, goneView) = (Guid.NewGuid(), Guid.NewGuid());
+        _player.Directory.PlaceTeam(stale, goneView);
+        var vm = Vm(teamIds: [stale]);
+        await Seed(vm);
+        Grant(b => b.Holding(AppTeamPermission.ManageTeam, Guid.NewGuid()));
+        ViewIsGone(goneView);
+
+        var ex = await Assert.ThrowsAsync<Player.Api.Client.ApiException>(() => Service.GetRecordAsync(vm.Id, Ct));
+        Assert.Equal(404, ex.StatusCode);
     }
 
     [Fact]
@@ -1609,11 +1639,18 @@ public class VmServiceAuthorizationTests(DatabaseFixture fixture) : DatabaseTest
 
     private void Grant(Func<TestActorBuilder, TestActorBuilder> steps) => _player.Grant(steps);
 
-    /// <summary>Player has deleted <paramref name="viewId"/>: asking for its permissions is a 404.</summary>
-    private void ViewIsGone(Guid viewId) =>
+    /// <summary>
+    /// Player has deleted <paramref name="viewId"/>, as player.api answers it: the caller has no claims there
+    /// (team-permissions/mine only filters), and the caller's teams in the View are a 404.
+    /// </summary>
+    private void ViewIsGone(Guid viewId)
+    {
         _player.Client.GetMyTeamPermissionsAsync(viewId, null, true, Arg.Any<CancellationToken>())
-            .Returns<ICollection<Player.Api.Client.TeamPermissionsClaim>>(_ =>
+            .Returns(Task.FromResult<ICollection<Player.Api.Client.TeamPermissionsClaim>>([]));
+        _player.Client.GetUserViewTeamsAsync(viewId, Arg.Any<Guid>(), Arg.Any<CancellationToken>())
+            .Returns<ICollection<Player.Api.Client.Team>>(_ =>
                 throw new Player.Api.Client.ApiException("Not Found", 404, null, new Dictionary<string, IEnumerable<string>>(), null));
+    }
 
     /// <summary>Team management everywhere: the system <c>ManageViews</c>. False grants nothing.</summary>
     private void CanManageTeams(bool allowed)
