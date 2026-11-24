@@ -92,6 +92,13 @@ public interface IProxmoxService
     Task<string> UploadFileToGuest(ProxmoxVmInfo info, string guestFilePath, Stream content);
 
     /// <summary>
+    /// The largest file, in bytes, <see cref="UploadFileToGuest"/> accepts: the configured
+    /// <see cref="ProxmoxOptions.FileUploadMaxBytes"/>, capped at what PVE's agent/file-write can take.
+    /// Reported on the Vm so the console can refuse a larger file before sending it.
+    /// </summary>
+    int UploadLimitBytes { get; }
+
+    /// <summary>
     /// Whether a QEMU guest agent answers a ping, within
     /// <see cref="ProxmoxOptions.GuestAgentTimeoutMilliseconds"/>. False on any failure, and always
     /// false for LXC, which has no guest agent. Never throws.
@@ -277,6 +284,7 @@ public partial class ProxmoxService : IProxmoxService
         var hasCdromDrive = false;
         var agentEnabled = false;
         var vncClipboardEnabled = false;
+        var displayResizable = false;
         string parent;
 
         if (info.Type == ProxmoxVmType.QEMU)
@@ -289,12 +297,13 @@ public partial class ProxmoxService : IProxmoxService
             hasCdromDrive = GetCdromDrives(config).Count > 0;
             agentEnabled = IsAgentEnabled(config.Agent);
             vncClipboardEnabled = IsVncClipboardEnabled(config.Vga);
+            displayResizable = IsDisplayResizable(config.Vga);
             parent = config.Parent;
         }
         else
         {
-            // An LXC container has no optical drive, no guest agent and no VGA device, so all three stay
-            // false.
+            // An LXC container has no optical drive, no guest agent and no VGA device, so all of those
+            // stay false.
             var containerConfig = await _pveClient.Nodes[info.Node].Lxc[info.Id].Config.GetAsync(true);
             networks = containerConfig.Networks ?? [];
             parent = containerConfig.Parent;
@@ -311,6 +320,7 @@ public partial class ProxmoxService : IProxmoxService
             CurrentSnapshot = string.IsNullOrWhiteSpace(parent) ? null : parent,
             AgentEnabled = agentEnabled,
             VncClipboardEnabled = vncClipboardEnabled,
+            DisplayResizable = displayResizable,
         };
     }
 
@@ -489,6 +499,37 @@ public partial class ProxmoxService : IProxmoxService
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Whether a QEMU config's <c>vga</c> property names a display adapter that follows a VNC client's
+    /// SetDesktopSize: <c>virtio</c> or <c>virtio-gl</c>, the virtio-gpu adapters, which are the only
+    /// ones QEMU passes the request to. The property string is <c>[[type=]&lt;type&gt;][,clipboard=vnc]
+    /// [,memory=N]</c>, the type positional or keyed, and std when it is left out.
+    /// </summary>
+    internal static bool IsDisplayResizable(object vga)
+    {
+        var type = "std";
+
+        foreach (var part in (vga?.ToString() ?? "").Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var pair = part.Split('=', 2, StringSplitOptions.TrimEntries);
+
+            if (pair.Length == 1)
+            {
+                type = pair[0];
+                break;
+            }
+
+            if (string.Equals(pair[0], "type", StringComparison.OrdinalIgnoreCase))
+            {
+                type = pair[1];
+                break;
+            }
+        }
+
+        return string.Equals(type, "virtio", StringComparison.OrdinalIgnoreCase)
+            || string.Equals(type, "virtio-gl", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -1081,7 +1122,7 @@ public partial class ProxmoxService : IProxmoxService
     /// The largest file UploadFileToGuest takes: FileUploadMaxBytes, capped at what fits in
     /// <see cref="PveFileWriteMaxContentLength"/> once base64-encoded (3 bytes per 4 characters), 45 KB.
     /// </summary>
-    internal int UploadLimitBytes =>
+    public int UploadLimitBytes =>
         Math.Min(_options.FileUploadMaxBytes, PveFileWriteMaxContentLength / 4 * 3);
 
     /// <summary>

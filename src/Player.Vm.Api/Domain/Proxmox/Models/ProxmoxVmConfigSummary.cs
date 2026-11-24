@@ -34,5 +34,13 @@ namespace Player.Vm.Api.Domain.Proxmox.Models
         /// clipboard never reaches the VNC console. Always false for LXC, which has no VGA device.
         /// </summary>
         public bool VncClipboardEnabled { get; init; }
+
+        /// <summary>
+        /// Whether the config's <c>vga</c> display adapter can change resolution when the VNC console asks
+        /// (SetDesktopSize): <c>virtio</c> or <c>virtio-gl</c>. QEMU passes the request only to a
+        /// virtio-gpu adapter; std (the default), cirrus, vmware and qxl keep their size. Always false for
+        /// LXC, which has no VGA device.
+        /// </summary>
+        public bool DisplayResizable { get; init; }
     }
 }

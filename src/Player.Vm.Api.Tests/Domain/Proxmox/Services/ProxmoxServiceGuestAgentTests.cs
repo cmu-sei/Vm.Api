@@ -881,6 +881,20 @@ public class ProxmoxServiceGuestAgentTests
             ex.Message);
     }
 
+    // The limit the Vm response reports to the console is the one the upload enforces: a lower configured
+    // FileUploadMaxBytes as configured, anything above what PVE can take capped at 46,080 bytes.
+    [Theory]
+    [InlineData(2048, 2048)]
+    [InlineData(61440, 46080)]
+    [InlineData(1_000_000, 46080)]
+    public void UploadLimitBytes_IsTheConfiguredLimitCappedAtWhatPveTakes(int configured, int expected)
+    {
+        var cluster = new FakeProxmoxCluster();
+        cluster.Options.FileUploadMaxBytes = configured;
+
+        Assert.Equal(expected, cluster.Service().UploadLimitBytes);
+    }
+
     [Fact]
     public async Task UploadFileToGuest_WhenProxmoxRefusesTheWrite_ThrowsNamingTheVmidAndThePath()
     {

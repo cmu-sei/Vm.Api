@@ -129,6 +129,30 @@ public class ProxmoxServiceConfigTests
         Assert.Equal(vncClipboardEnabled, summary.VncClipboardEnabled);
     }
 
+    // Match Window Size can only work where QEMU passes the console's SetDesktopSize to the display adapter,
+    // which it does only for virtio-gpu. The type is positional or keyed, and std when the property or the
+    // type is left out.
+    [Theory]
+    [InlineData("""{"vga":"virtio"}""", true)]
+    [InlineData("""{"vga":"virtio-gl,memory=64"}""", true)]
+    [InlineData("""{"vga":"type=virtio,clipboard=vnc"}""", true)]
+    [InlineData("""{"vga":"VIRTIO"}""", true)]
+    [InlineData("""{"vga":"std"}""", false)]
+    [InlineData("""{"vga":"qxl"}""", false)]
+    [InlineData("""{"vga":"vmware"}""", false)]
+    [InlineData("""{"vga":"clipboard=vnc"}""", false)]
+    [InlineData("{}", false)]
+    public async Task GetVmConfigSummary_ReportsWhetherTheDisplayAdapterCanResize(string configJson, bool resizable)
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", configJson);
+
+        var summary = await cluster.Service().GetVmConfigSummary(info, Ct);
+
+        Assert.Equal(resizable, summary.DisplayResizable);
+    }
+
     // A container has no VGA device, so whatever its config holds the VNC clipboard is never on.
     [Fact]
     public async Task GetVmConfigSummary_OnAContainer_NeverReportsTheVncClipboard()
@@ -140,6 +164,19 @@ public class ProxmoxServiceConfigTests
         var summary = await cluster.Service().GetVmConfigSummary(info, Ct);
 
         Assert.False(summary.VncClipboardEnabled);
+    }
+
+    // Nor a display that could resize.
+    [Fact]
+    public async Task GetVmConfigSummary_OnAContainer_NeverReportsAResizableDisplay()
+    {
+        var cluster = new FakeProxmoxCluster();
+        var info = cluster.Has(Vmid, ProxmoxVmType.LXC);
+        cluster.Answers($"GET {FakeProxmoxCluster.VmPath(info, "/config")}", """{"vga":"virtio"}""");
+
+        var summary = await cluster.Service().GetVmConfigSummary(info, Ct);
+
+        Assert.False(summary.DisplayResizable);
     }
 
     // Every adapter the Vm has, keyed by the adapter the caller then changes - so a multi-homed Vm shows
