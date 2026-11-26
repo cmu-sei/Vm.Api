@@ -51,7 +51,7 @@
     <PackageVersion Include="Microsoft.EntityFrameworkCore.InMemory" Version="10.0.15" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.Sqlite" Version="10.0.15" />
     <PackageVersion Include="Microsoft.EntityFrameworkCore.SqlServer" Version="10.0.15" />
-    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageVersion Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.4" />
   </ItemGroup>
 
   <!-- ASP.NET Core, diagnostics and API surface. -->
@@ -88,8 +88,8 @@
     <!-- Coverage collection, and inert until it is asked for: the Microsoft.Testing.Platform form of
          coverlet only instruments when a run asks for coverage, so a plain `dotnet test` neither
          instruments the assembly nor pays for it. `scripts/coverage.sh` is what turns it on. -->
-    <PackageVersion Include="coverlet.MTP" Version="10.1.0" />
-    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.16.0" />
+    <PackageVersion Include="coverlet.MTP" Version="10.1.1" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.17.0" />
     <PackageVersion Include="xunit.v3" Version="4.0.3" />
   </ItemGroup>
 
@@ -103,7 +103,7 @@
     <!-- Through Microsoft.Data.SqlClient, which carries 9.0.11 even under EF Core 10.0.13. -->
     <PackageVersion Include="System.Security.Cryptography.Pkcs" Version="10.0.15" />
     <!-- Through Swashbuckle.AspNetCore 10.1.0, which carries 2.3.0. -->
-    <PackageVersion Include="Microsoft.OpenApi" Version="2.13.0" />
+    <PackageVersion Include="Microsoft.OpenApi" Version="2.13.1" />
     <!-- Through AspNetCore.HealthChecks.UI 9.0.0, which carries 15.0.1. Only the UI's Kubernetes
          service discovery uses it, and this API does not turn that on. -->
     <PackageVersion Include="KubernetesClient" Version="21.0.8" />
